@@ -1,6 +1,7 @@
-# Download a published CarryFS package. The packaged installer runs after confirmation.
+# Install a published CarryFS package, or with -Local the checkout holding this
+# script. -Uninstall removes CarryFS. All system writes happen after confirmation.
 [CmdletBinding()]
-param([string]$Version, [switch]$Upgrade)
+param([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall)
 
 $ErrorActionPreference = 'Stop'
 $CarryFSRepository = 'carry-fs/carryfs'
@@ -55,7 +56,8 @@ function Save-CarryFSDownload([string]$Uri, [string]$Path) {
     }
 }
 
-function Test-CarryFSPrerequisites {
+function Test-CarryFSPrerequisites([switch]$Local) {
+    if ($Local -and -not (Get-Command cargo -ErrorAction SilentlyContinue)) { throw 'Missing cargo: https://rustup.rs/' }
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Run install.ps1 in Windows PowerShell; Linux and macOS use install.sh.' }
     if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'PowerShell 5.1 or newer is required: https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows' }
     if ([Environment]::OSVersion.Version.Major -lt 10) { throw 'CarryFS requires Windows 10 or later.' }
@@ -87,11 +89,92 @@ function Expand-CarryFSPackage([string]$Archive, [string]$Destination) {
     [IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Destination)
 }
 
-function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade) {
+function Get-CarryFSCheckoutVersion([string]$Checkout) {
+    $manifest = Join-Path $Checkout 'Cargo.toml'
+    if (-not (Test-Path $manifest -PathType Leaf) -or
+        -not (Test-Path (Join-Path $Checkout 'windows\packaging\install.ps1') -PathType Leaf)) {
+        throw '-Local needs a CarryFS checkout: run .\install.ps1 -Local in the cloned repository.'
+    }
+    $line = Get-Content $manifest | Where-Object { $_ -cmatch '^version = "[0-9.]+"$' } | Select-Object -First 1
+    if (-not $line) { throw 'Cannot read the version from Cargo.toml.' }
+    return ConvertTo-CarryFSVersion ($line -replace '^version = "|"$', '')
+}
+
+# Build the checkout and stage it in the layout of a release package.
+function Build-CarryFSCheckout([string]$Checkout, [version]$Selected, [string]$Payload) {
+    New-Item -ItemType Directory $Payload | Out-Null
+    Push-Location $Checkout
+    try {
+        & cargo build --release --locked -p carryfs-core -p carryfs-windows
+        # A failed build must not stage binaries left by an older one.
+        if ($LASTEXITCODE -ne 0) { throw 'Local build failed; nothing was installed.' }
+        $target = 'target'
+        if ($env:CARGO_TARGET_DIR) { $target = $env:CARGO_TARGET_DIR }
+        foreach ($file in @('carryfs.exe', 'carryfs-windows.exe')) {
+            Copy-Item -LiteralPath (Join-Path $target "release\$file") -Destination $Payload
+        }
+        Copy-Item -LiteralPath 'windows\packaging\install.ps1' -Destination (Join-Path $Payload 'install-system.ps1')
+    } finally { Pop-Location }
+    Set-Content -LiteralPath (Join-Path $Payload 'VERSION') -Value $Selected.ToString(3) -Encoding Ascii
+}
+
+# Run PowerShell with these arguments as Administrator and return its exit code.
+function Invoke-CarryFSElevated([string]$Arguments) {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    # Use a child process so streamed invocation also works with Restricted policy.
+    $shell = (Get-Process -Id $PID).Path
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        $process = Start-Process -FilePath $shell -ArgumentList $Arguments -NoNewWindow -Wait -PassThru
+    } else {
+        # The same arguments cross the UAC boundary.
+        $process = Start-Process -FilePath $shell -Verb RunAs -ArgumentList $Arguments -Wait -PassThru
+    }
+    return $process.ExitCode
+}
+
+function Invoke-CarryFSUninstall {
+    $target = Join-Path $env:ProgramFiles 'CarryFS'
+    $service = Get-CimInstance Win32_Service -Filter "Name='CarryFS'"
+    if (-not $service -and -not (Test-Path $target)) { Write-Host 'CarryFS is not installed.'; return }
+    $servicePid = 0
+    if ($service) { $servicePid = $service.ProcessId }
+    $foreground = @(Get-Process -Name carryfs-windows -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $servicePid })
+    if ($foreground.Count) { throw 'A foreground CarryFS adapter is running. Stop it and retry.' }
+    Write-Host "Remove CarryFS from $target with its automount service. Mounted CarryFS volumes will be ejected."
+    Write-Host 'WinFsp and disk contents will be left alone. Removal requires administrator permission.'
+    if ((Read-Host 'Uninstall? [y/N]') -notmatch '^(y|yes)$') { Write-Host 'Uninstall cancelled.'; return }
+    # Remove what windows\packaging\install.ps1 installs; that script is not kept on the system.
+    $removal = {
+        $ErrorActionPreference = 'Stop'
+        $service = Get-Service CarryFS -ErrorAction SilentlyContinue
+        if ($service) {
+            # Stopping the service publishes and ejects every mounted volume.
+            Stop-Service CarryFS
+            $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(60))
+            & sc.exe delete CarryFS
+            if ($LASTEXITCODE -ne 0) { throw "Service command failed with exit code $LASTEXITCODE." }
+        }
+        $target = Join-Path $env:ProgramFiles 'CarryFS'
+        if (Test-Path $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+    }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($removal.ToString()))
+    $code = Invoke-CarryFSElevated "-NoProfile -EncodedCommand $encoded"
+    if ($code -ne 0) { throw "Uninstall failed with exit code $code." }
+    Write-Host 'Uninstalled CarryFS. WinFsp and disk contents were left alone.'
+}
+
+function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall) {
     if ($Version -and $Upgrade) { throw '-Version and -Upgrade cannot be combined.' }
+    if ($Local -and ($Version -or $Upgrade -or $Uninstall)) { throw '-Local cannot be combined with -Version, -Upgrade, or -Uninstall.' }
+    if ($Uninstall) {
+        if ($Version -or $Upgrade) { throw '-Uninstall cannot be combined with -Version or -Upgrade.' }
+        Invoke-CarryFSUninstall
+        return
+    }
     $requested = $null
     if ($Version) { $requested = ConvertTo-CarryFSVersion $Version }
-    Test-CarryFSPrerequisites
+    Test-CarryFSPrerequisites -Local:$Local
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $target = Join-Path $env:ProgramFiles 'CarryFS'
     $marker = Join-Path $target 'VERSION'
@@ -101,60 +184,62 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade) {
         $expected = (Get-Content $marker -Raw).Trim()
         $installed = ConvertTo-CarryFSVersion $expected
     } elseif (Test-Path (Join-Path $target 'carryfs-windows.exe')) {
-        if (-not $requested -and -not $Upgrade) { throw 'This installation has no version record. Select -Version or -Upgrade explicitly.' }
+        if (-not $requested -and -not $Upgrade -and -not $Local) { throw 'This installation has no version record. Select -Version or -Upgrade explicitly.' }
     }
-    if ($requested) {
-        $uri = "$CarryFSApi/releases/tags/v$($requested.ToString(3))"
-        $release = Invoke-RestMethod -Uri $uri -Headers @{
-            Accept = 'application/vnd.github+json'; 'User-Agent' = 'carryfs-installer'
-        } -UseBasicParsing -TimeoutSec 300
-        if ($release.tag_name -cne "v$($requested.ToString(3))" -or $release.draft -ne $false) { throw 'Invalid release metadata from GitHub.' }
+    if ($Local) {
+        # $PSScriptRoot is empty when the script is streamed instead of run from a file.
+        if (-not $PSScriptRoot) { throw '-Local needs a CarryFS checkout: run .\install.ps1 -Local in the cloned repository.' }
+        $selected = Get-CarryFSCheckoutVersion $PSScriptRoot
     } else {
-        $release = Select-CarryFSRelease @(Get-CarryFSReleases) $installed -Upgrade:$Upgrade
-    }
-    $selected = ConvertTo-CarryFSVersion $release.tag_name
-    if ($installed -and ($selected -eq $installed -or (-not $requested -and $selected -lt $installed))) {
-        Write-Host "CarryFS $($installed.ToString(3)) is already current for this selection."
-        return
+        if ($requested) {
+            $uri = "$CarryFSApi/releases/tags/v$($requested.ToString(3))"
+            $release = Invoke-RestMethod -Uri $uri -Headers @{
+                Accept = 'application/vnd.github+json'; 'User-Agent' = 'carryfs-installer'
+            } -UseBasicParsing -TimeoutSec 300
+            if ($release.tag_name -cne "v$($requested.ToString(3))" -or $release.draft -ne $false) { throw 'Invalid release metadata from GitHub.' }
+        } else {
+            $release = Select-CarryFSRelease @(Get-CarryFSReleases) $installed -Upgrade:$Upgrade
+        }
+        $selected = ConvertTo-CarryFSVersion $release.tag_name
+        if ($installed -and ($selected -eq $installed -or (-not $requested -and $selected -lt $installed))) {
+            Write-Host "CarryFS $($installed.ToString(3)) is already current for this selection."
+            return
+        }
     }
     $work = Join-Path ([IO.Path]::GetTempPath()) ('carryfs-install-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory $work | Out-Null
     try {
-        $asset = "carryfs-$($selected.ToString(3))-windows-x86_64.zip"
-        $base = "https://github.com/$CarryFSRepository/releases/download/$($release.tag_name)"
-        $archive = Join-Path $work $asset
-        $checksums = Join-Path $work 'SHA256SUMS'
-        Save-CarryFSDownload "$base/$asset" $archive
-        Save-CarryFSDownload "$base/SHA256SUMS" $checksums
-        $pattern = '^([0-9a-fA-F]{64}) [ *]' + [regex]::Escape($asset) + '$'
-        $lines = @(Get-Content $checksums | Where-Object { $_ -cmatch $pattern })
-        if ($lines.Count -ne 1) { throw "Missing or duplicate SHA-256 checksum for $asset." }
-        $checksum = [regex]::Match($lines[0], $pattern).Groups[1].Value
-        if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $checksum) { throw "Checksum mismatch for $asset; nothing was installed." }
         $payload = Join-Path $work 'payload'
-        Expand-CarryFSPackage $archive $payload
-        foreach ($file in @('carryfs.exe', 'carryfs-windows.exe', 'install-system.ps1', 'VERSION')) {
-            if (-not (Test-Path (Join-Path $payload $file) -PathType Leaf)) { throw "The release package is missing $file." }
+        if ($Local) {
+            Build-CarryFSCheckout $PSScriptRoot $selected $payload
+            $origin = "Built from $PSScriptRoot."
+        } else {
+            $asset = "carryfs-$($selected.ToString(3))-windows-x86_64.zip"
+            $base = "https://github.com/$CarryFSRepository/releases/download/$($release.tag_name)"
+            $archive = Join-Path $work $asset
+            $checksums = Join-Path $work 'SHA256SUMS'
+            Save-CarryFSDownload "$base/$asset" $archive
+            Save-CarryFSDownload "$base/SHA256SUMS" $checksums
+            $pattern = '^([0-9a-fA-F]{64}) [ *]' + [regex]::Escape($asset) + '$'
+            $lines = @(Get-Content $checksums | Where-Object { $_ -cmatch $pattern })
+            if ($lines.Count -ne 1) { throw "Missing or duplicate SHA-256 checksum for $asset." }
+            $checksum = [regex]::Match($lines[0], $pattern).Groups[1].Value
+            if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $checksum) { throw "Checksum mismatch for $asset; nothing was installed." }
+            Expand-CarryFSPackage $archive $payload
+            foreach ($file in @('carryfs.exe', 'carryfs-windows.exe', 'install-system.ps1', 'VERSION')) {
+                if (-not (Test-Path (Join-Path $payload $file) -PathType Leaf)) { throw "The release package is missing $file." }
+            }
+            if ((Get-Content (Join-Path $payload 'VERSION') -Raw).Trim() -cne $selected.ToString(3)) { throw 'The package version does not match its release tag.' }
+            $origin = 'The package is verified.'
         }
-        if ((Get-Content (Join-Path $payload 'VERSION') -Raw).Trim() -cne $selected.ToString(3)) { throw 'The package version does not match its release tag.' }
         Write-Host "Install CarryFS $($selected.ToString(3)) to $target."
         if ($installed) { Write-Host "Current version: $($installed.ToString(3))." }
         if ($installed -and $selected -lt $installed) { Write-Host 'This will downgrade CarryFS.' }
-        Write-Host 'Eject all CarryFS volumes before continuing. The package is verified; system installation requires administrator permission.'
+        Write-Host "Eject all CarryFS volumes before continuing. $origin System installation requires administrator permission."
         if ((Read-Host 'Install? [y/N]') -notmatch '^(y|yes)$') { Write-Host 'Installation cancelled.'; return }
         $installer = Join-Path $payload 'install-system.ps1'
-        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-        # Use a child process so streamed invocation also works with Restricted policy.
-        $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -ExpectedVersion "{1}"' -f $installer, $expected
-        $shell = (Get-Process -Id $PID).Path
-        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            $process = Start-Process -FilePath $shell -ArgumentList $arguments -NoNewWindow -Wait -PassThru
-        } else {
-            # The same package and expected version cross the UAC boundary.
-            $process = Start-Process -FilePath $shell -Verb RunAs -ArgumentList $arguments -Wait -PassThru
-        }
-        if ($process.ExitCode -ne 0) { throw "System installation failed with exit code $($process.ExitCode)." }
+        $code = Invoke-CarryFSElevated ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -ExpectedVersion "{1}"' -f $installer, $expected)
+        if ($code -ne 0) { throw "System installation failed with exit code $code." }
         Write-Host "Installed CarryFS $($selected.ToString(3))."
     } finally { Remove-Item -LiteralPath $work -Recurse -Force }
 }

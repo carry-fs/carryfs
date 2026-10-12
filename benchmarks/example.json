@@ -1,0 +1,33 @@
+{
+  "rounds": 3,
+  "mount_mode": "user",
+  "native_ro": false,
+  "latency": false,
+  "disks": [
+    {
+      "name": "test-disk",
+      "filesystems": [
+        {
+          "fs": "carryfs",
+          "device": "/dev/disk/by-id/YOUR-TEST-DISK-part1",
+          "mount": "/mnt/bench-carryfs"
+        },
+        {
+          "fs": "exfat",
+          "device": "/dev/disk/by-id/YOUR-TEST-DISK-part2",
+          "mount": "/mnt/bench-exfat"
+        },
+        {
+          "fs": "ext4",
+          "device": "/dev/disk/by-id/YOUR-TEST-DISK-part3",
+          "mount": "/mnt/bench-ext4"
+        },
+        {
+          "fs": "btrfs",
+          "device": "/dev/disk/by-id/YOUR-TEST-DISK-part4",
+          "mount": "/mnt/bench-btrfs"
+        }
+      ]
+    }
+  ]
+}

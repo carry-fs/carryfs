@@ -1,5 +1,6 @@
 #!/bin/sh
-# Download a published CarryFS package. All system writes happen after confirmation.
+# Install a published CarryFS package, or with --local the checkout holding this
+# script. All system writes happen after confirmation.
 set -eu
 
 repository=carry-fs/carryfs
@@ -30,11 +31,26 @@ download() {
         die "Download failed: $1. Check the connection, release availability, and GitHub API rate limit."
 }
 
+# Arch and its derivatives have no release numbers to compare. Ubuntu needs
+# 24.04, the runtime baseline of the release binaries.
+check_distribution() {
+    [ -r "$1" ] || die 'Cannot identify the Linux distribution.'
+    distribution=$(sed -n 's/^ID=//p' "$1" | tr -d '"')
+    like=$(sed -n 's/^ID_LIKE=//p' "$1" | tr -d '"')
+    case " $distribution $like " in *' arch '*) return ;; esac
+    [ "$distribution" = ubuntu ] || die 'Linux packages currently support Ubuntu and Arch Linux with systemd only.'
+    os_version=$(sed -n 's/^VERSION_ID=//p' "$1" | tr -d '"')
+    awk -v version="$os_version" 'BEGIN { split(version,n,"."); exit !(n[1]+0>24 || (n[1]+0==24 && n[2]+0>=4)) }' ||
+        die 'Linux packages require Ubuntu 24.04 or later.'
+}
+
 prerequisites() {
     missing=0
-    for tool in curl jq tar awk mktemp; do
+    tools='curl jq tar awk mktemp'
+    [ "$local_build" = 0 ] || tools='cargo awk mktemp'
+    for tool in $tools; do
         if ! command -v "$tool" >/dev/null 2>&1; then
-            printf 'Missing %s. curl: https://curl.se/download.html; jq: https://jqlang.org/download/\n' "$tool" >&2
+            printf 'Missing %s. curl: https://curl.se/download.html; jq: https://jqlang.org/download/; cargo: https://rustup.rs/\n' "$tool" >&2
             missing=1
         fi
     done
@@ -44,19 +60,14 @@ prerequisites() {
             marker=/usr/libexec/carryfs/VERSION
             adapter=/usr/libexec/carryfs/carryfs-fuse
             [ "$(uname -m)" = x86_64 ] || die 'Linux packages currently support x86-64 only.'
-            [ -r /etc/os-release ] || die 'Cannot identify the Linux distribution.'
-            distribution=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')
-            [ "$distribution" = ubuntu ] || die 'Linux packages currently support Ubuntu with systemd only.'
-            os_version=$(sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '"')
-            awk -v version="$os_version" 'BEGIN { split(version,n,"."); exit !(n[1]+0>24 || (n[1]+0==24 && n[2]+0>=4)) }' ||
-                die 'Linux packages require Ubuntu 24.04 or later.'
+            check_distribution /etc/os-release
             if [ ! -c /dev/fuse ]; then
                 printf 'Missing /dev/fuse. Enable the FUSE kernel module; see https://github.com/libfuse/libfuse\n' >&2
                 missing=1
             fi
             for tool in fusermount3 systemctl systemd-run udevadm udisksctl sha256sum pgrep; do
                 if ! command -v "$tool" >/dev/null 2>&1; then
-                    printf 'Missing %s. Ubuntu: sudo apt install fuse3 udisks2 systemd udev procps coreutils\n' "$tool" >&2
+                    printf 'Missing %s. Ubuntu: sudo apt install fuse3 udisks2 systemd udev procps coreutils; Arch: sudo pacman -S fuse3 udisks2 procps-ng coreutils\n' "$tool" >&2
                     missing=1
                 fi
             done
@@ -168,8 +179,56 @@ verify_package() {
     esac
 }
 
+# Build the checkout and stage it in the layout of a release package.
+build_local() {
+    [ -f "$checkout/Cargo.toml" ] && [ -f "$checkout/packaging/install-unix.sh" ] ||
+        die '--local needs a CarryFS checkout: run ./install.sh --local in the cloned repository.'
+    [ "$platform" = linux-x86_64 ] || die '--local supports Linux only. On macOS, build the bundle with fuse/packaging/macos-bundle.sh.'
+    selected=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$checkout/Cargo.toml" | head -n 1)
+    valid_version "$selected" || die 'Cannot read the version from Cargo.toml.'
+    mkdir "$work/payload"
+    # Chained with &&: a failed build must not stage binaries left by an older one.
+    (cd "$checkout" &&
+        cargo build --release --locked -p carryfs-core -p carryfs-fuse &&
+        target=${CARGO_TARGET_DIR:-target}/release &&
+        cp "$target/carryfs" "$target/carryfs-fuse" fuse/packaging/61-carryfs.rules \
+            fuse/packaging/mount_options.conf "$work/payload/" &&
+        cp packaging/install-unix.sh "$work/payload/install-system.sh") ||
+        die 'Local build failed; nothing was installed.'
+    printf '%s\n' "$selected" > "$work/payload/VERSION"
+}
+
+# Remove what packaging/install-unix.sh installs on Linux. Only the CarryFS keys
+# leave the UDisks options; the file goes when nothing else is set in it.
+uninstall_linux() {
+    sudo=
+    [ "$(id -u)" = 0 ] || sudo=sudo
+    options=/etc/udisks2/mount_options.conf
+    work=$(mktemp -d "${TMPDIR:-/tmp}/carryfs-install.XXXXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    if [ -f "$options" ]; then
+        awk '
+            /^\[.*\]/ { in_defaults = ($0 ~ /^\[defaults\][[:space:]]*$/) }
+            in_defaults && /^carryfs_(defaults|allow)=/ { next }
+            { print }' "$options" > "$work/mount_options.conf"
+    fi
+    $sudo rm -f /usr/local/bin/carryfs /etc/udev/rules.d/61-carryfs.rules
+    $sudo rm -rf /usr/libexec/carryfs
+    if [ -L /usr/sbin/mount.carryfs ] && [ "$(readlink /usr/sbin/mount.carryfs)" = /usr/libexec/carryfs/carryfs-fuse ]; then
+        $sudo rm -f /usr/sbin/mount.carryfs
+    fi
+    if [ -f "$options" ]; then
+        if awk '!/^[[:space:]]*(#.*)?$/ && !/^\[defaults\][[:space:]]*$/ { set=1 } END { exit !set }' "$work/mount_options.conf"; then
+            $sudo install -m 644 "$work/mount_options.conf" "$options"
+        else
+            $sudo rm -f "$options"
+        fi
+    fi
+    $sudo udevadm control --reload
+}
+
 main() {
-    requested= upgrade=0 uninstall=0 installed=
+    requested= upgrade=0 uninstall=0 local_build=0 installed=
     while [ "$#" -gt 0 ]; do
         case $1 in
             --version)
@@ -179,15 +238,29 @@ main() {
                 shift 2 ;;
             --upgrade) upgrade=1; shift ;;
             --uninstall) uninstall=1; shift ;;
+            --local) local_build=1; shift ;;
             --help|-h)
-                printf 'Usage: install.sh [--version X.Y.Z | --upgrade | --uninstall]\nDefault: latest stable release within the installed major; latest stable on first install.\n'
+                printf 'Usage: install.sh [--version X.Y.Z | --upgrade | --local | --uninstall]\nDefault: latest stable release within the installed major; latest stable on first install.\n--local builds the checkout holding this script and installs or reinstalls it.\n'
                 return ;;
             *) die "Unknown argument: $1" ;;
         esac
     done
+    [ "$local_build" = 0 ] || { [ -z "$requested" ] && [ "$upgrade" = 0 ] && [ "$uninstall" = 0 ]; } ||
+        die '--local cannot be combined with --version, --upgrade, or --uninstall.'
     if [ "$uninstall" = 1 ]; then
         [ -z "$requested" ] && [ "$upgrade" = 0 ] || die '--uninstall cannot be combined with --version or --upgrade.'
-        [ "$(uname -s)" = Darwin ] || die '--uninstall is currently supported on macOS only.'
+        system=$(uname -s)
+        case $system in
+            Darwin)
+                adapter=/Library/Filesystems/carryfs.fs
+                question="Remove CarryFS from /usr/local/bin/carryfs and $adapter?"
+                kept='macFUSE and disk contents' ;;
+            Linux)
+                adapter=/usr/libexec/carryfs
+                question="Remove CarryFS from /usr/local/bin/carryfs and $adapter, with its mount helper link, udev rule, and UDisks options?"
+                kept='Disk contents' ;;
+            *) die '--uninstall is supported on Linux and macOS only.' ;;
+        esac
         command -v pgrep >/dev/null 2>&1 || die 'Missing pgrep.'
         for process in carryfs-fuse mount_carryfs; do
             status=0
@@ -198,15 +271,17 @@ main() {
                 *) die 'Cannot check for running CarryFS daemons.' ;;
             esac
         done
-        [ -e /Library/Filesystems/carryfs.fs ] || [ -e /usr/local/bin/carryfs ] || {
+        [ -e "$adapter" ] || [ -e /usr/local/bin/carryfs ] || {
             printf 'CarryFS is not installed.\n'
             return
         }
         [ -r /dev/tty ] || die 'Confirmation needs a terminal; run the script from an interactive shell.'
-        printf 'Remove CarryFS from /usr/local/bin/carryfs and /Library/Filesystems/carryfs.fs? Eject all CarryFS volumes first. macFUSE and disk contents will be left alone. [y/N] ' > /dev/tty
+        printf '%s Eject all CarryFS volumes first. %s will be left alone. [y/N] ' "$question" "$kept" > /dev/tty
         IFS= read -r answer < /dev/tty || die 'Could not read confirmation.'
         case $answer in y|Y|yes|YES) ;; *) printf 'Uninstall cancelled.\n'; return ;; esac
-        if [ "$(id -u)" = 0 ]; then
+        if [ "$system" = Linux ]; then
+            uninstall_linux
+        elif [ "$(id -u)" = 0 ]; then
             rm -f /usr/local/bin/carryfs
             rm -rf /Library/Filesystems/carryfs.fs
             launchctl kickstart -k system/com.apple.diskarbitrationd
@@ -215,7 +290,7 @@ main() {
             sudo rm -rf /Library/Filesystems/carryfs.fs
             sudo launchctl kickstart -k system/com.apple.diskarbitrationd
         fi
-        printf 'Uninstalled CarryFS. macFUSE and disk contents were left alone.\n'
+        printf 'Uninstalled CarryFS. %s were left alone.\n' "$kept"
         return
     fi
     [ -z "$requested" ] || valid_version "$requested" || die 'Version must be X.Y.Z or vX.Y.Z.'
@@ -225,18 +300,26 @@ main() {
         installed=$(cat "$marker")
         valid_version "$installed" || die "Invalid installed version in $marker."
     elif [ -e "$adapter" ] || [ -e /usr/local/bin/carryfs ]; then
-        [ -n "$requested" ] || [ "$upgrade" = 1 ] || die 'This installation has no version record. Select --version or --upgrade explicitly.'
+        [ -n "$requested" ] || [ "$upgrade" = 1 ] || [ "$local_build" = 1 ] ||
+            die 'This installation has no version record. Select --version or --upgrade explicitly.'
     fi
     work=$(mktemp -d "${TMPDIR:-/tmp}/carryfs-install.XXXXXXXX")
     trap 'rm -rf "$work"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    select_release
-    verify_package
+    if [ "$local_build" = 1 ]; then
+        checkout=$(cd "$(dirname "$0")" && pwd)
+        build_local
+        origin="Built from $checkout."
+    else
+        select_release
+        verify_package
+        origin='The package is verified.'
+    fi
     printf 'Install CarryFS %s for %s (current: %s).\n' "$selected" "$platform" "${installed:-unrecorded}"
     if [ -n "$installed" ] && newer "$installed" "$selected"; then printf 'This will downgrade CarryFS.\n'; fi
     printf 'Destination: /usr/local/bin/carryfs and %s. Eject all CarryFS volumes before continuing.\n' "${marker%/VERSION}"
-    printf 'The package is verified. System installation requires administrator permission.\n'
+    printf '%s System installation requires administrator permission.\n' "$origin"
     [ -r /dev/tty ] || die 'Confirmation needs a terminal; download the script and run it from an interactive shell.'
     printf 'Install? [y/N] ' > /dev/tty
     IFS= read -r answer < /dev/tty || die 'Could not read confirmation.'

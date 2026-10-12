@@ -1,0 +1,5 @@
+# The Unicode test files must keep their original bytes on every host.
+testdata/unicode/** -text
+
+# Git Bash runs these scripts on Windows too.
+*.sh text eol=lf

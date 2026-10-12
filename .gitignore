@@ -1,0 +1,6 @@
+/target/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+.DS_Store
+/build/

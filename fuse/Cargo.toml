@@ -1,0 +1,31 @@
+[package]
+name = "carryfs-fuse"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0 OR GPL-2.0-only"
+description = "CarryFS FUSE adapter: udisks mount helper for Ubuntu, macFUSE for macOS"
+publish = false
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[features]
+# Test builds only: fail device writes or flushes on request (device.rs), pause
+# before Linux's final device claim (mount.rs), and silence macOS eject alerts.
+fault-injection = []
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+carryfs-core = { path = ".." }
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.18", default-features = false }
+
+# fuser mounts through macFUSE's fuse_mount_compat25, which fails on macFUSE 5.
+# mount_macos runs mount_macfuse itself, so fuser neither mounts nor links libfuse.
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { version = "0.18", default-features = false, features = ["macos-no-mount"] }

@@ -1,0 +1,36 @@
+{
+  "version": "16.0.0",
+  "retrieved": "2025-06-20",
+  "files": [
+    {
+      "name": "CaseFolding.txt",
+      "bytes": 86092,
+      "sha256": "6f1f9c588eb4a5c718d9e8f93b782685e5c7fec872cf05e8e6878053599e09bb",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/CaseFolding.txt"
+    },
+    {
+      "name": "CompositionExclusions.txt",
+      "bytes": 9007,
+      "sha256": "89e83cf9cc8bef6c1f8bf77e42cf6f0341dfa42e66261f4dbe9b492e7a23c8ee",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/CompositionExclusions.txt"
+    },
+    {
+      "name": "LICENSE.txt",
+      "bytes": 1995,
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
+      "source": "https://www.unicode.org/license.txt"
+    },
+    {
+      "name": "NormalizationTest.txt",
+      "bytes": 2798671,
+      "sha256": "d811971453e7075e1ad56fb1b301eece5aa80757b81f6156e74a1bfb3ae5ceb1",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/NormalizationTest.txt"
+    },
+    {
+      "name": "UnicodeData.txt",
+      "bytes": 2175362,
+      "sha256": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f",
+      "source": "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt"
+    }
+  ]
+}

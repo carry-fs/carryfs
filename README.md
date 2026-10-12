@@ -120,6 +120,6 @@ CarryFS is dual-licensed under **Apache-2.0 OR GPL-2.0-only**, at your option.
 Apache-2.0 provides a permissive option for using and integrating CarryFS.
 I included GPL-2.0-only to keep a future Linux kernel implementation possible.
 
-The Unicode test files in `testdata/unicode/16.0.0/` come from the Unicode
+The Unicode data files in `testdata/unicode/16.0.0/` come from the Unicode
 Character Database and keep their own
 [Unicode license](testdata/unicode/16.0.0/LICENSE.txt).

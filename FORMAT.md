@@ -653,10 +653,28 @@ sparse. A missing parent or unreadable subtree limits enumeration and is itself
 reported. No in-place repair, snapshot recovery, or historical rollback is
 promised.
 
-## 9. Test vectors
+## 9. Test vectors and reference checks
 
 `testdata/vectors/` holds standalone root and page encodings.
 `testdata/checksum-vectors.json` lists their CRCs and the data-unit checksum
 cases. They are byte-layout fixtures, not mountable volumes.
-`testdata/unicode/16.0.0/` holds the Unicode normalization and case-folding
-test files with the Unicode license.
+`testdata/name-vectors.json` holds filename cases with their stored names and
+comparison keys.
+
+`spec/verify.py` is a Python implementation of the encodings and the filename
+profile, separate from the Rust code. It rebuilds each fixture and compares it
+with the file, checks the CRCs, and runs the Unicode normalization tests and
+the filename cases:
+
+```sh
+python3 spec/verify.py
+python3 spec/verify.py --write
+```
+
+`--write` regenerates the fixtures. Change the layout here and in `verify.py`
+first, then review the regenerated files as a diff.
+
+`testdata/unicode/16.0.0/` holds the Unicode 16.0.0 source files with their
+license. `manifest.json` pins the length and SHA-256 of each, and `verify.py`
+fails when one changes. `spec/generate_name_tables.py` writes
+`src/name_tables.rs` from them.

@@ -11,7 +11,8 @@ use std::path::Path;
 
 use carryfs_core::{BlockDevice, Error, Geometry, MountMode, Result};
 
-// From the macOS SDK's <sys/disk.h>.
+// From the macOS SDK's <sys/disk.h>; macos/tests/layout.c asserts these against
+// the header so a changed encoding fails the build rather than a probe.
 const DKIOCGETBLOCKSIZE: libc::c_ulong = 0x4004_6418;
 const DKIOCGETBLOCKCOUNT: libc::c_ulong = 0x4008_6419;
 const DKIOCGETPHYSICALBLOCKSIZE: libc::c_ulong = 0x4004_644d;

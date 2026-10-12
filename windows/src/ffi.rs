@@ -2,8 +2,8 @@
 //!
 //! The GPL-3.0 `winfsp` and `winfsp-sys` crates do not match this project's
 //! licenses, so the few structs and functions needed are declared here.
-//! Each `layout!` line checks a size or offset at compile time against the
-//! value in the official headers. The DLL is loaded at runtime from WinFsp's
+//! `windows/tests/layout.sh` compares every `layout!` value
+//! with the official headers. The DLL is loaded at runtime from WinFsp's
 //! registered install directory, as WinFsp's own `FspLoad` does, because it is
 //! not on the default DLL search path.
 
@@ -31,7 +31,7 @@ use crate::fs::{
 };
 use crate::wide;
 
-/// Compile-time layout check against the value the C headers give.
+/// Compile-time layout check whose name and value `layout.sh` compares with C.
 macro_rules! layout {
     ($name:literal, $actual:expr, $expected:literal) => {
         const _: () = assert!($actual == $expected, $name);

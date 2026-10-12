@@ -17,7 +17,8 @@ benchmarks/
   native.py, native_io.py   macOS and Windows mounting and flushing
   mount.rs                  source of the Linux user-mount helper
   workloads/                file operations, usable on any mounted filesystem
-  example*.json             host profiles to copy and edit
+  chart.py                  SVG charts of saved results
+  example*.json             host profiles and a chart config to copy and edit
 ```
 
 The Python code uses only the standard library.
@@ -375,6 +376,31 @@ media, latency setting or benchmark sources. A different host, disk, mount,
 cache policy or flush policy needs `--allow-environment-diff`, which reports
 each difference. A comparison across operating systems compares the whole
 stack, not the filesystem code alone.
+
+## Charts
+
+`chart.py` draws SVG charts from the `results.tsv` of finished runs. It writes
+a light and a dark file for each chart.
+
+```sh
+cp benchmarks/example-charts.json build/charts.json
+python3 benchmarks/chart.py build/charts.json build/charts
+```
+
+The example reads `build/full-images/results.tsv` from the quick start. Edit
+the copy for your own runs:
+
+| Field | Meaning |
+|---|---|
+| `charts` | One chart for each run. It shows nine workloads with the median of the rounds for each filesystem. |
+| `name` | The file name, before `-light.svg` and `-dark.svg`. |
+| `system`, `subtitle`, `note` | The title, the line under it and the footer. Put the run's date and commit in `note`. |
+| `results` | The run's `results.tsv`, relative to the repository root. |
+| `columns` | The name shown on the chart, mapped to a label in `results.tsv`. A label is the `name` of a `filesystems` entry, or its `fs` when it has no name. |
+| `comparison` | Optional. Draws the charts listed in its `charts` side by side as CarryFS speed relative to the `against` filesystem, on a log scale. |
+
+A chart needs a full run. A run of one metric lacks the other workloads, and
+`chart.py` stops with the samples it could not find.
 
 ## Workloads on a mounted filesystem
 

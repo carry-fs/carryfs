@@ -120,9 +120,10 @@ yet. Try CarryFS on your own drives and share your results.
 
 CarryFS is in **public beta**.
 
-I use CarryFS myself, and I'm publishing the source after more than 15
-iterations of development. I'm happy with the current design and don't plan to
-change the disk format without a good reason.
+I use CarryFS myself. The published disk format is revision 1, though it's
+really my 15th. Nobody saw the first 14, so starting the count at 15 would be
+weird. I'm happy with the current design and don't plan to change the disk
+format without a good reason.
 
 The format isn't frozen yet. I expect most updates to be fixes and improvements
 to the platform adapters, but a future format change may require copying your

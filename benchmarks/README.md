@@ -406,7 +406,7 @@ A chart needs a full run. A run of one metric lacks the other workloads, and
 
 ## Published results
 
-`linux.tsv`, `windows.tsv` and `macos.tsv` hold full runs on one OCZ Vertex 4
+`macos.tsv`, `windows.tsv` and `linux.tsv` hold full runs on one OCZ Vertex 4
 SSD connected over USB, with three rounds for each filesystem. `charts.json`
 draws them into `charts/`. The charts show nine of the 92 metrics each run
 records, and the `.tsv` files hold the rest:
@@ -416,8 +416,8 @@ python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
 ```
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="charts/linux-dark.svg">
-  <img alt="CarryFS, exFAT, ext4 and Btrfs on Linux" src="charts/linux-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="charts/macos-dark.svg">
+  <img alt="CarryFS, exFAT and APFS on macOS" src="charts/macos-light.svg">
 </picture>
 
 <picture>
@@ -426,8 +426,8 @@ python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
 </picture>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="charts/macos-dark.svg">
-  <img alt="CarryFS, exFAT and APFS on macOS" src="charts/macos-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="charts/linux-dark.svg">
+  <img alt="CarryFS, exFAT, ext4 and Btrfs on Linux" src="charts/linux-light.svg">
 </picture>
 
 [charts/vs-exfat-light.svg](charts/vs-exfat-light.svg) compares CarryFS with

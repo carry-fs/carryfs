@@ -42,12 +42,12 @@
     "name": "vs-exfat",
     "against": "exFAT",
     "charts": [
-      "linux",
+      "macos",
       "windows",
-      "macos"
+      "linux"
     ],
     "title": "CarryFS against exFAT",
     "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of three fresh-format rounds.",
-    "note": "CarryFS format revision 1, code at commit 7dfae3d. OCZ Vertex 4 SSD over USB on all three hosts. Data: benchmarks/linux.tsv, windows.tsv, macos.tsv."
+    "note": "CarryFS format revision 1, code at commit 7dfae3d. OCZ Vertex 4 SSD over USB on all three hosts. Data: benchmarks/macos.tsv, windows.tsv, linux.tsv."
   }
 }

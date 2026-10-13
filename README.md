@@ -103,7 +103,7 @@ for sharing drives across macOS, Linux, and Windows.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/charts/vs-exfat-dark.svg">
-  <img alt="CarryFS speed relative to exFAT on Linux, Windows and macOS" src="benchmarks/charts/vs-exfat-light.svg">
+  <img alt="CarryFS speed relative to exFAT on macOS, Windows and Linux" src="benchmarks/charts/vs-exfat-light.svg">
 </picture>
 
 The chart shows medians of three rounds on an OCZ Vertex 4 SSD connected over

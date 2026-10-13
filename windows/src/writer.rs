@@ -208,6 +208,11 @@ mod tests {
 
     type Log = Arc<Mutex<Vec<(u64, Vec<u8>)>>>;
 
+    /// How long a test waits for something that must happen. The bound only
+    /// turns a hang into a failure, so it is generous: the hosted Windows
+    /// runner has taken more than two seconds over what takes milliseconds.
+    const PATIENCE: Duration = Duration::from_secs(60);
+
     fn recording() -> (Writer, Log) {
         let log: Log = Arc::default();
         let sink = Arc::clone(&log);
@@ -295,9 +300,7 @@ mod tests {
         let drainer = Arc::clone(&writer);
         let (done, finished) = mpsc::channel();
         std::thread::spawn(move || done.send(drainer.drain().is_err()).unwrap());
-        // The bound only turns a hang into a failure, so it is generous: the
-        // hosted Windows runner has taken more than two seconds to get here.
-        assert_eq!(finished.recv_timeout(Duration::from_secs(60)), Ok(true));
+        assert_eq!(finished.recv_timeout(PATIENCE), Ok(true));
         assert!(writer.send(0, vec![0; 4096]).is_err());
     }
 
@@ -326,7 +329,7 @@ mod tests {
         assert!(finished.recv_timeout(Duration::from_millis(100)).is_err());
         release.send(()).unwrap();
         release.send(()).unwrap();
-        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        finished.recv_timeout(PATIENCE).unwrap();
         release.send(()).unwrap();
         thread.join().unwrap();
         writer.drain().unwrap();
@@ -351,7 +354,7 @@ mod tests {
         });
         assert!(finished.recv_timeout(Duration::from_millis(100)).is_err());
         release.send(()).unwrap();
-        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        finished.recv_timeout(PATIENCE).unwrap();
         assert!(writer.drain().is_err());
         drop(writer);
         backlog.wait();
@@ -377,7 +380,7 @@ mod tests {
         });
         assert!(finished.recv_timeout(Duration::from_millis(100)).is_err());
         release.send(()).unwrap();
-        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        finished.recv_timeout(PATIENCE).unwrap();
         release.send(()).unwrap();
         thread.join().unwrap();
         writer.drain().unwrap();

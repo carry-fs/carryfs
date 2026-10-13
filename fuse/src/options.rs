@@ -12,6 +12,8 @@ type Result<T> = std::result::Result<T, Box<dyn StdError>>;
 pub struct Options {
     pub read_only: bool,
     pub noexec: bool,
+    /// macOS `nobrowse`: keep the volume out of Finder.
+    pub nobrowse: bool,
     pub strict: bool,
     /// `sync` or `dirsync`: publish every change before replying.
     pub sync: bool,
@@ -24,6 +26,7 @@ pub fn parse_options(text: &str, owner: Owner) -> Result<Options> {
     let mut options = Options {
         read_only: false,
         noexec: false,
+        nobrowse: false,
         strict: false,
         sync: false,
         owner,
@@ -37,6 +40,14 @@ pub fn parse_options(text: &str, owner: Owner) -> Result<Options> {
             None => match option {
                 "ro" => options.read_only = true,
                 "rw" => options.read_only = false,
+                // DiskArbitration's spelling of `ro`, as for write-protected
+                // media and `diskutil mount readOnly`.
+                #[cfg(target_os = "macos")]
+                "rdonly" => options.read_only = true,
+                #[cfg(target_os = "macos")]
+                "nobrowse" => options.nobrowse = true,
+                #[cfg(target_os = "macos")]
+                "browse" => options.nobrowse = false,
                 "noexec" => options.noexec = true,
                 "exec" => options.noexec = false,
                 "strict" => options.strict = true,
@@ -98,6 +109,7 @@ mod tests {
             Options {
                 read_only: false,
                 noexec: true,
+                nobrowse: false,
                 strict: false,
                 sync: false,
                 owner: Owner {
@@ -115,8 +127,16 @@ mod tests {
         assert!(parse_options("rw,strict,uid=1000", ROOT).unwrap().strict);
         assert!(parse_options("rw,dirsync", ROOT).unwrap().sync);
         assert!(!parse_options("sync,async", ROOT).unwrap().sync);
+        #[cfg(target_os = "macos")]
+        {
+            let options = parse_options("noowners,rdonly,nobrowse", ROOT).unwrap();
+            assert!(options.read_only && options.nobrowse);
+            assert!(!parse_options("nobrowse,browse", ROOT).unwrap().nobrowse);
+        }
         #[cfg(target_os = "linux")]
         {
+            assert!(parse_options("rdonly", ROOT).is_err());
+            assert!(parse_options("nobrowse", ROOT).is_err());
             assert!(parse_options("readdirplus=yes", ROOT).is_ok());
             assert!(parse_options("readdirplus=auto", ROOT).is_err());
             assert!(parse_options("readdirplus=no", ROOT).is_err());

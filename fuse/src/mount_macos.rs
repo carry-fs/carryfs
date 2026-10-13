@@ -161,6 +161,9 @@ pub fn serve(device: &Path, directory: &Path, options: &str) -> Result<()> {
     if options.noexec {
         mount_options.push("noexec".into());
     }
+    if options.nobrowse {
+        mount_options.push("nobrowse".into());
+    }
     // A root mount serves the console user. DiskArbitration mounted a disk
     // image as the user who attached it, which needs neither. The daemon
     // checks no permissions itself, as CarryFS stores none.

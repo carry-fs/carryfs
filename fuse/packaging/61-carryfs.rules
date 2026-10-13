@@ -1,0 +1,3 @@
+# Identify CarryFS volumes for udisks. blkid rules (60-*) run first and leave
+# ID_FS_TYPE empty for CarryFS; udisks rules (80-*) read the result.
+SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_TYPE}=="", IMPORT{program}="/usr/libexec/carryfs/carryfs-fuse probe $devnode"

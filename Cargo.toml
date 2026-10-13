@@ -1,0 +1,38 @@
+[package]
+name = "carryfs-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0 OR GPL-2.0-only"
+description = "CarryFS image commit engine"
+
+[workspace]
+members = [".", "fuse", "macos", "windows"]
+exclude = ["fuzz"]
+
+[[bin]]
+name = "carryfs"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[features]
+fuzzing = []
+
+# The exhaustive crash matrix took 110 seconds without optimization.
+[profile.test]
+opt-level = 1
+overflow-checks = true
+debug-assertions = true
+
+# fuser 0.18.0 drops macFUSE rename flags and does not dispatch FUSE_SYNCFS.
+# The fork retains upstream's syncfs and rename flags, before_destroy so
+# publication finishes before the unmount reply (cberner/fuser#757), and
+# separate name/attribute TTLs for create and readdirplus (cberner/fuser#756).
+# Return to upstream once all four are available.
+[patch.crates-io]
+fuser = { git = "https://github.com/carry-fs/fuser", branch = "master" }

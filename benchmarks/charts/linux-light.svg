@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 552" width="960" height="552" role="img" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+<title>CarryFS on Linux, FUSE</title><desc>OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.</desc>
+<rect x="0.5" y="0.5" width="959" height="551" rx="8" fill="#fcfcfb" stroke="rgba(11,11,11,0.10)"/>
+<text x="24.0" y="36.0" font-size="16" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS on Linux, FUSE</text>
+<text x="24.0" y="56.0" font-size="12" font-weight="400" text-anchor="start" fill="#52514e">OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.</text>
+<text x="24.0" y="96.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Sequential write, durable</text>
+<text x="24.0" y="112.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">MiB/s · higher is better</text>
+<text x="24.0" y="135.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M82.0,124.0H243.6Q247.6,124.0 247.6,128.0V134.0Q247.6,138.0 243.6,138.0H82.0Z"/>
+<text x="253.6" y="135.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">210</text>
+<text x="24.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M82.0,146.0H244.0Q248.0,146.0 248.0,150.0V156.0Q248.0,160.0 244.0,160.0H82.0Z"/>
+<text x="254.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">211</text>
+<text x="24.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M82.0,168.0H231.5Q235.5,168.0 235.5,172.0V178.0Q235.5,182.0 231.5,182.0H82.0Z"/>
+<text x="241.5" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">195</text>
+<text x="24.0" y="201.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M82.0,190.0H240.4Q244.4,190.0 244.4,194.0V200.0Q244.4,204.0 240.4,204.0H82.0Z"/>
+<text x="250.4" y="201.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">206</text>
+<line x1="82.0" x2="82.0" y1="120.0" y2="208.0" stroke="#c3c2b7"/>
+<text x="336.0" y="96.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Sequential read, cold</text>
+<text x="336.0" y="112.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">MiB/s · higher is better</text>
+<text x="336.0" y="135.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M394.0,124.0H552.8Q556.8,124.0 556.8,128.0V134.0Q556.8,138.0 552.8,138.0H394.0Z"/>
+<text x="562.8" y="135.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">426</text>
+<text x="336.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M394.0,146.0H553.2Q557.2,146.0 557.2,150.0V156.0Q557.2,160.0 553.2,160.0H394.0Z"/>
+<text x="563.2" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">427</text>
+<text x="336.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M394.0,168.0H556.0Q560.0,168.0 560.0,172.0V178.0Q560.0,182.0 556.0,182.0H394.0Z"/>
+<text x="566.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">434</text>
+<text x="336.0" y="201.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M394.0,190.0H548.9Q552.9,190.0 552.9,194.0V200.0Q552.9,204.0 548.9,204.0H394.0Z"/>
+<text x="558.9" y="201.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">416</text>
+<line x1="394.0" x2="394.0" y1="120.0" y2="208.0" stroke="#c3c2b7"/>
+<text x="648.0" y="96.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">1,000 small files, durable</text>
+<text x="648.0" y="112.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">files/s · higher is better</text>
+<text x="648.0" y="135.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M706.0,124.0H868.0Q872.0,124.0 872.0,128.0V134.0Q872.0,138.0 868.0,138.0H706.0Z"/>
+<text x="878.0" y="135.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">7,174</text>
+<text x="648.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M706.0,146.0H710.9Q714.9,146.0 714.9,150.0V156.0Q714.9,160.0 710.9,160.0H706.0Z"/>
+<text x="720.9" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">384</text>
+<text x="648.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M706.0,168.0H717.6Q721.6,168.0 721.6,172.0V178.0Q721.6,182.0 717.6,182.0H706.0Z"/>
+<text x="727.6" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">674</text>
+<text x="648.0" y="201.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M706.0,190.0H726.3Q730.3,190.0 730.3,194.0V200.0Q730.3,204.0 726.3,204.0H706.0Z"/>
+<text x="736.3" y="201.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1,048</text>
+<line x1="706.0" x2="706.0" y1="120.0" y2="208.0" stroke="#c3c2b7"/>
+<text x="24.0" y="244.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Create a tree of 1,000 files</text>
+<text x="24.0" y="260.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">files/s · higher is better</text>
+<text x="24.0" y="283.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M82.0,272.0H216.2Q220.2,272.0 220.2,276.0V282.0Q220.2,286.0 216.2,286.0H82.0Z"/>
+<text x="226.2" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">11,991</text>
+<text x="24.0" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M82.0,294.0H190.6Q194.6,294.0 194.6,298.0V304.0Q194.6,308.0 190.6,308.0H82.0Z"/>
+<text x="200.6" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">9,765</text>
+<text x="24.0" y="327.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M82.0,316.0H244.0Q248.0,316.0 248.0,320.0V326.0Q248.0,330.0 244.0,330.0H82.0Z"/>
+<text x="254.0" y="327.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">14,400</text>
+<text x="24.0" y="349.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M82.0,338.0H227.2Q231.2,338.0 231.2,342.0V348.0Q231.2,352.0 227.2,352.0H82.0Z"/>
+<text x="237.2" y="349.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">12,945</text>
+<line x1="82.0" x2="82.0" y1="268.0" y2="356.0" stroke="#c3c2b7"/>
+<text x="336.0" y="244.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Create 10,000, fsync every 128</text>
+<text x="336.0" y="260.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="336.0" y="283.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M394.0,272.0H425.0Q429.0,272.0 429.0,276.0V282.0Q429.0,286.0 425.0,286.0H394.0Z"/>
+<text x="435.0" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">2,043</text>
+<text x="336.0" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M394.0,294.0H556.0Q560.0,294.0 560.0,298.0V304.0Q560.0,308.0 556.0,308.0H394.0Z"/>
+<text x="566.0" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">9,697</text>
+<text x="336.0" y="327.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M394.0,316.0H415.2Q419.2,316.0 419.2,320.0V326.0Q419.2,330.0 415.2,330.0H394.0Z"/>
+<text x="425.2" y="327.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1,471</text>
+<text x="336.0" y="349.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M394.0,338.0H417.3Q421.3,338.0 421.3,342.0V348.0Q421.3,352.0 417.3,352.0H394.0Z"/>
+<text x="427.3" y="349.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1,595</text>
+<line x1="394.0" x2="394.0" y1="268.0" y2="356.0" stroke="#c3c2b7"/>
+<text x="648.0" y="244.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Remove 1,000 small files</text>
+<text x="648.0" y="260.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="648.0" y="283.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M706.0,272.0H837.6Q841.6,272.0 841.6,276.0V282.0Q841.6,286.0 837.6,286.0H706.0Z"/>
+<text x="847.6" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">36.3</text>
+<text x="648.0" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M706.0,294.0H764.6Q768.6,294.0 768.6,298.0V304.0Q768.6,308.0 764.6,308.0H706.0Z"/>
+<text x="774.6" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">16.8</text>
+<text x="648.0" y="327.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M706.0,316.0H760.7Q764.7,316.0 764.7,320.0V326.0Q764.7,330.0 760.7,330.0H706.0Z"/>
+<text x="770.7" y="327.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">15.7</text>
+<text x="648.0" y="349.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M706.0,338.0H868.0Q872.0,338.0 872.0,342.0V348.0Q872.0,352.0 868.0,352.0H706.0Z"/>
+<text x="878.0" y="349.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">44.4</text>
+<line x1="706.0" x2="706.0" y1="268.0" y2="356.0" stroke="#c3c2b7"/>
+<text x="24.0" y="392.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Remove 10,000, fsync every 128</text>
+<text x="24.0" y="408.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="24.0" y="431.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M82.0,420.0H244.0Q248.0,420.0 248.0,424.0V430.0Q248.0,434.0 244.0,434.0H82.0Z"/>
+<text x="254.0" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">1,145</text>
+<text x="24.0" y="453.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M82.0,442.0H155.5Q159.5,442.0 159.5,446.0V452.0Q159.5,456.0 155.5,456.0H82.0Z"/>
+<text x="165.5" y="453.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">535</text>
+<text x="24.0" y="475.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M82.0,464.0H218.6Q222.6,464.0 222.6,468.0V474.0Q222.6,478.0 218.6,478.0H82.0Z"/>
+<text x="228.6" y="475.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">969</text>
+<text x="24.0" y="497.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M82.0,486.0H230.9Q234.9,486.0 234.9,490.0V496.0Q234.9,500.0 230.9,500.0H82.0Z"/>
+<text x="240.9" y="497.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1,054</text>
+<line x1="82.0" x2="82.0" y1="416.0" y2="504.0" stroke="#c3c2b7"/>
+<text x="336.0" y="392.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">List 10,000 names, cold</text>
+<text x="336.0" y="408.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="336.0" y="431.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M394.0,420.0H556.0Q560.0,420.0 560.0,424.0V430.0Q560.0,434.0 556.0,434.0H394.0Z"/>
+<text x="566.0" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">42.6</text>
+<text x="336.0" y="453.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M394.0,442.0H487.7Q491.7,442.0 491.7,446.0V452.0Q491.7,456.0 487.7,456.0H394.0Z"/>
+<text x="497.7" y="453.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">25.0</text>
+<text x="336.0" y="475.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M394.0,464.0H472.5Q476.5,464.0 476.5,468.0V474.0Q476.5,478.0 472.5,478.0H394.0Z"/>
+<text x="482.5" y="475.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">21.1</text>
+<text x="336.0" y="497.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M394.0,486.0H481.8Q485.8,486.0 485.8,490.0V496.0Q485.8,500.0 481.8,500.0H394.0Z"/>
+<text x="491.8" y="497.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">23.5</text>
+<line x1="394.0" x2="394.0" y1="416.0" y2="504.0" stroke="#c3c2b7"/>
+<text x="648.0" y="392.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">List and stat 10,000 files, cold</text>
+<text x="648.0" y="408.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="648.0" y="431.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>
+<path fill="#2a78d6" d="M706.0,420.0H750.5Q754.5,420.0 754.5,424.0V430.0Q754.5,434.0 750.5,434.0H706.0Z"/>
+<text x="760.5" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#0b0b0b">93.4</text>
+<text x="648.0" y="453.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">exFAT</text>
+<path fill="#898781" d="M706.0,442.0H765.0Q769.0,442.0 769.0,446.0V452.0Q769.0,456.0 765.0,456.0H706.0Z"/>
+<text x="775.0" y="453.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">121</text>
+<text x="648.0" y="475.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">ext4</text>
+<path fill="#898781" d="M706.0,464.0H768.8Q772.8,464.0 772.8,468.0V474.0Q772.8,478.0 768.8,478.0H706.0Z"/>
+<text x="778.8" y="475.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">129</text>
+<text x="648.0" y="497.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">Btrfs</text>
+<path fill="#898781" d="M706.0,486.0H868.0Q872.0,486.0 872.0,490.0V496.0Q872.0,500.0 868.0,500.0H706.0Z"/>
+<text x="878.0" y="497.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">320</text>
+<line x1="706.0" x2="706.0" y1="416.0" y2="504.0" stroke="#c3c2b7"/>
+<text x="24.0" y="534.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">CarryFS format revision 1, code at commit 7dfae3d. Data: benchmarks/linux.tsv.</text>
+</svg>

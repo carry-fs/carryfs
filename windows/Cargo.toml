@@ -1,0 +1,40 @@
+[package]
+name = "carryfs-windows"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0 OR GPL-2.0-only"
+description = "CarryFS WinFsp adapter and automount service for Windows 10"
+publish = false
+
+[features]
+# Test builds only: marker files named by CARRYFS_FAIL_WRITES and
+# CARRYFS_FAIL_FLUSHES make device writes and flushes fail.
+fault-injection = []
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]
+carryfs-core = { path = ".." }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

@@ -1,0 +1,20 @@
+{
+  "charts": [
+    {
+      "name": "linux-images",
+      "system": "Linux, FUSE",
+      "subtitle": "1 GiB images on the same disk. Medians of three fresh-format rounds.",
+      "note": "Run DATE at commit COMMIT.",
+      "results": "build/full-images/results.tsv",
+      "columns": {"CarryFS": "carryfs", "exFAT": "exfat"}
+    }
+  ],
+  "comparison": {
+    "name": "vs-exfat",
+    "against": "exFAT",
+    "charts": ["linux-images"],
+    "title": "CarryFS against exFAT",
+    "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of three fresh-format rounds.",
+    "note": "Run DATE at commit COMMIT."
+  }
+}

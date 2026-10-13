@@ -1,0 +1,30 @@
+{
+  "rounds": 3,
+  "mount_mode": "root",
+  "native_ro": false,
+  "disks": [
+    {
+      "name": "test-disk",
+      "filesystems": [
+        {
+          "fs": "carryfs",
+          "device": "\\\\.\\Harddisk4Partition2",
+          "partition_uuid": "11111111-1111-1111-1111-111111111111",
+          "mount": "R:\\"
+        },
+        {
+          "fs": "exfat",
+          "device": "\\\\.\\Harddisk4Partition3",
+          "partition_uuid": "22222222-2222-2222-2222-222222222222",
+          "mount": "S:\\"
+        },
+        {
+          "fs": "ntfs",
+          "device": "\\\\.\\Harddisk4Partition4",
+          "partition_uuid": "33333333-3333-3333-3333-333333333333",
+          "mount": "T:\\"
+        }
+      ]
+    }
+  ]
+}

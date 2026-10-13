@@ -1,0 +1,43 @@
+[package]
+name = "carryfs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0 OR GPL-2.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+carryfs-core = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "parsers"
+path = "fuzz_targets/parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commits"
+path = "fuzz_targets/commits.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+
+[[bin]]
+name = "files"
+path = "fuzz_targets/files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "storage"
+path = "fuzz_targets/storage.rs"
+test = false
+doc = false
+bench = false

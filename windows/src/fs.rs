@@ -2513,6 +2513,10 @@ mod tests {
         assert_eq!(fs.take_stale(), [w("\\New")]);
         fs.close(created);
         fs.flush(None).unwrap();
+        // The cleanup began the hold. A slow host can spend more than
+        // `max_age` in the flush, so the hold is restarted, not timed.
+        let closed = fs.state.lock().unwrap().settling.replace(Instant::now());
+        assert!(closed.is_some());
         assert_eq!(fs.release_for_removal(|| true), Removal::Unsynced);
 
         // Reading it names nothing; neither does deleting it.

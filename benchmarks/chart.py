@@ -132,7 +132,7 @@ def panels(chart, values, t):
 def comparison(spec, facets, t):
     """CarryFS speed relative to one filesystem per workload, one facet per chart, log scale."""
     against = spec["against"]
-    label_w, gap, pitch, lo, hi = 220, 20, 28, -4.0, 5.2
+    label_w, gap, pitch, lo, hi = 220, 20, 28, -4.0, 5.6
     fw = (W - 2 * PAD - label_w - (len(facets) - 1) * gap) / len(facets)
     scale = fw / (hi - lo)
     top, bottom = 122, 122 + len(ROWS) * pitch
@@ -157,7 +157,7 @@ def comparison(spec, facets, t):
             ratio = carry / other if row[2] else other / carry
             log = math.log2(ratio)
             # Past these the value at the bar's tip leaves its facet; widen lo and hi first.
-            if not -2.6 < log < 4.0:
+            if not -2.6 < log < 4.4:
                 raise ValueError(f"{name}, {row[0]}: {ratio:.2f}x does not fit the axis")
             tie = abs(log) < math.log2(1.02)
             fill = t["muted"] if tie else t["blue"] if log > 0 else t["red"]

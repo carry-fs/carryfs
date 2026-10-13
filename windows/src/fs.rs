@@ -2536,6 +2536,8 @@ mod tests {
         assert!(fs.take_stale().is_empty());
 
         fs.flush(None).unwrap();
+        // A slow host can spend more than `max_age` in the steps above.
+        fs.state.lock().unwrap().settling = Some(Instant::now());
         assert_eq!(fs.release_for_removal(|| true), Removal::Unsynced);
         let earlier = Instant::now().checked_sub(PACING.max_age).unwrap();
         fs.state.lock().unwrap().settling = Some(earlier);

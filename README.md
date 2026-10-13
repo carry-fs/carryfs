@@ -91,6 +91,36 @@ permissions, ACLs, extended attributes, resource forks, or alternate data
 streams. Copying a directory tree is not a complete system backup. You can
 store a metadata-preserving backup archive as an ordinary file.
 
+## Install
+
+There's no packaged release yet. Until there is, you install CarryFS from
+source.
+
+1. Install the framework for your platform:
+   [FUSE 3](https://github.com/libfuse/libfuse) on Linux,
+   [macFUSE](https://macfuse.github.io/) on macOS, or
+   [WinFsp](https://winfsp.dev/rel/) on Windows.
+2. Install [Rust](https://rustup.rs/).
+3. Clone the repository and run the install script with `--local`.
+
+```sh
+git clone https://github.com/carry-fs/carryfs.git
+cd carryfs
+./install.sh --local
+```
+
+On Windows, run this from PowerShell instead of `install.sh`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Local
+```
+
+To remove CarryFS, run the same script with `--uninstall`, or `-Uninstall` on
+Windows.
+
+[INSTALLATION.md](INSTALLATION.md) has the requirements for each platform and
+the steps to install by hand.
+
 ## Performance
 
 FUSE, macFUSE, and WinFsp add a layer between applications and the filesystem

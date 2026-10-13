@@ -1,6 +1,17 @@
-# CarryFS
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img alt="CarryFS" src="assets/logo-light.svg" width="400">
+  </picture>
+</h1>
 
-**Your files, across macOS, Linux, and Windows.**
+<p align="center"><b>Your files, across macOS, Linux, and Windows.</b></p>
+
+<p align="center">
+  <a href="https://github.com/carry-fs/carryfs/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/carry-fs/carryfs/ci.yml?branch=master&label=ci&style=flat-square"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0 OR GPL-2.0-only" src="https://img.shields.io/badge/license-Apache--2.0%20OR%20GPL--2.0--only-blue?style=flat-square"></a>
+  <img alt="Platforms: macOS, Linux, Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square">
+</p>
 
 CarryFS is an open-source filesystem for sharing data across operating systems,
 with copy-on-write storage and built-in checksums.

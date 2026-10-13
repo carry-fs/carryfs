@@ -19,6 +19,8 @@ benchmarks/
   workloads/                file operations, usable on any mounted filesystem
   chart.py                  SVG charts of saved results
   example*.json             host profiles and a chart config to copy and edit
+  *.tsv                     published results of full runs
+  charts.json, charts/      the charts of those results and their config
 ```
 
 The Python code uses only the standard library.
@@ -401,6 +403,35 @@ the copy for your own runs:
 
 A chart needs a full run. A run of one metric lacks the other workloads, and
 `chart.py` stops with the samples it could not find.
+
+## Published results
+
+`linux.tsv`, `windows.tsv` and `macos.tsv` hold full runs on one OCZ Vertex 4
+SSD connected over USB, with three rounds for each filesystem. `charts.json`
+draws them into `charts/`. The charts show nine of the 92 metrics each run
+records, and the `.tsv` files hold the rest:
+
+```sh
+python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
+```
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/linux-dark.svg">
+  <img alt="CarryFS, exFAT, ext4 and Btrfs on Linux" src="charts/linux-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/windows-dark.svg">
+  <img alt="CarryFS, exFAT and NTFS on Windows" src="charts/windows-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/macos-dark.svg">
+  <img alt="CarryFS, exFAT and APFS on macOS" src="charts/macos-light.svg">
+</picture>
+
+[charts/vs-exfat-light.svg](charts/vs-exfat-light.svg) compares CarryFS with
+exFAT on the three hosts in one chart.
 
 ## Workloads on a mounted filesystem
 

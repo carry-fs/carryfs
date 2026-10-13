@@ -90,6 +90,16 @@ surprised me. On my hardware, CarryFS is usable for everyday file storage, and
 some operations in my benchmarks complete faster than on exFAT, a common choice
 for sharing drives across macOS, Linux, and Windows.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="benchmarks/charts/vs-exfat-dark.svg">
+  <img alt="CarryFS speed relative to exFAT on Linux, Windows and macOS" src="benchmarks/charts/vs-exfat-light.svg">
+</picture>
+
+The chart shows medians of three rounds on an OCZ Vertex 4 SSD connected over
+USB. The [benchmark notes](benchmarks/README.md#published-results) have a chart
+for each host with ext4, Btrfs, NTFS, and APFS, the method, and the raw
+results.
+
 There's always the "you measured it wrong" joke with benchmarks. These results
 come from my hardware and workloads. I haven't tested on high-end NVMe drives
 yet. Try CarryFS on your own drives and share your results.

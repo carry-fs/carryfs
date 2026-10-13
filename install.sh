@@ -183,16 +183,27 @@ verify_package() {
 build_local() {
     [ -f "$checkout/Cargo.toml" ] && [ -f "$checkout/packaging/install-unix.sh" ] ||
         die '--local needs a CarryFS checkout: run ./install.sh --local in the cloned repository.'
-    [ "$platform" = linux-x86_64 ] || die '--local supports Linux only. On macOS, build the bundle with fuse/packaging/macos-bundle.sh.'
     selected=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$checkout/Cargo.toml" | head -n 1)
     valid_version "$selected" || die 'Cannot read the version from Cargo.toml.'
     mkdir "$work/payload"
     # Chained with &&: a failed build must not stage binaries left by an older one.
     (cd "$checkout" &&
-        cargo build --release --locked -p carryfs-core -p carryfs-fuse &&
         target=${CARGO_TARGET_DIR:-target}/release &&
-        cp "$target/carryfs" "$target/carryfs-fuse" fuse/packaging/61-carryfs.rules \
-            fuse/packaging/mount_options.conf "$work/payload/" &&
+        if [ "$platform" = linux-x86_64 ]; then
+            cargo build --release --locked -p carryfs-core -p carryfs-fuse &&
+            cp "$target/carryfs" "$target/carryfs-fuse" fuse/packaging/61-carryfs.rules \
+                fuse/packaging/mount_options.conf "$work/payload/"
+        else
+            # The bundle layout of fuse/packaging/macos-bundle.sh.
+            resources=$work/payload/carryfs.fs/Contents/Resources &&
+            cargo build --release --locked -p carryfs-core -p carryfs-fuse -p carryfs-macos &&
+            mkdir -p "$resources" &&
+            cp "$target/carryfs" "$work/payload/" &&
+            cp fuse/packaging/carryfs.fs/Contents/Info.plist "$work/payload/carryfs.fs/Contents/" &&
+            cp "$target/carryfs-util" "$resources/carryfs.util" &&
+            cp "$target/newfs_carryfs" "$target/fsck_carryfs" "$resources/" &&
+            cp "$target/carryfs-fuse" "$resources/mount_carryfs"
+        fi &&
         cp packaging/install-unix.sh "$work/payload/install-system.sh") ||
         die 'Local build failed; nothing was installed.'
     printf '%s\n' "$selected" > "$work/payload/VERSION"

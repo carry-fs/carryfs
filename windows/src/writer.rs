@@ -295,7 +295,9 @@ mod tests {
         let drainer = Arc::clone(&writer);
         let (done, finished) = mpsc::channel();
         std::thread::spawn(move || done.send(drainer.drain().is_err()).unwrap());
-        assert_eq!(finished.recv_timeout(Duration::from_secs(2)), Ok(true));
+        // The bound only turns a hang into a failure, so it is generous: the
+        // hosted Windows runner has taken more than two seconds to get here.
+        assert_eq!(finished.recv_timeout(Duration::from_secs(60)), Ok(true));
         assert!(writer.send(0, vec![0; 4096]).is_err());
     }
 

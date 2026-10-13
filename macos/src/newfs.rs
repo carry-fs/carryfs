@@ -19,7 +19,10 @@ fn format(path: &str, label: Option<carryfs_core::VolumeLabel>) -> carryfs_core:
     // FORMAT.md: the first and last 512 blocks must be zero before format.
     const BAND_BYTES: u64 = 512 * 4096;
     let mut device = raw::RawDevice::open(path, MountMode::ReadWrite)?;
-    let byte_len = device.geometry()?.byte_len;
+    let geometry = device.geometry()?;
+    // Before the erase: a device that cannot be formatted keeps what it holds.
+    geometry.validate()?;
+    let byte_len = geometry.byte_len;
     let tail = byte_len
         .checked_sub(BAND_BYTES)
         .ok_or(carryfs_core::Error::InvalidGeometry)?;

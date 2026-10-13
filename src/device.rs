@@ -60,7 +60,9 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    pub(crate) fn validate(self) -> Result<()> {
+    /// Fails unless CarryFS supports a device of this size and sector sizes.
+    /// Format helpers check it before they erase anything.
+    pub fn validate(self) -> Result<()> {
         if !(MIN_IMAGE_BYTES..=MAX_IMAGE_BYTES).contains(&self.byte_len)
             || !self.byte_len.is_multiple_of(BLOCK_BYTES)
         {

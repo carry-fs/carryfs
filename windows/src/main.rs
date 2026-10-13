@@ -72,7 +72,10 @@ fn mkfs(volume_path: &str, force: bool) -> Result<()> {
         return Err(format!("{volume_path} holds {name}; refusing to format it"));
     }
     if force {
-        let len = disk.geometry().map_err(|e| e.to_string())?.byte_len;
+        let geometry = disk.geometry().map_err(|e| e.to_string())?;
+        // Before the erase: a volume that cannot be formatted keeps what it holds.
+        geometry.validate().map_err(|e| format!("format: {e}"))?;
+        let len = geometry.byte_len;
         let zero = vec![0; BAND_BYTES as usize];
         for offset in [0, len.saturating_sub(BAND_BYTES)] {
             disk.write_all_at(offset, &zero)

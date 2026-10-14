@@ -1,5 +1,5 @@
-//! CarryFS FUSE adapter. On Ubuntu: a FUSE daemon, udisks mount helper, and
-//! udev probe. On macOS: a macFUSE daemon and its mount(8) helper.
+//! CarryFS FUSE adapter. On Ubuntu: a FUSE daemon, udisks mount helper, udev
+//! probe, and mkfs(8) helper. On macOS: a macFUSE daemon and its mount(8) helper.
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod device;
@@ -7,6 +7,8 @@ mod device;
 mod eject_macos;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod fs;
+#[cfg(target_os = "linux")]
+mod mkfs;
 #[cfg(target_os = "linux")]
 mod mount;
 #[cfg(target_os = "macos")]
@@ -28,11 +30,20 @@ fn main() -> ExitCode {
     let helper = args
         .first()
         .is_some_and(|argv0| options::is_helper_name(argv0));
+    let mkfs_helper = args
+        .first()
+        .is_some_and(|argv0| Path::new(argv0).file_name() == Some("mkfs.carryfs".as_ref()));
     let result = if helper {
         mount::helper(&args[1..])
+    } else if mkfs_helper {
+        match &args[1..] {
+            [device] => mkfs::mkfs(Path::new(device)),
+            _ => Err("usage: mkfs.carryfs DEVICE".into()),
+        }
     } else {
         match &args[1..] {
             [command, device] if command == "probe" => mount::probe(Path::new(device)),
+            [command, device] if command == "mkfs" => mkfs::mkfs(Path::new(device)),
             [command, device, directory, options] if command == "serve" => options
                 .to_str()
                 .ok_or_else(|| "mount options must be UTF-8".into())
@@ -40,7 +51,7 @@ fn main() -> ExitCode {
                     mount::serve(Path::new(device), Path::new(directory), options)
                 }),
             [command, rest @ ..] if command == "mount" => mount::helper(rest),
-            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
+            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mkfs DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
         }
     };
     match result {

@@ -8,7 +8,7 @@ payload=$1 platform=$2 expected=$3
 case $platform in
     linux-x86_64)
         marker=/usr/libexec/carryfs/VERSION
-        paths='/usr/local/bin/carryfs /usr/libexec/carryfs /usr/sbin/mount.carryfs /etc/udev/rules.d/61-carryfs.rules /etc/udisks2/mount_options.conf'
+        paths='/usr/local/bin/carryfs /usr/libexec/carryfs /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs /etc/udev/rules.d/61-carryfs.rules /etc/udisks2/mount_options.conf'
         ;;
     macos-arm64)
         marker=/Library/Filesystems/carryfs.fs/Contents/VERSION
@@ -73,14 +73,18 @@ mkdir -p /usr/local/bin
 install -m 755 "$payload/carryfs" "$backup/carryfs"
 case $platform in
     linux-x86_64)
-        if [ -e /usr/sbin/mount.carryfs ] || [ -L /usr/sbin/mount.carryfs ]; then
-            [ -L /usr/sbin/mount.carryfs ] && [ "$(readlink /usr/sbin/mount.carryfs)" = /usr/libexec/carryfs/carryfs-fuse ] || die '/usr/sbin/mount.carryfs already belongs to another installation.'
-        fi
+        for link in /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs; do
+            if [ -e "$link" ] || [ -L "$link" ]; then
+                [ -L "$link" ] && [ "$(readlink "$link")" = /usr/libexec/carryfs/carryfs-fuse ] || die "$link already belongs to another installation."
+            fi
+        done
         mkdir -p /usr/libexec/carryfs /etc/udev/rules.d /etc/udisks2
         # Rename each staged executable so readers never see a partial binary.
         install -m 755 "$payload/carryfs-fuse" /usr/libexec/carryfs/carryfs-fuse.new
         mv -f /usr/libexec/carryfs/carryfs-fuse.new /usr/libexec/carryfs/carryfs-fuse
-        if [ ! -L /usr/sbin/mount.carryfs ]; then ln -s /usr/libexec/carryfs/carryfs-fuse /usr/sbin/mount.carryfs; fi
+        for link in /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs; do
+            if [ ! -L "$link" ]; then ln -s /usr/libexec/carryfs/carryfs-fuse "$link"; fi
+        done
         install -m 644 "$payload/61-carryfs.rules" /etc/udev/rules.d/61-carryfs.rules
         if [ -f /etc/udisks2/mount_options.conf ]; then
             awk '

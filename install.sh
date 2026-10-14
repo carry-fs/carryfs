@@ -225,9 +225,11 @@ uninstall_linux() {
     fi
     $sudo rm -f /usr/local/bin/carryfs /etc/udev/rules.d/61-carryfs.rules
     $sudo rm -rf /usr/libexec/carryfs
-    if [ -L /usr/sbin/mount.carryfs ] && [ "$(readlink /usr/sbin/mount.carryfs)" = /usr/libexec/carryfs/carryfs-fuse ]; then
-        $sudo rm -f /usr/sbin/mount.carryfs
-    fi
+    for link in /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs; do
+        if [ -L "$link" ] && [ "$(readlink "$link")" = /usr/libexec/carryfs/carryfs-fuse ]; then
+            $sudo rm -f "$link"
+        fi
+    done
     if [ -f "$options" ]; then
         if awk '!/^[[:space:]]*(#.*)?$/ && !/^\[defaults\][[:space:]]*$/ { set=1 } END { exit !set }' "$work/mount_options.conf"; then
             $sudo install -m 644 "$work/mount_options.conf" "$options"
@@ -268,7 +270,7 @@ main() {
                 kept='macFUSE and disk contents' ;;
             Linux)
                 adapter=/usr/libexec/carryfs
-                question="Remove CarryFS from /usr/local/bin/carryfs and $adapter, with its mount helper link, udev rule, and UDisks options?"
+                question="Remove CarryFS from /usr/local/bin/carryfs and $adapter, with its mount and mkfs helper links, udev rule, and UDisks options?"
                 kept='Disk contents' ;;
             *) die '--uninstall is supported on Linux and macOS only.' ;;
         esac

@@ -1,3 +1,7 @@
 # Identify CarryFS volumes for udisks. blkid rules (60-*) run first and leave
 # ID_FS_TYPE empty for CarryFS; udisks rules (80-*) read the result.
 SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_TYPE}=="", IMPORT{program}="/usr/libexec/carryfs/carryfs-fuse probe $devnode"
+# 60-persistent-storage links filesystems by UUID and label before the probe
+# above runs.
+SUBSYSTEM=="block", ACTION!="remove", ENV{ID_FS_TYPE}=="carryfs", ENV{ID_FS_UUID_ENC}=="?*", SYMLINK+="disk/by-uuid/$env{ID_FS_UUID_ENC}"
+SUBSYSTEM=="block", ACTION!="remove", ENV{ID_FS_TYPE}=="carryfs", ENV{ID_FS_LABEL_ENC}=="?*", SYMLINK+="disk/by-label/$env{ID_FS_LABEL_ENC}"

@@ -306,8 +306,63 @@ fn properties<D: BlockDevice>(mut disk: D) -> String {
     if let Ok(info) = Volume::open(disk).and_then(|volume| volume.info()) {
         let uuid = format_uuid(&info.uuid);
         text.push_str(&format!("ID_FS_UUID={uuid}\nID_FS_UUID_ENC={uuid}\n"));
+        // udev strips one pair of matching quotes and nothing else, so a
+        // label that starts with a quote still imports intact.
+        if let Some(label) = &info.label {
+            let label = label.as_str();
+            text.push_str(&format!(
+                "ID_FS_LABEL=\"{}\"\nID_FS_LABEL_ENC=\"{}\"\n",
+                safe_label(label),
+                encoded_label(label)
+            ));
+        }
     }
     text
+}
+
+/// `ID_FS_LABEL` as udev's blkid builtin writes it with libblkid's
+/// `blkid_safe_string`: whitespace trimmed, each run of it one `_`.
+fn safe_label(label: &str) -> String {
+    let mut safe = String::new();
+    for c in label
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join("_")
+        .chars()
+    {
+        if blkid_accepts(c) {
+            safe.push(c);
+        } else {
+            safe.extend(std::iter::repeat_n('_', c.len_utf8()));
+        }
+    }
+    safe
+}
+
+/// `ID_FS_LABEL_ENC` as libblkid's `blkid_encode_string` writes it, which
+/// names the `/dev/disk/by-label` link: other bytes become `\xNN`.
+fn encoded_label(label: &str) -> String {
+    let mut encoded = String::new();
+    for c in label.chars() {
+        if c.is_ascii_alphanumeric()
+            || "#+-.:=@_".contains(c)
+            || (!c.is_ascii() && blkid_accepts(c))
+        {
+            encoded.push(c);
+        } else {
+            for byte in c.to_string().bytes() {
+                encoded.push_str(&format!("\\x{byte:02x}"));
+            }
+        }
+    }
+    encoded
+}
+
+/// libblkid treats the noncharacters U+FDD0 to U+FDEF and U+xFFFF as
+/// invalid UTF-8.
+fn blkid_accepts(c: char) -> bool {
+    let code = u32::from(c);
+    !(0xfdd0..=0xfdef).contains(&code) && code & 0xffff != 0xffff
 }
 
 fn format_uuid(bytes: &[u8; 16]) -> String {
@@ -357,6 +412,47 @@ mod tests {
             "ID_FS_USAGE=filesystem\nID_FS_TYPE=carryfs\n"
         );
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn probe_reports_the_label() {
+        use carryfs_core::{ImageDevice, VolumeLabel};
+
+        let path = env::temp_dir().join(format!("carryfs-probe-label-{}.img", std::process::id()));
+        let open = |mode| ImageDevice::open(&path, mode).unwrap();
+        ImageDevice::create_new(&path, 256 << 20).unwrap();
+        let label = VolumeLabel::parse("Test Drive").unwrap();
+        drop(Volume::format_with_label(open(MountMode::ReadWrite), label).unwrap());
+        let text = properties(open(MountMode::ReadOnly));
+        assert!(
+            text.ends_with("ID_FS_LABEL=\"Test_Drive\"\nID_FS_LABEL_ENC=\"Test\\x20Drive\"\n"),
+            "{text}"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Expected values come from libblkid 2.42.3's `blkid_safe_string` and
+    /// `blkid_encode_string`.
+    #[test]
+    fn labels_match_libblkid() {
+        for (label, safe, encoded) in [
+            ("Test Drive", "Test_Drive", r"Test\x20Drive"),
+            (
+                "  two  spaces  ",
+                "two_spaces",
+                r"\x20\x20two\x20\x20spaces\x20\x20",
+            ),
+            (r"a\b", r"a\b", r"a\x5cb"),
+            ("it's \"q\"", "it's_\"q\"", r"it\x27s\x20\x22q\x22"),
+            ("Фото 2024", "Фото_2024", r"Фото\x202024"),
+            ("ok#+-.:=@_", "ok#+-.:=@_", "ok#+-.:=@_"),
+            ("\u{fdd0}x", "___x", r"\xef\xb7\x90x"),
+            ("\u{10ffff}", "____", r"\xf4\x8f\xbf\xbf"),
+            ("\u{fffe}", "\u{fffe}", "\u{fffe}"),
+        ] {
+            assert_eq!(safe_label(label), safe, "{label:?}");
+            assert_eq!(encoded_label(label), encoded, "{label:?}");
+        }
     }
 
     #[test]

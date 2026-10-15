@@ -63,26 +63,16 @@ type Result<T> = std::result::Result<T, String>;
 /// zeroes them first, erasing whatever the partition held.
 #[cfg(windows)]
 fn mkfs(volume_path: &str, force: bool) -> Result<()> {
-    use carryfs_core::{BlockDevice, Error, MountMode, Volume};
+    use carryfs_core::{Error, MountMode, Volume};
 
-    const BAND_BYTES: u64 = 512 * 4096;
     let mut disk = device::Disk::open(volume_path.as_ref(), MountMode::ReadWrite, true)
         .map_err(|e| format!("{volume_path}: {e}"))?;
     if let Some(name) = disk.file_system() {
         return Err(format!("{volume_path} holds {name}; refusing to format it"));
     }
     if force {
-        let geometry = disk.geometry().map_err(|e| e.to_string())?;
-        // Before the erase: a volume that cannot be formatted keeps what it holds.
-        geometry.validate().map_err(|e| format!("format: {e}"))?;
-        let len = geometry.byte_len;
-        let zero = vec![0; BAND_BYTES as usize];
-        for offset in [0, len.saturating_sub(BAND_BYTES)] {
-            disk.write_all_at(offset, &zero)
-                .map_err(|e| format!("erase reserved band: {e}"))?;
-        }
-        disk.flush_durable()
-            .map_err(|e| format!("erase reserved band: {e}"))?;
+        carryfs_core::erase_reserved_bands(&mut disk)
+            .map_err(|e| format!("erase reserved bands: {e}"))?;
     }
     let mut volume = Volume::format(disk).map_err(|e| match e {
         Error::InvalidInput(reason) if reason.starts_with("existing or unfinished format") => {

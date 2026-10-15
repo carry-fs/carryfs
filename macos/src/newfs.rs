@@ -14,26 +14,15 @@ mod raw;
 
 #[cfg(target_os = "macos")]
 fn format(path: &str, label: Option<carryfs_core::VolumeLabel>) -> carryfs_core::Result<u64> {
-    use carryfs_core::{BlockDevice, MountMode, Volume};
+    use carryfs_core::{MountMode, Volume};
 
-    // FORMAT.md: the first and last 512 blocks must be zero before format.
-    const BAND_BYTES: u64 = 512 * 4096;
     let mut device = raw::RawDevice::open(path, MountMode::ReadWrite)?;
-    let geometry = device.geometry()?;
-    // Before the erase: a device that cannot be formatted keeps what it holds.
-    geometry.validate()?;
-    let byte_len = geometry.byte_len;
-    let tail = byte_len
-        .checked_sub(BAND_BYTES)
-        .ok_or(carryfs_core::Error::InvalidGeometry)?;
-    let zeros = vec![0; BAND_BYTES as usize];
-    device.write_all_at(0, &zeros)?;
-    device.write_all_at(tail, &zeros)?;
-    device.flush_durable()?;
+    carryfs_core::erase_reserved_bands(&mut device)?;
     let mut volume = match label {
         Some(label) => Volume::format_with_label(device, label)?,
         None => Volume::format(device)?,
     };
+    let byte_len = volume.info()?.byte_len;
     volume.eject()?;
     Ok(byte_len)
 }

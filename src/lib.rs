@@ -33,7 +33,8 @@ pub use name::Name;
 pub use volume::{
     Access, Attributes, DirectoryCursor, DirectoryEntry, DirectoryPage, ExtractionSink,
     ExtractionSummary, Finding, Handle, LeavesRead, ObjectId, ObjectKind, ROOT, ReadAhead,
-    RemoveKind, Replace, Space, Timestamp, Volume, VolumeInfo, VolumeLabel, has_root_magic,
+    RemoveKind, Replace, Space, Timestamp, Volume, VolumeInfo, VolumeLabel, erase_reserved_bands,
+    has_root_magic,
 };
 
 #[cfg(feature = "fuzzing")]

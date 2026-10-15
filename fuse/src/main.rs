@@ -36,14 +36,11 @@ fn main() -> ExitCode {
     let result = if helper {
         mount::helper(&args[1..])
     } else if mkfs_helper {
-        match &args[1..] {
-            [device] => mkfs::mkfs(Path::new(device)),
-            _ => Err("usage: mkfs.carryfs DEVICE".into()),
-        }
+        mkfs::main(&args[1..])
     } else {
         match &args[1..] {
             [command, device] if command == "probe" => mount::probe(Path::new(device)),
-            [command, device] if command == "mkfs" => mkfs::mkfs(Path::new(device)),
+            [command, rest @ ..] if command == "mkfs" => mkfs::main(rest),
             [command, device, directory, options] if command == "serve" => options
                 .to_str()
                 .ok_or_else(|| "mount options must be UTF-8".into())
@@ -51,7 +48,7 @@ fn main() -> ExitCode {
                     mount::serve(Path::new(device), Path::new(directory), options)
                 }),
             [command, rest @ ..] if command == "mount" => mount::helper(rest),
-            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mkfs DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
+            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mkfs [-L LABEL | --wipe] DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
         }
     };
     match result {

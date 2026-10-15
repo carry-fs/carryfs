@@ -3355,6 +3355,26 @@ fn root_magic_identifies_formatted_and_damaged_volumes_only() {
 }
 
 #[test]
+fn erasing_reserved_bands_allows_formatting_over_a_volume() {
+    let path = std::env::temp_dir().join(format!("carryfs-erase-{}.img", std::process::id()));
+    let open = |mode| crate::ImageDevice::open(&path, mode).unwrap();
+    crate::ImageDevice::create_new(&path, 256 << 20).unwrap();
+    let mut volume = Volume::format(open(MountMode::ReadWrite)).unwrap();
+    let file = volume.create_file(ROOT, name("old")).unwrap();
+    volume.close_handle(file).unwrap();
+    volume.eject().unwrap();
+    assert!(Volume::format(open(MountMode::ReadWrite)).is_err());
+
+    let mut device = open(MountMode::ReadWrite);
+    crate::erase_reserved_bands(&mut device).unwrap();
+    Volume::format(device).unwrap().eject().unwrap();
+    let mut volume = Volume::open(open(MountMode::ReadOnly)).unwrap();
+    volume.check().unwrap();
+    assert!(volume.lookup(ROOT, &name("old")).is_err());
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
 fn unchanged_truncate_does_not_publish() {
     let mut volume = opened();
     let file = volume.create_file(ROOT, name("file")).unwrap();

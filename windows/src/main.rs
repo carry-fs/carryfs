@@ -117,10 +117,25 @@ fn serve(volume: &str, letter: Option<&str>, read_only: bool) -> Result<()> {
     eject(mount)
 }
 
+/// Whether `volume` carries CarryFS roots and no file system Windows mounts.
+/// A Windows quick format leaves root B behind, and mounting those roots
+/// would take the partition from under the new file system and overwrite it.
+/// The check runs on a shared handle, before the mount's exclusive open.
 #[cfg(windows)]
 fn is_carryfs(volume: &str) -> bool {
-    device::Disk::open(volume.as_ref(), carryfs_core::MountMode::ReadOnly, false)
-        .is_ok_and(|mut disk| carryfs_core::has_root_magic(&mut disk))
+    let Ok(mut disk) =
+        device::Disk::open(volume.as_ref(), carryfs_core::MountMode::ReadOnly, false)
+    else {
+        return false;
+    };
+    if !carryfs_core::has_root_magic(&mut disk) {
+        return false;
+    }
+    if let Some(name) = disk.file_system() {
+        eprintln!("carryfs: {volume}: {name} is mounted over old CarryFS roots; not mounting");
+        return false;
+    }
+    true
 }
 
 /// Held from choosing a drive letter until the mount owns it.

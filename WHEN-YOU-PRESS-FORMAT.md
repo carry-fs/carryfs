@@ -2,7 +2,7 @@
 
 Every operating system has a Format button. You pick a name and a filesystem, you click, and a few seconds later the drive is empty. Nobody thinks about those few seconds. We had to, because CarryFS kept surviving them.
 
-Here is what we found on Linux and on macOS. Format doesn't erase a disk. It erases the parts of a disk that the operating system expects to matter. A brand-new filesystem is a stranger, and each system treats strangers badly in its own way. Linux ignores them. macOS bulldozes them, but only after shaking their hand first.
+Here is what we found on Linux, macOS, and Windows. Format doesn't erase a disk. It erases the parts of a disk that the operating system expects to matter. A brand-new filesystem is a stranger, and each system treats strangers badly in its own way. Linux ignores them. macOS bulldozes them, but only after shaking their hand first. Windows writes its new filesystem right over them, and then our own service let the stranger back in.
 
 ## Where CarryFS keeps the parts that matter
 
@@ -204,12 +204,104 @@ The failed erase leaves the revived partition in the table. The second erase wip
 
 We haven't tested whether a hidden exFAT or APFS volume gets revived the same way. It probably does, since step 4 doesn't care which filesystem it finds. Those filesystems just rarely end up hidden, because every tool on Linux recognises them and wipes them.
 
+## Windows writes over the start and leaves the end
+
+On Windows, nothing system-wide knows about CarryFS. Our service does the recognising. It checks every partition of a disk when the disk arrives, and every disk when the service starts. If `has_root_magic` finds `CFSXROOT`, the service opens the partition with no sharing and mounts it through WinFsp. It doesn't watch Disk Management or diskpart, so the macOS race can't happen in the middle of an erase. The next plug-in is where it can happen.
+
+We tested on the same 62 GB Lexar stick, on Windows 10. Each run made a CarryFS partition, deleted it, created a partition of the same size in the same place, quick-formatted it, and copied a file onto it.
+
+### What a quick format overwrites
+
+Windows formatters write their own structures, mostly at the start of the partition. Unlike Apple's, they don't wipe the old filesystem's regions first. Here is what the old roots looked like afterwards:
+
+| New filesystem | Root A, 1 MiB in | Root B, end − 1028 KiB | `carryfs-windows probe` |
+|---|---|---|---|
+| exFAT | overwritten | `CFSXROOT` | `carryfs <uuid>`, opens cleanly |
+| NTFS | overwritten | `CFSXROOT` | `carryfs damaged: page checksum` |
+| FAT32 | overwritten | `CFSXROOT` | `carryfs damaged: page checksum` |
+
+FAT32 ran on a 32,000 MiB partition, because Windows won't format FAT32 above 32 GB.
+
+exFAT shows why root A goes first. On this partition, Windows put exFAT's FAT exactly at 1 MiB, where root A lives, and read back the FAT's first entries, `f8 ff ff ff`, where `CFSXROOT` used to be. The cluster heap starts at 3 MiB. Nothing was written near the end, so root B and whatever it points to stayed whole. `Volume::open` read the old volume from root B as if nothing had happened.
+
+NTFS and FAT32 overwrote something root B needs, so the full check fails. We didn't track down which page it was. That's luck, not design.
+
+### Our service mounted the leftover
+
+That's the dangerous part. `has_root_magic` only asks whether `CFSXROOT` is there, and the service didn't check whether Windows had already mounted a filesystem on the partition.
+
+The exclusive open looked like a safety net. If Windows has exFAT mounted, surely it won't let another program open the partition with no sharing? It does, as long as the volume is idle. On the first replug the service's open failed with a sharing violation, because Windows was still busy with the new volume. From a shell, the same open on the idle volume succeeded every time we tried. When the service started with the stick already plugged in, its scan found an idle volume too:
+
+```
+carryfs: \\.\Harddisk3Partition2: mounted F:
+```
+
+The stick now had two drive letters for one partition. D: was exFAT, and F: was the old CarryFS with the file we had left on it. While F: was mounted, every access to D: failed with `Access is denied`. After the eject, exFAT's file was gone, the volume label was garbage, and chkdsk reported a corrupt bitmap and upcase table. Root A at 1 MiB said `CFSXROOT` again, written right over exFAT's FAT.
+
+```mermaid
+sequenceDiagram
+	participant User
+	participant Windows
+	participant Service as CarryFS service
+	participant Disk
+	User->>Windows: quick format as exFAT
+	Windows->>Disk: boot region, FAT at 1 MiB
+	Note over Disk: root A gone, root B still CFSXROOT
+	Service->>Disk: CFSXROOT at root A or B? yes
+	Service->>Disk: open with no sharing (granted, volume idle)
+	Note over Windows: D: Access is denied
+	Service->>Disk: CarryFS writes its metadata, root A included
+	Note over Disk: exFAT's FAT overwritten
+```
+
+We ran the exFAT case a second time and wrote nothing to F:. The mount and the eject alone were enough, and exFAT was corrupted again. With NTFS and FAT32 the service also took the exclusive open, then `Volume::open` failed on the checksum, so nothing was mounted and both filesystems survived.
+
+### Repartitioning doesn't hide it either
+
+Root B sits a fixed distance before the end of its partition, so a new partition finds it whenever it **ends** where the old one ended. It doesn't have to start there.
+
+`diskpart clean` followed by `create partition primary` showed this. The old partition ran from 201 MiB to 1 MiB before the end of the disk. The new one ran from 1 MiB to the same end. Root B landed on the same byte, 61,863,882,752. The probe reported `neither current root is valid`, because the root doesn't fit the new partition's geometry. The service opened the live exFAT exclusively, the open failed, and nothing happened to the files. Only the root check stopped it.
+
+The same stick then showed how long a leftover can last. We formatted the whole disk as CarryFS, as `mkfs.carryfs /dev/sdX` does after `wipefs` on Linux, then repartitioned it like Disk Utility, with an EFI partition and exFAT from 201 MiB to the end. The whole-disk volume didn't come back. A partition doesn't line up with it. But the probe found a different CarryFS, one we had formatted two steps earlier at 201 MiB with the same size. It had survived `diskpart clean`, an exFAT format of a partition that spanned the disk, the whole-disk CarryFS format, another `clean`, and a new exFAT format. The service mounted it over the new exFAT and destroyed it.
+
+It survived the whole-disk format the same way it survives Disk Utility. That format zeroes the disk's last 2 MiB. The old partition ended 1 MiB before the end of the disk, so its root B was 2052 KiB from the end. It missed the wipe by 4 KiB, the same near miss as on macOS.
+
+### A new partition GUID doesn't catch everything
+
+Issue #9 suggests storing the partition's GPT GUID in the root. We checked what happens to that GUID on Windows:
+
+| Action | Partition GUID |
+|---|---|
+| Delete and recreate with PowerShell | new, every time |
+| `create partition primary` in diskpart | new, every time |
+| Format an existing partition in place | unchanged |
+
+The in-place format kept `657f9946…` before and after, and the service mounted the old CarryFS from under the new exFAT. That's the case most likely to happen. Windows gives a CarryFS partition its own drive letter as an unreadable `RAW` volume, and Explorer offers to format volumes it can't read. A GUID check would miss it.
+
+### The fix: ask Windows first
+
+Every damaging run had one thing in common: Windows had already mounted a real filesystem on the partition. So the service now asks before it looks for roots. `is_carryfs` calls `GetVolumeInformationByHandleW` on the shared read-only handle it already opens, before the mount's exclusive open. If Windows reports any filesystem other than `RAW`, the partition is skipped:
+
+```
+carryfs: \\.\Harddisk3Partition1: exFAT is mounted over old CarryFS roots; not mounting
+```
+
+A real CarryFS partition has no filesystem Windows recognises, so it reads as `RAW` and mounts as before. `mkfs` already ran the same check before formatting. It's also how Linux already behaves: `61-carryfs.rules` only runs our probe when libblkid found nothing.
+
+We repeated the in-place exFAT format with the fix, on both a replug and a service start. The service skipped the partition both times, the exFAT file was intact, and chkdsk was clean. A real CarryFS on the same stick still mounted on both.
+
+The fix doesn't erase the leftover. `probe` still says `carryfs`, and if the new filesystem is too damaged for Windows to mount, it reads as `RAW` and only the root check stands in the way. The GUID still helps with the repartitioning cases, so the two fixes cover different gaps.
+
 ## What we took away
 
 Linux erases by name. If libblkid doesn't recognise a signature, nothing on Linux will erase it. A new filesystem has to bring its own eraser until it gets onto the list.
 
 macOS erases by position. Fixed 2 MiB regions at each end catch almost anything, including filesystems that didn't exist when the code was written. But macOS checks for a filesystem before it wipes the new partition, so leftovers in exactly the right place get one chance to answer.
 
+Windows doesn't erase first. Its formatters write the new filesystem's structures, mostly at the start, and leave the end of the partition, where root B lives, as it was. That's enough to hide the old volume from Windows, but not from us. Recognising a filesystem has to include asking whether another one is already mounted there.
+
 CarryFS keeps copies at both ends of the partition so a crash at either end can't lose the volume. That same choice makes it hard to erase. Any tool that wipes one end leaves a complete volume at the other.
 
 All of the macOS measurements come from one 62 GB stick on macOS 15.6. The 4 KiB near miss depends on where the partition ends relative to the disk, so other disk sizes can behave differently.
+
+The Windows measurements come from the same stick on Windows 10 22H2 (build 19045). We simulated a replug with `pnputil /restart-device`, which sends the same disk-arrival notification as a real plug-in. The Linux-style whole-disk volume was made by `carryfs-windows mkfs` on the physical drive, not on Linux.

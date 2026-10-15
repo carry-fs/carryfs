@@ -90,14 +90,15 @@ steps 1 to 3, then run the commands for your platform from the checkout.
 
 ### Linux
 
-Build, then install the CLI, the FUSE adapter, the mount helper link, and the
-udev rule that identifies CarryFS volumes.
+Build, then install the CLI, the FUSE adapter, the mount and mkfs helper
+links, and the udev rule that identifies CarryFS volumes.
 
 ```sh
 cargo build --release --locked -p carryfs-core -p carryfs-fuse
 sudo install -D -m 755 target/release/carryfs /usr/local/bin/carryfs
 sudo install -D -m 755 target/release/carryfs-fuse /usr/libexec/carryfs/carryfs-fuse
 sudo ln -sf /usr/libexec/carryfs/carryfs-fuse /usr/sbin/mount.carryfs
+sudo ln -sf /usr/libexec/carryfs/carryfs-fuse /usr/sbin/mkfs.carryfs
 sudo install -D -m 644 fuse/packaging/61-carryfs.rules /etc/udev/rules.d/61-carryfs.rules
 ```
 

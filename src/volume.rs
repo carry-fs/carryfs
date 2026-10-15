@@ -330,6 +330,20 @@ pub fn has_root_magic<D: BlockDevice>(device: &mut D) -> bool {
     })
 }
 
+/// Zero the reserved bands at both ends of the device, which
+/// [`Volume::format`] requires. This destroys what the device held, so format
+/// tools call it only on an explicit request to erase. A device CarryFS cannot
+/// use is refused before anything is written.
+pub fn erase_reserved_bands<D: BlockDevice>(device: &mut D) -> Result<()> {
+    let geometry = device.geometry()?;
+    geometry.validate()?;
+    let zeros = vec![0; 512 * BLOCK_BYTES];
+    for block in [0, geometry.blocks() - 512] {
+        device.write_all_at(geometry.block_offset(block)?, &zeros)?;
+    }
+    device.flush_durable()
+}
+
 // Handles and cursors only need to be unique among instances in this process.
 fn next_mount() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);

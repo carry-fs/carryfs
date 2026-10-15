@@ -81,7 +81,8 @@ will install. It writes nothing to the system until you confirm. Then it asks
 for administrator permission, through `sudo` on Linux and macOS and a UAC
 prompt on Windows.
 
-Plug in a CarryFS disk to mount it.
+Plug in a CarryFS disk to mount it. To make one, see
+[FORMATTING.md](FORMATTING.md).
 
 ## Install by hand
 

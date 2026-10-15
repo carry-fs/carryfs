@@ -119,7 +119,8 @@ To remove CarryFS, run the same script with `--uninstall`, or `-Uninstall` on
 Windows.
 
 [INSTALLATION.md](INSTALLATION.md) has the requirements for each platform and
-the steps to install by hand.
+the steps to install by hand. [FORMATTING.md](FORMATTING.md) shows how to format
+a disk as CarryFS, and back.
 
 ## Performance
 

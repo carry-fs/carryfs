@@ -29,13 +29,14 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         ["mkfs", volume] => mkfs(volume, false),
         ["mkfs", volume, "force"] => mkfs(volume, true),
+        ["wipe", volume] => wipe(volume),
         ["probe", volume] => probe(volume),
         ["service"] => service::run(),
         ["serve", volume] => serve(volume, None, false),
         ["serve", volume, letter] => serve(volume, Some(letter), false),
         ["serve", volume, letter, "ro"] => serve(volume, Some(letter), true),
         _ => Err(
-            "usage: carryfs-windows mkfs VOLUME [force] | carryfs-windows probe VOLUME | carryfs-windows serve VOLUME [X: [ro]] | carryfs-windows service".into(),
+            "usage: carryfs-windows mkfs VOLUME [force] | carryfs-windows wipe VOLUME | carryfs-windows probe VOLUME | carryfs-windows serve VOLUME [X: [ro]] | carryfs-windows service".into(),
         ),
     };
     match result {
@@ -56,20 +57,42 @@ fn main() -> ExitCode {
 #[cfg(windows)]
 type Result<T> = std::result::Result<T, String>;
 
-/// Format a whole partition. Formatting owns the volume, so it fails while
-/// anything, the service included, has it open. It refuses a file system
-/// Windows mounts. The core formats only when the 2 MiB reserved bands at
-/// each end are zero (FORMAT.md), which a used partition's are not; `force`
-/// zeroes them first, erasing whatever the partition held.
+/// Open a partition to rewrite its reserved bands. That owns the volume, so
+/// it fails while anything, the service included, has it open. It refuses a
+/// file system Windows mounts: the bands hold that file system's start.
+#[cfg(windows)]
+fn open_owned(volume_path: &str, action: &str) -> Result<device::Disk> {
+    use carryfs_core::{Error, MountMode};
+    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+
+    let disk = device::Disk::open(volume_path.as_ref(), MountMode::ReadWrite, true).map_err(
+        |e| match e {
+            Error::Io { source, .. }
+                if source.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) =>
+            {
+                format!(
+                    "{volume_path} is in use; if the CarryFS service mounted it, stop the service first (sc stop CarryFS)"
+                )
+            }
+            e => format!("{volume_path}: {e}"),
+        },
+    )?;
+    if let Some(name) = disk.file_system() {
+        return Err(format!(
+            "{volume_path} holds {name}; refusing to {action} it"
+        ));
+    }
+    Ok(disk)
+}
+
+/// Format a whole partition. The core formats only when the 2 MiB reserved
+/// bands at each end are zero (FORMAT.md), which a used partition's are not;
+/// `force` zeroes them first, erasing whatever the partition held.
 #[cfg(windows)]
 fn mkfs(volume_path: &str, force: bool) -> Result<()> {
-    use carryfs_core::{Error, MountMode, Volume};
+    use carryfs_core::{Error, Volume};
 
-    let mut disk = device::Disk::open(volume_path.as_ref(), MountMode::ReadWrite, true)
-        .map_err(|e| format!("{volume_path}: {e}"))?;
-    if let Some(name) = disk.file_system() {
-        return Err(format!("{volume_path} holds {name}; refusing to format it"));
-    }
+    let mut disk = open_owned(volume_path, "format")?;
     if force {
         carryfs_core::erase_reserved_bands(&mut disk)
             .map_err(|e| format!("erase reserved bands: {e}"))?;
@@ -87,6 +110,24 @@ fn mkfs(volume_path: &str, force: bool) -> Result<()> {
         format_uuid(&info.uuid),
         info.byte_len
     );
+    Ok(())
+}
+
+/// Erase CarryFS so any tool can format the partition, as `mkfs.carryfs
+/// --wipe` does on Linux. Zeroing both reserved bands removes every root and
+/// workspace bank. A Windows format alone leaves root B, which revives the
+/// volume once the partition is recreated where it was.
+#[cfg(windows)]
+fn wipe(volume_path: &str) -> Result<()> {
+    let mut disk = open_owned(volume_path, "wipe")?;
+    // Anything else is Windows' to format; this keeps a mistyped volume
+    // path from losing the start of another file system.
+    if !carryfs_core::has_root_magic(&mut disk) {
+        return Err(format!("{volume_path}: no CarryFS volume found"));
+    }
+    carryfs_core::erase_reserved_bands(&mut disk)
+        .map_err(|e| format!("erase reserved bands: {e}"))?;
+    println!("wiped CarryFS from {volume_path}; format it with any tool now");
     Ok(())
 }
 

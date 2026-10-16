@@ -1,81 +1,123 @@
-# Formatting a disk
+# How to format a disk
 
-Formatting a partition as CarryFS erases everything on it. Copy off anything you
-want to keep first.
+Formatting a partition as CarryFS erases everything on it. Copy off the files
+you want to keep first.
 
-CarryFS needs a partition of at least 256 MiB and at most 32 TiB. Install
-CarryFS before you start, as [INSTALLATION.md](INSTALLATION.md) describes.
+Before you start, [install CarryFS](INSTALLATION.md). The partition must be
+between 256 MiB and 32 TiB.
 
-## Linux
+To format a CarryFS partition as something else, see
+[Erase CarryFS before using another file system](#erase-carryfs-before-using-another-file-system).
 
-Find the partition with `lsblk`, unmount it, and format it.
+## Format a partition as CarryFS
 
-```sh
-lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS
-udisksctl unmount -b /dev/sdXN
-sudo mkfs -t carryfs -L NAME /dev/sdXN
-```
+### Linux
 
-`-L NAME` is optional. `mkfs` refuses a partition that is still mounted. It
-also refuses a whole disk that holds partitions, because formatting it would
-erase the partition table. Format one of the partitions instead, or remove the
-table with `sudo wipefs -a /dev/sdX` if you want CarryFS on the whole disk.
+1. Find the partition and unmount it.
 
-## macOS
+   ```sh
+   lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS
+   udisksctl unmount -b /dev/sdXN
+   ```
 
-In Disk Utility, select the partition, click Erase, and choose CarryFS as the
-format.
+2. Format it. `-L NAME` sets a label and is optional.
 
-From the terminal, find the partition's identifier with `diskutil list`, then
-erase it.
+   ```sh
+   sudo mkfs -t carryfs -L NAME /dev/sdXN
+   ```
+
+`mkfs` refuses a mounted partition. It also refuses a whole disk that holds
+partitions, because formatting the disk would erase its partition table. Format
+one of the partitions instead. To put CarryFS on the whole disk, first remove
+the table with `sudo wipefs -a /dev/sdX`.
+
+### macOS
+
+In Disk Utility, select the partition, click **Erase**, and choose CarryFS as
+the format.
+
+To use the terminal instead, find the partition identifier with
+`diskutil list`, then erase it.
 
 ```sh
 diskutil eraseVolume CarryFS NAME diskNsM
 ```
 
-## Windows
+### Windows
 
-`carryfs-windows mkfs` formats only a blank partition. It refuses one that
-Windows has formatted with NTFS, exFAT, or FAT. To get a blank partition, open
-Disk Management, delete the volume, and create a new simple volume with "Do not
-format this volume".
+`carryfs-windows mkfs` formats only a blank partition. It refuses a partition
+that Windows has formatted as NTFS, exFAT, or FAT. Run every command below in
+PowerShell as Administrator.
 
-Find the disk and partition numbers in PowerShell.
+1. Make the partition blank. In Disk Management, delete the volume. Then create
+   a new simple volume and choose **Do not format this volume**.
 
-```powershell
-Get-Partition | Format-Table DiskNumber, PartitionNumber, DriveLetter, Size
-```
+2. Find the disk and partition numbers.
 
-Then format it from PowerShell as Administrator. This example uses disk 1,
-partition 2.
+   ```powershell
+   Get-Partition | Format-Table DiskNumber, PartitionNumber, DriveLetter, Size
+   ```
 
-```powershell
-& "$env:ProgramFiles\CarryFS\carryfs-windows.exe" mkfs \\.\Harddisk1Partition2
-```
+3. Format the partition. This example uses disk 1, partition 2.
 
-If the partition held data before, `mkfs` stops and says it is not blank. Add
-`force` to erase it.
+   ```powershell
+   & "$env:ProgramFiles\CarryFS\carryfs-windows.exe" mkfs \\.\Harddisk1Partition2
+   ```
+
+4. Reconnect the disk to mount it.
+
+If the partition held data before, `mkfs` stops and reports that it is not
+blank. To erase the old data and format anyway, add `force`.
 
 ```powershell
 & "$env:ProgramFiles\CarryFS\carryfs-windows.exe" mkfs \\.\Harddisk1Partition2 force
 ```
 
-Windows has no label option yet. Reconnect the disk to mount it.
+`mkfs` also refuses a partition that is in use. If the CarryFS service mounted
+the partition, stop the service with `sc stop CarryFS` and run `mkfs` again.
 
-## Formatting a CarryFS disk as something else
+Windows has no label option yet.
 
-On Linux, wipe CarryFS from the partition first, then format it with any tool.
+## Erase CarryFS before using another file system
+
+Other formatting tools don't recognize CarryFS, and they leave parts of it
+behind. A Windows format, for example, leaves the second root record (root B)
+in place. If you later create a partition at the same offset, that record
+brings the old volume back. Erase CarryFS first, then format with any tool.
+
+The erase zeroes the 2 MiB reserved band at each end of the partition. It
+refuses a partition that holds no CarryFS volume, so a mistyped path cannot
+damage another file system.
+
+### Linux
 
 ```sh
 sudo mkfs.carryfs --wipe /dev/sdXN
 ```
 
-`wipefs` and GNOME Disks don't recognize CarryFS. Without the wipe, GNOME Disks
-fails with "Error synchronizing after initial wipe". `--wipe` refuses a
-partition that doesn't hold CarryFS, so it can't erase another filesystem by
-mistake.
+The same checks as `mkfs` apply: the partition must be unmounted, and it can't
+be a whole disk that holds partitions.
 
-On macOS, erase the partition in Disk Utility and choose the new format.
+Without the wipe, `wipefs` can't see CarryFS, and GNOME Disks fails with
+"Error synchronizing after initial wipe".
 
-On Windows, eject the CarryFS volume, then format the partition in Disk
-Management.
+### macOS
+
+Erase the partition in Disk Utility and choose the new format. The erase also
+clears CarryFS.
+
+### Windows
+
+Find the disk and partition numbers as in the format steps above, then wipe
+the partition.
+
+```powershell
+& "$env:ProgramFiles\CarryFS\carryfs-windows.exe" wipe \\.\Harddisk1Partition2
+```
+
+`wipe` prints `wiped CarryFS from ...` when it finishes. Format the partition
+with Disk Management or any other tool.
+
+`wipe` also refuses a partition that Windows mounts as NTFS, exFAT, or FAT, and
+a partition that is in use. If the CarryFS service mounted the partition, run
+`sc stop CarryFS` first.

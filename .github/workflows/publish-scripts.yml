@@ -22,7 +22,7 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # A token for carryfs.com alone, minted per run from the carryfs-publisher
       # app. Deploy keys are disabled on that repository.
       - id: app
@@ -32,7 +32,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: carry-fs
           repositories: carryfs.com
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: carry-fs/carryfs.com
           ref: master

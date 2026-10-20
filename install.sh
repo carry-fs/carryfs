@@ -9,18 +9,53 @@ work=
 
 die() { printf 'carryfs: %s\n' "$*" >&2; exit 1; }
 
+# X.Y.Z with an optional SemVer prerelease such as -rc.1. Numeric identifiers
+# have no leading zeros; build metadata is not accepted.
 valid_version() {
     printf '%s\n' "$1" | LC_ALL=C awk '
-        NR == 1 && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { ok=1 }
+        NR == 1 && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/ {
+            ok=1
+            i = index($0, "-")
+            n = i ? split(substr($0, i+1), id, ".") : 0
+            for (k = 1; k <= n; k++) if (id[k] ~ /^0[0-9]+$/) ok=0
+        }
         END { exit !(ok && NR == 1) }'
 }
 
+# True when OS-style numeric version $1 is newer than $2.
 newer() {
     awk -v a="$1" -v b="$2" 'BEGIN {
         split(a,x,"."); split(b,y,".")
         for(i=1;i<=3;i++) if(x[i]+0 != y[i]+0) exit !(x[i]+0 > y[i]+0)
         exit 1
     }'
+}
+
+# True when CarryFS version $1 has higher SemVer precedence than $2: a
+# prerelease sorts below its release, and rc.2 above rc.1.
+newer_version() {
+    LC_ALL=C awk -v a="$1" -v b="$2" '
+        function cmp(x, y,    cx, cy, i, px, py, nx, ny, hx, hy, n, dx, dy) {
+            hx = index(x, "-"); hy = index(y, "-")
+            split(hx ? substr(x, 1, hx-1) : x, cx, ".")
+            split(hy ? substr(y, 1, hy-1) : y, cy, ".")
+            for (i = 1; i <= 3; i++) if (cx[i]+0 != cy[i]+0) return cx[i]+0 > cy[i]+0 ? 1 : -1
+            if (!hx && !hy) return 0
+            if (!hx) return 1
+            if (!hy) return -1
+            nx = split(substr(x, hx+1), px, ".")
+            ny = split(substr(y, hy+1), py, ".")
+            n = nx < ny ? nx : ny
+            for (i = 1; i <= n; i++) {
+                dx = px[i] ~ /^[0-9]+$/; dy = py[i] ~ /^[0-9]+$/
+                if (dx && dy) { if (px[i]+0 != py[i]+0) return px[i]+0 > py[i]+0 ? 1 : -1 }
+                else if (dx) return -1
+                else if (dy) return 1
+                else if (px[i] != py[i]) return (px[i] "") > (py[i] "") ? 1 : -1
+            }
+            return nx == ny ? 0 : (nx > ny ? 1 : -1)
+        }
+        BEGIN { exit !(cmp(a, b) > 0) }'
 }
 
 download() {
@@ -132,7 +167,7 @@ select_release() {
     fi
     selected=${tag#v}
     if [ -n "$installed" ]; then
-        if [ "$selected" = "$installed" ] || { [ -z "$requested" ] && ! newer "$selected" "$installed"; }; then
+        if [ "$selected" = "$installed" ] || { [ -z "$requested" ] && ! newer_version "$selected" "$installed"; }; then
             printf 'CarryFS %s is already current for this selection.\n' "$installed"
             exit 0
         fi
@@ -247,13 +282,13 @@ main() {
             --version)
                 [ "$#" -ge 2 ] || die '--version needs a version.'
                 requested=${2#v}
-                valid_version "$requested" || die 'Version must be X.Y.Z or vX.Y.Z.'
+                valid_version "$requested" || die 'Version must be X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1.'
                 shift 2 ;;
             --upgrade) upgrade=1; shift ;;
             --uninstall) uninstall=1; shift ;;
             --local) local_build=1; shift ;;
             --help|-h)
-                printf 'Usage: install.sh [--version X.Y.Z | --upgrade | --local | --uninstall]\nDefault: latest stable release within the installed major; latest stable on first install.\n--local builds the checkout holding this script and installs or reinstalls it.\n'
+                printf 'Usage: install.sh [--version X.Y.Z[-rc.N] | --upgrade | --local | --uninstall]\nDefault: latest stable release within the installed major; latest stable on first install.\n--version installs that exact release, prereleases included.\n--local builds the checkout holding this script and installs or reinstalls it.\n'
                 return ;;
             *) die "Unknown argument: $1" ;;
         esac
@@ -306,7 +341,7 @@ main() {
         printf 'Uninstalled CarryFS. %s were left alone.\n' "$kept"
         return
     fi
-    [ -z "$requested" ] || valid_version "$requested" || die 'Version must be X.Y.Z or vX.Y.Z.'
+    [ -z "$requested" ] || valid_version "$requested" || die 'Version must be X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1.'
     [ -z "$requested" ] || [ "$upgrade" = 0 ] || die '--version and --upgrade cannot be combined.'
     prerequisites
     if [ -f "$marker" ]; then
@@ -330,7 +365,7 @@ main() {
         origin='The package is verified.'
     fi
     printf 'Install CarryFS %s for %s (current: %s).\n' "$selected" "$platform" "${installed:-unrecorded}"
-    if [ -n "$installed" ] && newer "$installed" "$selected"; then printf 'This will downgrade CarryFS.\n'; fi
+    if [ -n "$installed" ] && newer_version "$installed" "$selected"; then printf 'This will downgrade CarryFS.\n'; fi
     printf 'Destination: /usr/local/bin/carryfs and %s. Eject all CarryFS volumes before continuing.\n' "${marker%/VERSION}"
     printf '%s System installation requires administrator permission.\n' "$origin"
     [ -r /dev/tty ] || die 'Confirmation needs a terminal; download the script and run it from an interactive shell.'

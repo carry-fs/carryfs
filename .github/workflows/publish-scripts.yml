@@ -1,0 +1,54 @@
+# ci-standard: except make-entry — the repo has no Makefile; this only copies two files
+name: publish-scripts
+
+# The scripts fetch whichever release they are asked for, so they publish
+# independently of releases. carryfs.com serves its master branch as is.
+on:
+  push:
+    branches: [master]
+    paths:
+      - install.sh
+      - install.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-scripts
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # A token for carryfs.com alone, minted per run from the carryfs-publisher
+      # app. Deploy keys are disabled on that repository.
+      - id: app
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          client-id: ${{ vars.CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: carry-fs
+          repositories: carryfs.com
+      - uses: actions/checkout@v4
+        with:
+          repository: carry-fs/carryfs.com
+          ref: master
+          path: website
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: true
+      - name: Copy and push
+        run: |
+          set -euo pipefail
+          cp install.sh install.ps1 website/
+          cd website
+          git add install.sh install.ps1
+          if git diff --cached --quiet; then
+            echo "Website already has these scripts."
+            exit 0
+          fi
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit -m "Publish install scripts from carry-fs/carryfs@${GITHUB_SHA::7}"
+          git push origin HEAD:master

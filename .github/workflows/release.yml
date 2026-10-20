@@ -1,0 +1,108 @@
+# ci-standard: except make-entry — the repo has no Makefile; release builds call cargo like ci.yml
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Build-only smoke test: packaging changes show up before a tag does.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - packaging/**
+      - fuse/packaging/**
+      - windows/packaging/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 24.04 sets the glibc baseline that install.sh enforces.
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+            packages: -p carryfs-core -p carryfs-fuse
+          - os: macos-latest
+            platform: macos-arm64
+            packages: -p carryfs-core -p carryfs-fuse -p carryfs-macos
+          - os: windows-latest
+            platform: windows-x86_64
+            packages: -p carryfs-core -p carryfs-windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"; exit 1; }
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build
+        run: cargo build --release --locked ${{ matrix.packages }}
+      - name: Stage
+        run: packaging/stage-release.sh ${{ matrix.platform }} payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payload-${{ matrix.platform }}
+          path: payload
+          if-no-files-found: error
+
+  # Archives are built on Linux so the Windows zip has forward-slash entries,
+  # which install.ps1 requires.
+  package:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: payloads
+      - name: Archive
+        run: |
+          set -euo pipefail
+          version=$(cat payloads/payload-linux-x86_64/VERSION)
+          mkdir dist
+          for platform in linux-x86_64 macos-arm64; do
+            [ "$(cat payloads/payload-$platform/VERSION)" = "$version" ]
+            tar --owner=0 --group=0 --numeric-owner -czf "dist/carryfs-$version-$platform.tar.gz" -C "payloads/payload-$platform" .
+          done
+          [ "$(cat payloads/payload-windows-x86_64/VERSION)" = "$version" ]
+          (cd payloads/payload-windows-x86_64 && zip -qrX "$GITHUB_WORKSPACE/dist/carryfs-$version-windows-x86_64.zip" .)
+          (cd dist && sha256sum carryfs-* > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      # A hyphen in the tag marks a SemVer prerelease such as v0.1.0-rc.1.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flag=
+          case $GITHUB_REF_NAME in *-*) flag=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes $flag

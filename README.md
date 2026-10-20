@@ -93,8 +93,9 @@ store a metadata-preserving backup archive as an ordinary file.
 
 ## Install
 
-There's no packaged release yet. Until there is, you install CarryFS from
-source.
+There's no stable release yet. You can install a prerelease package, as
+[INSTALLATION.md](INSTALLATION.md#2-install-a-prerelease-package) describes, or
+build from source:
 
 1. Install the framework for your platform:
    [FUSE 3](https://github.com/libfuse/libfuse) on Linux,

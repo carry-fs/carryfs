@@ -1,6 +1,4 @@
 #!/bin/sh
-# Install a published CarryFS package, or with --local the checkout holding this
-# script. All system writes happen after confirmation.
 set -eu
 
 repository=carry-fs/carryfs
@@ -9,8 +7,6 @@ work=
 
 die() { printf 'carryfs: %s\n' "$*" >&2; exit 1; }
 
-# X.Y.Z with an optional SemVer prerelease such as -rc.1. Numeric identifiers
-# have no leading zeros; build metadata is not accepted.
 valid_version() {
     printf '%s\n' "$1" | LC_ALL=C awk '
         NR == 1 && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/ {
@@ -22,7 +18,6 @@ valid_version() {
         END { exit !(ok && NR == 1) }'
 }
 
-# True when OS-style numeric version $1 is newer than $2.
 newer() {
     awk -v a="$1" -v b="$2" 'BEGIN {
         split(a,x,"."); split(b,y,".")
@@ -31,8 +26,6 @@ newer() {
     }'
 }
 
-# True when CarryFS version $1 has higher SemVer precedence than $2: a
-# prerelease sorts below its release, and rc.2 above rc.1.
 newer_version() {
     LC_ALL=C awk -v a="$1" -v b="$2" '
         function cmp(x, y,    cx, cy, i, px, py, nx, ny, hx, hy, n, dx, dy) {
@@ -66,8 +59,6 @@ download() {
         die "Download failed: $1. Check the connection, release availability, and GitHub API rate limit."
 }
 
-# Arch and its derivatives have no release numbers to compare. Ubuntu needs
-# 24.04, the runtime baseline of the release binaries.
 check_distribution() {
     [ -r "$1" ] || die 'Cannot identify the Linux distribution.'
     distribution=$(sed -n 's/^ID=//p' "$1" | tr -d '"')
@@ -214,14 +205,12 @@ verify_package() {
     esac
 }
 
-# Build the checkout and stage it in the layout of a release package.
 build_local() {
     [ -f "$checkout/Cargo.toml" ] && [ -f "$checkout/packaging/install-unix.sh" ] ||
         die '--local needs a CarryFS checkout: run ./install.sh --local in the cloned repository.'
     selected=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$checkout/Cargo.toml" | head -n 1)
     valid_version "$selected" || die 'Cannot read the version from Cargo.toml.'
     mkdir "$work/payload"
-    # Chained with &&: a failed build must not stage binaries left by an older one.
     (cd "$checkout" &&
         target=${CARGO_TARGET_DIR:-target}/release &&
         if [ "$platform" = linux-x86_64 ]; then
@@ -229,7 +218,6 @@ build_local() {
             cp "$target/carryfs" "$target/carryfs-fuse" fuse/packaging/61-carryfs.rules \
                 fuse/packaging/mount_options.conf "$work/payload/"
         else
-            # The bundle layout of fuse/packaging/macos-bundle.sh.
             resources=$work/payload/carryfs.fs/Contents/Resources &&
             cargo build --release --locked -p carryfs-core -p carryfs-fuse -p carryfs-macos &&
             mkdir -p "$resources" &&
@@ -244,8 +232,6 @@ build_local() {
     printf '%s\n' "$selected" > "$work/payload/VERSION"
 }
 
-# Remove what packaging/install-unix.sh installs on Linux. Only the CarryFS keys
-# leave the UDisks options; the file goes when nothing else is set in it.
 uninstall_linux() {
     sudo=
     [ "$(id -u)" = 0 ] || sudo=sudo
@@ -380,5 +366,4 @@ main() {
     printf 'Installed CarryFS %s.\n' "$selected"
 }
 
-# Keep invocation last so a truncated download cannot start installation.
 main "$@"

@@ -1,5 +1,3 @@
-# Install a published CarryFS package, or with -Local the checkout holding this
-# script. -Uninstall removes CarryFS. All system writes happen after confirmation.
 [CmdletBinding()]
 param([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall)
 
@@ -7,8 +5,6 @@ $ErrorActionPreference = 'Stop'
 $CarryFSRepository = 'carry-fs/carryfs'
 $CarryFSApi = "https://api.github.com/repos/$CarryFSRepository"
 
-# Parse X.Y.Z with an optional SemVer prerelease such as -rc.1. [version] cannot
-# hold a prerelease and Windows PowerShell 5.1 has no [semver].
 function ConvertTo-CarryFSVersion([string]$Value) {
     $identifier = '(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
     $pattern = "^v?((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(?:-($identifier(?:\.$identifier)*))?$"
@@ -21,8 +17,6 @@ function ConvertTo-CarryFSVersion([string]$Value) {
     return [pscustomobject]@{ Text = $text; Core = [version]$Matches[1]; Pre = @(if ($pre) { $pre -split '\.' }) }
 }
 
-# SemVer precedence as -1, 0 or 1. A prerelease sorts below its release, and
-# rc.2 above rc.1.
 function Compare-CarryFSVersion($A, $B) {
     $order = $A.Core.CompareTo($B.Core)
     if ($order -ne 0) { return [Math]::Sign($order) }
@@ -36,7 +30,6 @@ function Compare-CarryFSVersion($A, $B) {
         $xNumeric = $x -match '^[0-9]+$'
         $yNumeric = $y -match '^[0-9]+$'
         if ($xNumeric -and $yNumeric) {
-            # No leading zeros, so the longer number is the larger one.
             if ($x.Length -ne $y.Length) { return [Math]::Sign($x.Length - $y.Length) }
         } elseif ($xNumeric) { return -1 } elseif ($yNumeric) { return 1 }
         $order = [string]::CompareOrdinal($x, $y)
@@ -131,13 +124,11 @@ function Get-CarryFSCheckoutVersion([string]$Checkout) {
     return ConvertTo-CarryFSVersion ($line -replace '^version = "|"$', '')
 }
 
-# Build the checkout and stage it in the layout of a release package.
 function Build-CarryFSCheckout([string]$Checkout, $Selected, [string]$Payload) {
     New-Item -ItemType Directory $Payload | Out-Null
     Push-Location $Checkout
     try {
         & cargo build --release --locked -p carryfs-core -p carryfs-windows
-        # A failed build must not stage binaries left by an older one.
         if ($LASTEXITCODE -ne 0) { throw 'Local build failed; nothing was installed.' }
         $target = 'target'
         if ($env:CARGO_TARGET_DIR) { $target = $env:CARGO_TARGET_DIR }
@@ -149,16 +140,13 @@ function Build-CarryFSCheckout([string]$Checkout, $Selected, [string]$Payload) {
     Set-Content -LiteralPath (Join-Path $Payload 'VERSION') -Value $Selected.Text -Encoding Ascii
 }
 
-# Run PowerShell with these arguments as Administrator and return its exit code.
 function Invoke-CarryFSElevated([string]$Arguments) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    # Use a child process so streamed invocation also works with Restricted policy.
     $shell = (Get-Process -Id $PID).Path
     if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         $process = Start-Process -FilePath $shell -ArgumentList $Arguments -NoNewWindow -Wait -PassThru
     } else {
-        # The same arguments cross the UAC boundary.
         $process = Start-Process -FilePath $shell -Verb RunAs -ArgumentList $Arguments -Wait -PassThru
     }
     return $process.ExitCode
@@ -175,12 +163,10 @@ function Invoke-CarryFSUninstall {
     Write-Host "Remove CarryFS from $target with its automount service. Mounted CarryFS volumes will be ejected."
     Write-Host 'WinFsp and disk contents will be left alone. Removal requires administrator permission.'
     if ((Read-Host 'Uninstall? [y/N]') -notmatch '^(y|yes)$') { Write-Host 'Uninstall cancelled.'; return }
-    # Remove what windows\packaging\install.ps1 installs; that script is not kept on the system.
     $removal = {
         $ErrorActionPreference = 'Stop'
         $service = Get-Service CarryFS -ErrorAction SilentlyContinue
         if ($service) {
-            # Stopping the service publishes and ejects every mounted volume.
             Stop-Service CarryFS
             $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(60))
             & sc.exe delete CarryFS
@@ -218,7 +204,6 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Loca
         if (-not $requested -and -not $Upgrade -and -not $Local) { throw 'This installation has no version record. Select -Version or -Upgrade explicitly.' }
     }
     if ($Local) {
-        # $PSScriptRoot is empty when the script is streamed instead of run from a file.
         if (-not $PSScriptRoot) { throw '-Local needs a CarryFS checkout: run .\install.ps1 -Local in the cloned repository.' }
         $selected = Get-CarryFSCheckoutVersion $PSScriptRoot
     } else {

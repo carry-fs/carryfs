@@ -49,6 +49,7 @@ jobs:
             echo "Website already has these scripts."
             exit 0
           fi
-          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+          # Author the commit as whoever pushed the scripts to master.
+          git -c user.name="$GITHUB_ACTOR" -c user.email="$GITHUB_ACTOR_ID+$GITHUB_ACTOR@users.noreply.github.com" \
             commit -m "Publish install scripts from carry-fs/carryfs@${GITHUB_SHA::7}"
           git push origin HEAD:master

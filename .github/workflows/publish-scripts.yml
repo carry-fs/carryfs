@@ -28,7 +28,7 @@ jobs:
       - id: app
         uses: actions/create-github-app-token@v3.3.0
         with:
-          app-id: ${{ vars.APP_ID }}
+          client-id: ${{ vars.CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: carry-fs
           repositories: carryfs.com

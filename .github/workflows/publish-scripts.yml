@@ -23,12 +23,21 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # A token for carryfs.com alone, minted per run from the carryfs-publisher
+      # app. Deploy keys are disabled on that repository.
+      - id: app
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: carry-fs
+          repositories: carryfs.com
       - uses: actions/checkout@v4
         with:
           repository: carry-fs/carryfs.com
           ref: master
           path: website
-          ssh-key: ${{ secrets.WEBSITE_DEPLOY_KEY }}
+          token: ${{ steps.app.outputs.token }}
           persist-credentials: true
       - name: Copy and push
         run: |

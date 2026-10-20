@@ -1,8 +1,7 @@
 # Installing CarryFS
 
-There's no packaged release yet. Until there is, CarryFS installs from source.
-You install the FUSE framework for your platform, clone the repository, and
-run the install script with `--local`.
+CarryFS has no stable release yet. You can install a prerelease package, or
+build from source with the install script's `--local` option.
 If you'd rather not run the script, [install by hand](#install-by-hand).
 
 ## 1. Install the FUSE framework
@@ -47,19 +46,46 @@ You need Windows 10 or later on x86-64, with a 64-bit PowerShell 5.1 or newer.
 
 Install [WinFsp](https://winfsp.dev/rel/) 2.1 or later.
 
-## 2. Install Rust
+## 2. Install a prerelease package
+
+Run the install script with the exact version. Prereleases are named like
+`0.1.0-rc.1`, and the
+[releases page](https://github.com/carry-fs/carryfs/releases) lists them.
+Without `--version`, the script installs the latest stable release and ignores
+prereleases.
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://carryfs.com/install.sh | bash -s -- --version 0.1.0-rc.1
+```
+
+Windows, from PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://carryfs.com/install.ps1))) -Version 0.1.0-rc.1
+```
+
+The script downloads the package and checks it against the release's
+`SHA256SUMS`. It lists what it will install and writes nothing to the system
+until you confirm. Then it asks for administrator permission, through `sudo` on
+Linux and macOS and a UAC prompt on Windows.
+
+To build from source instead, skip this step and do steps 3 to 5.
+
+## 3. Install Rust
 
 The build needs Rust 1.89 or later. Install it with
 [rustup](https://rustup.rs/).
 
-## 3. Clone the repository
+## 4. Clone the repository
 
 ```sh
 git clone https://github.com/carry-fs/carryfs.git
 cd carryfs
 ```
 
-## 4. Run the install script
+## 5. Build and install from source
 
 Eject any mounted CarryFS volumes first. The script stops if one is still
 mounted.
@@ -87,7 +113,7 @@ Plug in a CarryFS disk to mount it. To make one, see
 ## Install by hand
 
 The install script runs these steps for you. To run them yourself, finish
-steps 1 to 3, then run the commands for your platform from the checkout.
+steps 1, 3, and 4, then run the commands for your platform from the checkout.
 
 ### Linux
 

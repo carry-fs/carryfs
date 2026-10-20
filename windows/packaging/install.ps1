@@ -72,7 +72,7 @@ try {
     $packageVersion = Join-Path $PSScriptRoot 'VERSION'
     if (Test-Path $packageVersion -PathType Leaf) {
         $value = (Get-Content $packageVersion -Raw).Trim()
-        if ($value -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid package version.' }
+        if ($value -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$') { throw 'Invalid package version.' }
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'carryfs.exe') -Destination $ready -Force
         Copy-Item -LiteralPath $packageVersion -Destination $ready -Force
     } else {

@@ -7,11 +7,42 @@ $ErrorActionPreference = 'Stop'
 $CarryFSRepository = 'carry-fs/carryfs'
 $CarryFSApi = "https://api.github.com/repos/$CarryFSRepository"
 
+# Parse X.Y.Z with an optional SemVer prerelease such as -rc.1. [version] cannot
+# hold a prerelease and Windows PowerShell 5.1 has no [semver].
 function ConvertTo-CarryFSVersion([string]$Value) {
-    if ($Value -cnotmatch '^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-        throw "Invalid version '$Value'; use X.Y.Z or vX.Y.Z."
+    $identifier = '(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+    $pattern = "^v?((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(?:-($identifier(?:\.$identifier)*))?$"
+    if (-not ($Value -cmatch $pattern)) {
+        throw "Invalid version '$Value'; use X.Y.Z or vX.Y.Z, optionally with a prerelease such as -rc.1."
     }
-    return [version]($Value -replace '^v', '')
+    $pre = $Matches[2]
+    $text = $Matches[1]
+    if ($pre) { $text += "-$pre" }
+    return [pscustomobject]@{ Text = $text; Core = [version]$Matches[1]; Pre = @(if ($pre) { $pre -split '\.' }) }
+}
+
+# SemVer precedence as -1, 0 or 1. A prerelease sorts below its release, and
+# rc.2 above rc.1.
+function Compare-CarryFSVersion($A, $B) {
+    $order = $A.Core.CompareTo($B.Core)
+    if ($order -ne 0) { return [Math]::Sign($order) }
+    if (-not $A.Pre.Count -and -not $B.Pre.Count) { return 0 }
+    if (-not $A.Pre.Count) { return 1 }
+    if (-not $B.Pre.Count) { return -1 }
+    $shared = [Math]::Min($A.Pre.Count, $B.Pre.Count)
+    for ($i = 0; $i -lt $shared; $i++) {
+        $x = $A.Pre[$i]
+        $y = $B.Pre[$i]
+        $xNumeric = $x -match '^[0-9]+$'
+        $yNumeric = $y -match '^[0-9]+$'
+        if ($xNumeric -and $yNumeric) {
+            # No leading zeros, so the longer number is the larger one.
+            if ($x.Length -ne $y.Length) { return [Math]::Sign($x.Length - $y.Length) }
+        } elseif ($xNumeric) { return -1 } elseif ($yNumeric) { return 1 }
+        $order = [string]::CompareOrdinal($x, $y)
+        if ($order -ne 0) { return [Math]::Sign($order) }
+    }
+    return [Math]::Sign($A.Pre.Count - $B.Pre.Count)
 }
 
 function Get-CarryFSReleases {
@@ -31,15 +62,15 @@ function Get-CarryFSReleases {
     } while ($batch.Count -eq 100)
 }
 
-function Select-CarryFSRelease($Releases, [version]$Installed, [switch]$Upgrade) {
+function Select-CarryFSRelease($Releases, $Installed, [switch]$Upgrade) {
     $best = $null
     $bestVersion = $null
     foreach ($release in $Releases) {
         if ($release.draft -ne $false -or $release.prerelease -ne $false -or
             $release.tag_name -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { continue }
         $candidate = ConvertTo-CarryFSVersion $release.tag_name
-        if ($Installed -and -not $Upgrade -and $candidate.Major -ne $Installed.Major) { continue }
-        if (-not $best -or $candidate -gt $bestVersion) {
+        if ($Installed -and -not $Upgrade -and $candidate.Core.Major -ne $Installed.Core.Major) { continue }
+        if (-not $best -or (Compare-CarryFSVersion $candidate $bestVersion) -gt 0) {
             $best = $release
             $bestVersion = $candidate
         }
@@ -95,13 +126,13 @@ function Get-CarryFSCheckoutVersion([string]$Checkout) {
         -not (Test-Path (Join-Path $Checkout 'windows\packaging\install.ps1') -PathType Leaf)) {
         throw '-Local needs a CarryFS checkout: run .\install.ps1 -Local in the cloned repository.'
     }
-    $line = Get-Content $manifest | Where-Object { $_ -cmatch '^version = "[0-9.]+"$' } | Select-Object -First 1
+    $line = Get-Content $manifest | Where-Object { $_ -cmatch '^version = ".+"$' } | Select-Object -First 1
     if (-not $line) { throw 'Cannot read the version from Cargo.toml.' }
     return ConvertTo-CarryFSVersion ($line -replace '^version = "|"$', '')
 }
 
 # Build the checkout and stage it in the layout of a release package.
-function Build-CarryFSCheckout([string]$Checkout, [version]$Selected, [string]$Payload) {
+function Build-CarryFSCheckout([string]$Checkout, $Selected, [string]$Payload) {
     New-Item -ItemType Directory $Payload | Out-Null
     Push-Location $Checkout
     try {
@@ -115,7 +146,7 @@ function Build-CarryFSCheckout([string]$Checkout, [version]$Selected, [string]$P
         }
         Copy-Item -LiteralPath 'windows\packaging\install.ps1' -Destination (Join-Path $Payload 'install-system.ps1')
     } finally { Pop-Location }
-    Set-Content -LiteralPath (Join-Path $Payload 'VERSION') -Value $Selected.ToString(3) -Encoding Ascii
+    Set-Content -LiteralPath (Join-Path $Payload 'VERSION') -Value $Selected.Text -Encoding Ascii
 }
 
 # Run PowerShell with these arguments as Administrator and return its exit code.
@@ -192,17 +223,17 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Loca
         $selected = Get-CarryFSCheckoutVersion $PSScriptRoot
     } else {
         if ($requested) {
-            $uri = "$CarryFSApi/releases/tags/v$($requested.ToString(3))"
+            $uri = "$CarryFSApi/releases/tags/v$($requested.Text)"
             $release = Invoke-RestMethod -Uri $uri -Headers @{
                 Accept = 'application/vnd.github+json'; 'User-Agent' = 'carryfs-installer'
             } -UseBasicParsing -TimeoutSec 300
-            if ($release.tag_name -cne "v$($requested.ToString(3))" -or $release.draft -ne $false) { throw 'Invalid release metadata from GitHub.' }
+            if ($release.tag_name -cne "v$($requested.Text)" -or $release.draft -ne $false) { throw 'Invalid release metadata from GitHub.' }
         } else {
             $release = Select-CarryFSRelease @(Get-CarryFSReleases) $installed -Upgrade:$Upgrade
         }
         $selected = ConvertTo-CarryFSVersion $release.tag_name
-        if ($installed -and ($selected -eq $installed -or (-not $requested -and $selected -lt $installed))) {
-            Write-Host "CarryFS $($installed.ToString(3)) is already current for this selection."
+        if ($installed -and ((Compare-CarryFSVersion $selected $installed) -eq 0 -or (-not $requested -and (Compare-CarryFSVersion $selected $installed) -lt 0))) {
+            Write-Host "CarryFS $($installed.Text) is already current for this selection."
             return
         }
     }
@@ -214,7 +245,7 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Loca
             Build-CarryFSCheckout $PSScriptRoot $selected $payload
             $origin = "Built from $PSScriptRoot."
         } else {
-            $asset = "carryfs-$($selected.ToString(3))-windows-x86_64.zip"
+            $asset = "carryfs-$($selected.Text)-windows-x86_64.zip"
             $base = "https://github.com/$CarryFSRepository/releases/download/$($release.tag_name)"
             $archive = Join-Path $work $asset
             $checksums = Join-Path $work 'SHA256SUMS'
@@ -229,18 +260,18 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Loca
             foreach ($file in @('carryfs.exe', 'carryfs-windows.exe', 'install-system.ps1', 'VERSION')) {
                 if (-not (Test-Path (Join-Path $payload $file) -PathType Leaf)) { throw "The release package is missing $file." }
             }
-            if ((Get-Content (Join-Path $payload 'VERSION') -Raw).Trim() -cne $selected.ToString(3)) { throw 'The package version does not match its release tag.' }
+            if ((Get-Content (Join-Path $payload 'VERSION') -Raw).Trim() -cne $selected.Text) { throw 'The package version does not match its release tag.' }
             $origin = 'The package is verified.'
         }
-        Write-Host "Install CarryFS $($selected.ToString(3)) to $target."
-        if ($installed) { Write-Host "Current version: $($installed.ToString(3))." }
-        if ($installed -and $selected -lt $installed) { Write-Host 'This will downgrade CarryFS.' }
+        Write-Host "Install CarryFS $($selected.Text) to $target."
+        if ($installed) { Write-Host "Current version: $($installed.Text)." }
+        if ($installed -and (Compare-CarryFSVersion $selected $installed) -lt 0) { Write-Host 'This will downgrade CarryFS.' }
         Write-Host "Eject all CarryFS volumes before continuing. $origin System installation requires administrator permission."
         if ((Read-Host 'Install? [y/N]') -notmatch '^(y|yes)$') { Write-Host 'Installation cancelled.'; return }
         $installer = Join-Path $payload 'install-system.ps1'
         $code = Invoke-CarryFSElevated ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -ExpectedVersion "{1}"' -f $installer, $expected)
         if ($code -ne 0) { throw "System installation failed with exit code $code." }
-        Write-Host "Installed CarryFS $($selected.ToString(3))."
+        Write-Host "Installed CarryFS $($selected.Text)."
     } finally { Remove-Item -LiteralPath $work -Recurse -Force }
 }
 

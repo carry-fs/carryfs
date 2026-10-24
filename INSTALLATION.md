@@ -217,3 +217,56 @@ volumes.
 
 The script asks before it removes anything. It leaves FUSE, macFUSE, WinFsp,
 and the contents of your disks alone.
+
+## Verified release commands
+
+Release `0.1.0-rc.1` passed the public installer checks on Ubuntu 24.04 x86-64
+and Windows Server 2025 x86-64 in
+[this GitHub Actions run](https://github.com/carry-fs/carryfs/actions/runs/40142887920).
+The tests download the scripts from `carryfs.com` and install the published
+release packages. They do not build CarryFS from the checkout.
+
+On Ubuntu, install the prerequisites and run:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y curl jq fuse3 udisks2 systemd udev procps coreutils
+sudo modprobe fuse
+curl -fsSL https://carryfs.com/install.sh | bash -s -- --version 0.1.0-rc.1
+```
+
+Answer `y` when asked. The checks verified the installed `carryfs-fuse`
+executable, mount and mkfs helper links, udev rule, and UDisks options.
+
+On Windows, install WinFsp 2.1 or later, then run this in 64-bit PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://carryfs.com/install.ps1))) -Version 0.1.0-rc.1
+```
+
+Answer `y` when asked. The test used Windows PowerShell 5.1 and WinFsp
+`2.1.25156`, installed from its official MSI. The
+[Windows test script](tests/install-smoke/windows.ps1) records the download,
+checksum, and silent MSI installation command.
+The checks verified `C:\Program Files\CarryFS\carryfs-windows.exe`, the version
+record, and the running `CarryFS` service with automatic startup.
+The hosted Windows runner has administrator access with UAC disabled.
+
+Both platforms created and checked a disposable 256 MiB image with the
+installed CLI. Running the same install command again reported the installed
+version as current. These uninstall commands also passed:
+
+```sh
+curl -fsSL https://carryfs.com/install.sh | bash -s -- --uninstall
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://carryfs.com/install.ps1))) -Uninstall
+```
+
+The [install-smoke workflow](.github/workflows/install-smoke.yml) runs on
+pushes that change the test scripts or workflow on `test/install-rc.1`.
+It also declares a manual trigger for use after merging to the default branch.
+Each job uploads its logs as an artifact for seven days.
+These checks cover adapter installation and startup. They do not mount a
+volume, exercise physical USB devices, or test Windows desktop UAC prompts.

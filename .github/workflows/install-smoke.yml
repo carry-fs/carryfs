@@ -1,0 +1,57 @@
+# ci-standard: except make-entry -- no Makefile; these checks exercise published installers, not a source build
+name: install-smoke
+
+on:
+  push:
+    branches: [test/install-rc.1]
+    paths:
+      - .github/workflows/install-smoke.yml
+      - tests/install-smoke/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARRYFS_VERSION: 0.1.0-rc.1
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq fuse3 udisks2 systemd udev procps coreutils expect
+          sudo modprobe fuse
+          test -c /dev/fuse
+          systemctl is-active systemd-udevd
+      - name: Install, verify, reinstall, and uninstall
+        run: bash tests/install-smoke/ubuntu.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: install-smoke-ubuntu
+          path: smoke-logs/
+          retention-days: 7
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install WinFsp, install CarryFS, verify, reinstall, and uninstall
+        shell: powershell
+        run: .\tests\install-smoke\windows.ps1
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: install-smoke-windows
+          path: smoke-logs/
+          retention-days: 7

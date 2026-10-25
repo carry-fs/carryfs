@@ -1,0 +1,13 @@
+core large-write deferred=False complete
+core partial-overwrite deferred=True complete
+core partial-overwrite deferred=False complete
+create             20000 true     0.999x [0.985, 1.004] std=92.990ms bb=93.376ms CV=0.4%/0.6%
+create             20000 false    1.001x [0.953, 1.005] std=1188.553ms bb=1190.458ms CV=0.5%/1.7%
+small-write        4000  true     0.995x [0.977, 1.004] std=54.267ms bb=54.580ms CV=1.0%/1.2%
+small-write        4000  false    0.994x [0.947, 1.005] std=423.666ms bb=426.001ms CV=0.3%/1.7%
+churn              4000  true     0.989x [0.970, 1.006] std=79.985ms bb=80.810ms CV=1.5%/1.5%
+churn              4000  false    0.995x [0.990, 1.008] std=640.781ms bb=644.205ms CV=0.4%/0.4%
+large-write        512   true     1.030x [0.976, 1.339] std=139.273ms bb=135.739ms CV=9.4%/1.7%
+large-write        64    false    1.002x [0.985, 1.050] std=19.053ms bb=18.809ms CV=1.5%/2.0%
+partial-overwrite  256   true     1.022x [0.947, 1.078] std=92.939ms bb=90.960ms CV=2.0%/3.5%
+partial-overwrite  32    false    1.010x [0.938, 1.322] std=11.139ms bb=11.104ms CV=9.3%/3.1%

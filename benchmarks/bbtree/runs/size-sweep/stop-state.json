@@ -1,0 +1,66 @@
+{
+  "data_index/ordered": {
+    "anchor": 2.4927898000201645,
+    "stale": 2,
+    "steps": 7,
+    "minimum": 6,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  },
+  "data_index/shuffled": {
+    "anchor": 1.367098493921951,
+    "stale": 2,
+    "steps": 9,
+    "minimum": 6,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  },
+  "assignments/ordered": {
+    "anchor": 2.656889635863383,
+    "stale": 2,
+    "steps": 8,
+    "minimum": 6,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  },
+  "assignments/shuffled": {
+    "anchor": 1.7708059110114827,
+    "stale": 2,
+    "steps": 8,
+    "minimum": 6,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  },
+  "updates/ordered": {
+    "anchor": 1.4623415445877064,
+    "stale": 2,
+    "steps": 8,
+    "minimum": 6,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  },
+  "updates/shuffled": {
+    "anchor": 1.6962230250504915,
+    "stale": 2,
+    "steps": 13,
+    "minimum": 6,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  },
+  "pending/ordered": {
+    "anchor": 1.2302386358632953,
+    "stale": 2,
+    "steps": 7,
+    "minimum": 5,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  },
+  "pending/shuffled": {
+    "anchor": 0.9540520524311852,
+    "stale": 2,
+    "steps": 7,
+    "minimum": 5,
+    "stopped": true,
+    "reason": "two size increases without a 5% gain over the last material best"
+  }
+}

@@ -1,0 +1,4 @@
+# Frozen records must retain their byte hashes on every checkout.
+runs/** -text
+runs/**/*.tsv whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+archive/*.tar.gz -text

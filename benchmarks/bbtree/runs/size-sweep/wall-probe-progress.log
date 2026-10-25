@@ -1,0 +1,43 @@
+START data_index ordered n=1
+DONE data_index  ordered  n=      1 avg=0.156x 95%=[0.148,0.162] CV=7.2%/14.5%
+START data_index shuffled n=1
+DONE data_index  shuffled n=      1 avg=0.162x 95%=[0.159,0.165] CV=1.7%/2.3%
+START assignments ordered n=1
+DONE assignments ordered  n=      1 avg=0.194x 95%=[0.193,0.194] CV=0.7%/0.7%
+START assignments shuffled n=1
+DONE assignments shuffled n=      1 avg=0.191x 95%=[0.182,0.198] CV=4.4%/9.4%
+START updates ordered n=1
+DONE updates     ordered  n=      1 avg=0.659x 95%=[0.622,0.699] CV=9.8%/12.8%
+START updates shuffled n=1
+DONE updates     shuffled n=      1 avg=0.671x 95%=[0.656,0.685] CV=4.8%/3.9%
+START pending ordered n=1
+DONE pending     ordered  n=      1 avg=0.694x 95%=[0.622,0.774] CV=6.2%/17.8%
+START pending shuffled n=1
+DONE pending     shuffled n=      1 avg=0.761x 95%=[0.746,0.782] CV=6.2%/4.5%
+START data_index ordered n=4
+DONE data_index  ordered  n=      4 avg=0.289x 95%=[0.249,0.335] CV=13.8%/23.1%
+START data_index shuffled n=4
+DONE data_index  shuffled n=      4 avg=0.276x 95%=[0.212,0.365] CV=15.8%/41.3%
+START assignments ordered n=4
+DONE assignments ordered  n=      4 avg=0.423x 95%=[0.394,0.458] CV=13.0%/6.7%
+START assignments shuffled n=4
+DONE assignments shuffled n=      4 avg=0.428x 95%=[0.406,0.445] CV=1.7%/6.6%
+START updates ordered n=4
+DONE updates     ordered  n=      4 avg=0.821x 95%=[0.814,0.831] CV=2.3%/1.7%
+START updates shuffled n=4
+DONE updates     shuffled n=      4 avg=0.750x 95%=[0.682,0.798] CV=2.6%/15.2%
+START pending ordered n=4
+DONE pending     ordered  n=      4 avg=0.840x 95%=[0.753,0.947] CV=13.6%/8.9%
+START pending shuffled n=4
+DONE pending     shuffled n=      4 avg=0.861x 95%=[0.854,0.872] CV=1.9%/1.3%
+START data_index ordered n=32
+DONE data_index  ordered  n=     32 avg=0.846x 95%=[0.834,0.853] CV=0.4%/1.6%
+START data_index shuffled n=32
+DONE data_index  shuffled n=     32 avg=0.704x 95%=[0.701,0.708] CV=0.5%/0.4%
+START assignments ordered n=32
+DONE assignments ordered  n=     32 avg=1.150x 95%=[1.109,1.209] CV=6.1%/1.1%
+START assignments shuffled n=32
+DONE assignments shuffled n=     32 avg=1.217x 95%=[1.104,1.373] CV=16.3%/1.8%
+START updates ordered n=32
+DONE updates     ordered  n=     32 avg=1.176x 95%=[1.077,1.278] CV=12.1%/3.9%
+START updates shuffled n=32

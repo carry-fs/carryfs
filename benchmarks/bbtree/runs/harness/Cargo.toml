@@ -1,0 +1,16 @@
+[package]
+name = "carryfs-map-bench"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[features]
+default = ["stdmap"]
+stdmap = ["dep:core_std"]
+bbmap = ["dep:core_bb", "dep:bbtree"]
+[dependencies]
+core_std = { package = "carryfs-core", path = "../std", optional = true }
+core_bb = { package = "carryfs-core-bb", path = "../bb", optional = true }
+bbtree = { path = "../upstream/bbtree", optional = true }
+
+[profile.release]
+strip = "none"

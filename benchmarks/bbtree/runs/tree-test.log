@@ -1,0 +1,26 @@
+   Compiling carryfs-core-bb v0.1.0-rc.1 (/private/tmp/carryfs-bbtree.SCajHc/bb)
+    Finished `release` profile [optimized] target(s) in 9.95s
+     Running unittests src/lib.rs (/private/tmp/carryfs-bbtree.SCajHc/target-bb/release/deps/carryfs_core_bb-76d9e180760b0920)
+
+running 18 tests
+test tree::tests::appends_keep_the_left_page_full_and_inserts_split_evenly ... ok
+test tree::tests::discarded_drafts_still_count_toward_transaction_work ... ok
+test tree::tests::a_run_inside_one_leaf_is_removed_in_one_copy ... ok
+test tree::tests::a_bounded_scan_stops_before_its_end ... ok
+test tree::tests::detach_copies_boundaries_and_keeps_disjoint_ownership ... ok
+test tree::tests::compaction_drops_superseded_drafts_and_keeps_the_trees ... ok
+test tree::tests::fixed_width_replacement_updates_totals_and_validates_the_record ... ok
+test tree::tests::a_full_cache_drops_leaves_and_keeps_branches ... ok
+test tree::tests::leaf_edits_and_compaction_preserve_records ... ok
+test tree::tests::inserting_a_bitmap_bounds_growth_when_the_root_splits ... ok
+test tree::tests::emptied_leaves_leave_their_parents ... ok
+test tree::tests::removals_from_a_prebuilt_tree_take_both_paths ... ok
+test tree::tests::a_short_scan_from_a_gap_returns_the_following_records ... ok
+test tree::tests::maximum_height_edits_preserve_levels_and_reject_cycles ... ok
+test tree::tests::ordered_mutations_split_join_and_reopen_match_map ... ok
+test tree::tests::removing_every_record_keeps_levels_even_and_ends_empty ... ok
+test tree::tests::front_insertion_into_full_pages_splits_once ... ok
+test tree::tests::a_lookup_from_the_last_leaf_matches_a_descent ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 0.57s
+

@@ -1,0 +1,58 @@
+{
+  "data_index/ordered": {
+    "anchor": 0.8457380069320358,
+    "stale": 0,
+    "steps": 3,
+    "minimum": 6,
+    "stopped": false
+  },
+  "data_index/shuffled": {
+    "anchor": 0.7038775416772753,
+    "stale": 0,
+    "steps": 3,
+    "minimum": 6,
+    "stopped": false
+  },
+  "assignments/ordered": {
+    "anchor": 1.1502746003307316,
+    "stale": 0,
+    "steps": 3,
+    "minimum": 6,
+    "stopped": false
+  },
+  "assignments/shuffled": {
+    "anchor": 1.216591365926959,
+    "stale": 0,
+    "steps": 3,
+    "minimum": 6,
+    "stopped": false
+  },
+  "updates/ordered": {
+    "anchor": 1.176044826765665,
+    "stale": 0,
+    "steps": 3,
+    "minimum": 6,
+    "stopped": false
+  },
+  "updates/shuffled": {
+    "anchor": 0.7504530723207851,
+    "stale": 0,
+    "steps": 2,
+    "minimum": 6,
+    "stopped": false
+  },
+  "pending/ordered": {
+    "anchor": 0.840062940413467,
+    "stale": 0,
+    "steps": 2,
+    "minimum": 5,
+    "stopped": false
+  },
+  "pending/shuffled": {
+    "anchor": 0.8614347745701418,
+    "stale": 0,
+    "steps": 2,
+    "minimum": 5,
+    "stopped": false
+  }
+}

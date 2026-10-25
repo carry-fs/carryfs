@@ -1,0 +1,107 @@
+--- std/src/tree.rs
++++ bb/src/tree.rs
+@@ -1,6 +1,9 @@
+ //! Bounded COW edits. Draft links have no disk address until allocation converges.
+ 
+-use std::collections::{BTreeMap, BTreeSet, HashMap};
++#[cfg(test)]
++use std::collections::BTreeMap;
++use std::collections::{BTreeSet, HashMap};
++use bbtree::unsync::BBTreeMap as FastMap;
+ use std::hash::{BuildHasherDefault, Hasher};
+ use std::sync::Arc;
+ 
+@@ -524,7 +527,7 @@
+     /// eager plan publishes them; a batch sends them once it accepts the
+     /// operation (`send_data`), so a refused one never reaches the device.
+     data: Vec<(u64, Page)>,
+-    data_index: BTreeMap<u64, usize>,
++    data_index: FastMap<u64, usize>,
+     /// Data pages this batch has already sent to the device.
+     sent: usize,
+     /// Drafts left after the last `compact`.
+@@ -592,7 +595,7 @@
+             reads: 0,
+             drafts: 0,
+             data: Vec::new(),
+-            data_index: BTreeMap::new(),
++            data_index: FastMap::new(),
+             sent: 0,
+             compacted: 0,
+         })
+@@ -620,7 +623,7 @@
+             reads: drafts.reads,
+             drafts: drafts.drafts,
+             data: Vec::new(),
+-            data_index: BTreeMap::new(),
++            data_index: FastMap::new(),
+             sent: drafts.sent,
+             compacted: drafts.compacted,
+         })
+@@ -1859,7 +1862,7 @@
+     /// Encode each assigned draft at its block, and return with each page the
+     /// node `load_disk` would rebuild from it, for the volume to cache once the
+     /// publication commits.
+-    pub fn encode(&self, assignments: &BTreeMap<usize, u64>) -> Result<Encoded> {
++    pub fn encode(&self, assignments: &FastMap<usize, u64>) -> Result<Encoded> {
+         let mut pages = Vec::with_capacity(assignments.len());
+         let mut built = Vec::with_capacity(assignments.len());
+         for (id, block) in assignments {
+@@ -1979,7 +1982,7 @@
+         }
+     }
+ 
+-    pub fn resolve(&self, edge: &Edge, assignments: &BTreeMap<usize, u64>) -> Result<TreeRef> {
++    pub fn resolve(&self, edge: &Edge, assignments: &FastMap<usize, u64>) -> Result<TreeRef> {
+         match edge.link {
+             Link::Disk(reference) => Ok(reference),
+             Link::Draft(id) => Ok(TreeRef {
+--- std/src/allocation.rs
++++ bb/src/allocation.rs
+@@ -1,6 +1,9 @@
+ //! Allocation and retirement are planned together, before any device writes.
+ 
+-use std::collections::{BTreeMap, BTreeSet};
++#[cfg(test)]
++use std::collections::BTreeMap;
++use std::collections::BTreeSet;
++use bbtree::unsync::BBTreeMap as FastMap;
+ 
+ use crate::format::{Page, Root, TreeKind, TreeRef, reserved_group_blocks};
+ use crate::tree::{Cache, Edge, Forest, Record, tree_ref, u64_be, u64_le};
+@@ -182,7 +185,7 @@
+     pub(crate) catalog: Edge,
+     allocation: Edge,
+     cleanup: Edge,
+-    updates: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
++    updates: FastMap<Vec<u8>, Option<Vec<u8>>>,
+     jobs: Vec<Job>,
+     freed: Vec<Range>,
+     retired_data: Vec<Range>,
+@@ -217,7 +220,7 @@
+     catalog: Edge,
+     allocation: Edge,
+     cleanup: Edge,
+-    updates: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
++    updates: FastMap<Vec<u8>, Option<Vec<u8>>>,
+     jobs: Vec<Job>,
+     freed: Vec<Range>,
+     retired_data: Vec<Range>,
+@@ -348,7 +351,7 @@
+             catalog,
+             allocation,
+             cleanup,
+-            updates: BTreeMap::new(),
++            updates: FastMap::new(),
+             jobs: Vec::new(),
+             freed: Vec::new(),
+             retired_data: Vec::new(),
+@@ -949,7 +952,7 @@
+         if primary_ids.len() > available.len() {
+             return Err(Error::NoSpace);
+         }
+-        let mut assignments: BTreeMap<_, _> = primary_ids
++        let mut assignments: FastMap<_, _> = primary_ids
+             .iter()
+             .copied()
+             .zip(available.iter().copied())

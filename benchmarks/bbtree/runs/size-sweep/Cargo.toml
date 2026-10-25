@@ -1,0 +1,14 @@
+[package]
+name = "carryfs-map-scaling"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[features]
+default = ["stdmap"]
+stdmap = []
+bbmap = ["dep:bbtree"]
+[dependencies]
+core_trace = { package = "carryfs-core-trace", path = "trace" }
+bbtree = { path = "../upstream/bbtree", optional = true }
+[profile.release]
+strip = "none"

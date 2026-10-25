@@ -1,0 +1,18 @@
+{
+  "carryfs_commit": "df656f3d053167f4788d53e33a3ce7a8fdb0b03e",
+  "bbtree_commit": "8adae97a0ed97e5c98fa2790312eb0aec9719846",
+  "bbtree_version": "0.1.5",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "machine": "Apple M1, 16 GB RAM",
+  "macos": "15.6",
+  "architecture": "arm64",
+  "RUSTFLAGS": null,
+  "repetitions": 9,
+  "warmup_pairs": 1,
+  "capacity_bytes": 268435456,
+  "checks": {
+    "tree": 18,
+    "allocation": 19,
+    "allocation_ignored": 4
+  }
+}

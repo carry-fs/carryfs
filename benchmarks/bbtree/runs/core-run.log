@@ -1,0 +1,7 @@
+core create deferred=True complete
+core create deferred=False complete
+core small-write deferred=True complete
+core small-write deferred=False complete
+core churn deferred=True complete
+core churn deferred=False complete
+core large-write deferred=True complete

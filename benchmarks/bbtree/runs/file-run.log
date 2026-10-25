@@ -1,0 +1,8 @@
+file create deferred=True complete
+file small-write deferred=True complete
+file churn deferred=True complete
+file large-write deferred=True complete
+create             300   true     1.006x [0.695, 1.097] std=12.721ms bb=12.596ms CV=7.4%/10.9%
+small-write        100   true     0.988x [0.860, 1.072] std=12.861ms bb=13.013ms CV=3.5%/5.3%
+churn              100   true     0.960x [0.896, 1.319] std=25.528ms bb=25.760ms CV=10.1%/4.8%
+large-write        32    true     1.031x [0.947, 1.180] std=55.514ms bb=53.811ms CV=6.4%/1.7%

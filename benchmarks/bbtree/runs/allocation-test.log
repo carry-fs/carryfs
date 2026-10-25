@@ -1,0 +1,30 @@
+    Finished `release` profile [optimized] target(s) in 0.01s
+     Running unittests src/lib.rs (/private/tmp/carryfs-bbtree.SCajHc/target-bb/release/deps/carryfs_core_bb-76d9e180760b0920)
+
+running 23 tests
+test allocation::tests::allocation_scan_cost_at_group_occupancy ... ignored, diagnostic allocation scan timing
+test allocation::tests::eligible_retirement_funds_metadata_with_isolated_raw_free_blocks ... ignored, one TiB sparse allocation regression
+test allocation::tests::allocation_wraps_sparse_free_bits_and_rewinds_without_duplicates ... ok
+test allocation::tests::allocated_data_is_charged_published_retired_and_later_freed ... ok
+test allocation::tests::exhausted_planning_work_leaves_the_base_reusable ... ok
+test allocation::tests::metadata_replacement_stays_bounded_through_repeated_reopens ... ok
+test allocation::tests::data_allocation_cannot_consume_the_foreground_reserve ... ok
+test allocation::tests::orphan_window_selection_advances_and_wraps ... ok
+test allocation::tests::orphan_detachment_and_partial_jobs_preserve_accounting ... ok
+test allocation::tests::refill_accounts_for_new_bitmaps_and_the_partial_final_group ... ok
+test allocation::tests::rejected_plans_issue_no_writes ... ok
+test allocation::tests::scattered_retirement_recovers_after_temporary_reserve_loss ... ignored, extended allocation-group progress run
+test allocation::tests::sealed_plan_rejects_another_base_before_output ... ok
+test allocation::tests::slot_partition_matches_set_filters ... ok
+test allocation::tests::transferred_retirement_reaches_bulk_ranges_without_exhausting_headroom ... ignored, extended scattered-retirement recovery
+test allocation::tests::workspace_replacement_finishes_without_creating_metadata_retirement ... ok
+test allocation::tests::interrupted_cleanup_mirroring_is_idempotent_before_reclamation ... ok
+test allocation::tests::orphan_at_workspace_floor_refills_before_detaching ... ok
+test allocation::tests::reclamation_failure_preserves_live_blocks_and_atomic_ownership ... ok
+test allocation::tests::full_image_deletion_and_fragmented_cleanup_keep_making_progress ... ok
+test allocation::tests::full_job_leaf_backlog_drains_through_cleanup_splits ... ok
+test allocation::tests::cursor_wrap_refills_partial_group_without_stranding_remaining_free_space ... ok
+test allocation::tests::refill_cursor_advances_across_full_groups_before_finding_space ... ok
+
+test result: ok. 19 passed; 0 failed; 4 ignored; 0 measured; 204 filtered out; finished in 1.18s
+

@@ -1,0 +1,69 @@
+DONE data_index  ordered  n=      1 CPUavg=0.159x wall=0.158x 95%=[0.157,0.161] CV=0.6%/1.5%
+DONE data_index  shuffled n=      1 CPUavg=0.157x wall=0.152x 95%=[0.152,0.161] CV=0.3%/4.4%
+DONE assignments ordered  n=      1 CPUavg=0.190x wall=0.182x 95%=[0.181,0.195] CV=0.9%/7.0%
+DONE assignments shuffled n=      1 CPUavg=0.190x wall=0.185x 95%=[0.183,0.195] CV=1.0%/5.1%
+DONE updates     ordered  n=      1 CPUavg=0.655x wall=0.655x 95%=[0.653,0.657] CV=0.2%/0.3%
+DONE updates     shuffled n=      1 CPUavg=0.669x wall=0.695x 95%=[0.656,0.691] CV=4.3%/0.4%
+DONE pending     ordered  n=      1 CPUavg=0.748x wall=0.751x 95%=[0.744,0.751] CV=0.6%/0.7%
+DONE pending     shuffled n=      1 CPUavg=0.742x wall=0.741x 95%=[0.739,0.745] CV=0.3%/0.7%
+DONE data_index  ordered  n=      4 CPUavg=0.299x wall=0.289x 95%=[0.292,0.304] CV=1.3%/4.0%
+DONE data_index  shuffled n=      4 CPUavg=0.330x wall=0.337x 95%=[0.307,0.357] CV=7.5%/7.4%
+DONE assignments ordered  n=      4 CPUavg=0.432x wall=0.437x 95%=[0.423,0.444] CV=3.4%/0.3%
+DONE assignments shuffled n=      4 CPUavg=0.437x wall=0.432x 95%=[0.434,0.439] CV=0.2%/0.9%
+DONE updates     ordered  n=      4 CPUavg=0.802x wall=0.799x 95%=[0.784,0.813] CV=2.2%/3.4%
+DONE updates     shuffled n=      4 CPUavg=0.796x wall=0.796x 95%=[0.792,0.800] CV=0.3%/0.4%
+DONE pending     ordered  n=      4 CPUavg=0.843x wall=0.844x 95%=[0.838,0.848] CV=1.0%/0.9%
+DONE pending     shuffled n=      4 CPUavg=0.851x wall=0.837x 95%=[0.831,0.868] CV=1.3%/3.4%
+DONE data_index  ordered  n=     32 CPUavg=0.854x wall=0.857x 95%=[0.849,0.860] CV=0.8%/0.5%
+DONE data_index  shuffled n=     32 CPUavg=0.712x wall=0.713x 95%=[0.710,0.714] CV=0.4%/0.2%
+DONE assignments ordered  n=     32 CPUavg=1.134x wall=1.136x 95%=[1.129,1.140] CV=0.7%/0.1%
+DONE assignments shuffled n=     32 CPUavg=1.116x wall=1.114x 95%=[1.113,1.119] CV=0.2%/0.3%
+DONE updates     ordered  n=     32 CPUavg=1.088x wall=1.089x 95%=[1.083,1.094] CV=0.6%/0.4%
+DONE updates     shuffled n=     32 CPUavg=0.919x wall=0.919x 95%=[0.912,0.929] CV=1.2%/0.3%
+DONE pending     ordered  n=     32 CPUavg=1.016x wall=1.011x 95%=[0.991,1.039] CV=5.0%/4.0%
+DONE pending     shuffled n=     32 CPUavg=0.895x wall=0.895x 95%=[0.891,0.899] CV=0.7%/0.3%
+DONE data_index  ordered  n=    256 CPUavg=1.118x wall=1.118x 95%=[1.111,1.126] CV=0.9%/0.3%
+DONE data_index  shuffled n=    256 CPUavg=0.550x wall=0.547x 95%=[0.537,0.567] CV=5.3%/2.4%
+DONE assignments ordered  n=    256 CPUavg=1.346x wall=1.348x 95%=[1.342,1.353] CV=0.7%/0.3%
+DONE assignments shuffled n=    256 CPUavg=0.795x wall=0.806x 95%=[0.792,0.798] CV=0.7%/0.2%
+DONE updates     ordered  n=    256 CPUavg=1.317x wall=1.317x 95%=[1.312,1.321] CV=0.4%/0.3%
+DONE updates     shuffled n=    256 CPUavg=1.082x wall=1.085x 95%=[1.077,1.089] CV=1.1%/0.9%
+DONE pending     ordered  n=    256 CPUavg=1.164x wall=1.158x 95%=[1.156,1.171] CV=0.6%/0.6%
+DONE pending     shuffled n=    256 CPUavg=0.936x wall=0.936x 95%=[0.922,0.944] CV=0.2%/1.9%
+DONE data_index  ordered  n=   1024 CPUavg=2.493x wall=2.494x 95%=[2.469,2.511] CV=1.2%/0.2%
+DONE data_index  shuffled n=   1024 CPUavg=1.095x wall=1.097x 95%=[1.073,1.120] CV=3.0%/0.3%
+DONE assignments ordered  n=   1024 CPUavg=2.278x wall=2.306x 95%=[2.265,2.290] CV=0.8%/0.2%
+DONE assignments shuffled n=   1024 CPUavg=1.603x wall=1.604x 95%=[1.586,1.621] CV=1.6%/0.3%
+DONE updates     ordered  n=   1024 CPUavg=1.350x wall=1.365x 95%=[1.342,1.359] CV=2.0%/2.4%
+DONE updates     shuffled n=   1024 CPUavg=1.121x wall=1.125x 95%=[1.105,1.133] CV=1.0%/1.8%
+DONE pending     ordered  n=   1024 CPUavg=1.230x wall=1.235x 95%=[1.224,1.237] CV=0.5%/0.5%
+DONE pending     shuffled n=   1024 CPUavg=0.954x wall=0.949x 95%=[0.938,0.965] CV=0.5%/2.2%
+DONE data_index  ordered  n=   4096 CPUavg=2.469x wall=2.470x 95%=[2.456,2.479] CV=0.3%/0.5%
+DONE data_index  shuffled n=   4096 CPUavg=1.205x wall=1.205x 95%=[1.198,1.212] CV=0.6%/0.4%
+DONE assignments ordered  n=   4096 CPUavg=2.657x wall=2.923x 95%=[2.479,2.847] CV=9.3%/4.8%
+DONE assignments shuffled n=   4096 CPUavg=1.771x wall=1.791x 95%=[1.746,1.791] CV=0.9%/2.3%
+DONE updates     ordered  n=   4096 CPUavg=1.462x wall=1.467x 95%=[1.453,1.471] CV=0.8%/0.5%
+DONE updates     shuffled n=   4096 CPUavg=1.218x wall=1.215x 95%=[1.203,1.231] CV=0.6%/1.2%
+DONE pending     ordered  n=   4096 CPUavg=1.013x wall=1.011x 95%=[0.988,1.037] CV=1.7%/2.2%
+DONE pending     shuffled n=   4096 CPUavg=0.995x wall=0.994x 95%=[0.972,1.021] CV=2.8%/1.6%
+DONE data_index  ordered  n=  16384 CPUavg=2.474x wall=2.471x 95%=[2.466,2.480] CV=0.2%/0.5% STOP
+DONE data_index  shuffled n=  16384 CPUavg=1.367x wall=1.368x 95%=[1.363,1.374] CV=0.6%/0.2%
+DONE assignments ordered  n=  16384 CPUavg=2.260x wall=2.260x 95%=[2.257,2.263] CV=0.1%/0.2%
+DONE assignments shuffled n=  16384 CPUavg=1.468x wall=1.478x 95%=[1.458,1.479] CV=0.8%/1.6%
+DONE updates     ordered  n=  16384 CPUavg=1.510x wall=1.511x 95%=[1.504,1.517] CV=0.6%/0.3%
+DONE updates     shuffled n=  16384 CPUavg=1.295x wall=1.301x 95%=[1.293,1.297] CV=0.3%/0.2%
+DONE pending     ordered  n=  16384 CPUavg=1.024x wall=1.031x 95%=[1.011,1.038] CV=1.7%/1.7% STOP
+DONE pending     shuffled n=  16384 CPUavg=0.951x wall=0.930x 95%=[0.892,0.993] CV=1.7%/7.5% STOP
+DONE data_index  shuffled n=  65536 CPUavg=1.420x wall=1.417x 95%=[1.412,1.427] CV=0.5%/0.8%
+DONE assignments ordered  n=  65536 CPUavg=2.108x wall=2.108x 95%=[2.099,2.116] CV=0.7%/0.5% STOP
+DONE assignments shuffled n=  65536 CPUavg=1.526x wall=1.522x 95%=[1.509,1.538] CV=0.4%/1.3% STOP
+DONE updates     ordered  n=  65536 CPUavg=1.483x wall=1.481x 95%=[1.476,1.492] CV=0.5%/0.5% STOP
+DONE updates     shuffled n=  65536 CPUavg=1.211x wall=1.211x 95%=[1.201,1.225] CV=0.8%/1.6%
+DONE data_index  shuffled n= 262144 CPUavg=1.323x wall=1.324x 95%=[1.302,1.352] CV=1.5%/2.0% STOP
+DONE updates     shuffled n= 262144 CPUavg=1.370x wall=1.371x 95%=[1.355,1.383] CV=0.8%/1.3%
+DONE updates     shuffled n=1048576 CPUavg=1.597x wall=1.597x 95%=[1.585,1.608] CV=0.5%/0.9%
+DONE updates     shuffled n=2097152 CPUavg=1.696x wall=1.697x 95%=[1.688,1.705] CV=0.5%/1.0%
+DONE updates     shuffled n=4194304 CPUavg=1.761x wall=1.762x 95%=[1.744,1.783] CV=1.6%/0.8%
+START updates shuffled n=6291456
+DONE updates     shuffled n=6291456 CPUavg=1.774x wall=1.773x 95%=[1.752,1.794] CV=1.1%/1.2% STOP
+FINISHED

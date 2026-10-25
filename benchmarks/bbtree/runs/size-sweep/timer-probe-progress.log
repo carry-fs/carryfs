@@ -1,0 +1,11 @@
+START data_index ordered n=1
+DONE data_index  ordered  n=      1 avg=0.201x 95%=[0.200,0.203] CV=1.1%/0.3%
+START data_index shuffled n=1
+DONE data_index  shuffled n=      1 avg=0.200x 95%=[0.199,0.201] CV=0.5%/0.5%
+START assignments ordered n=1
+DONE assignments ordered  n=      1 avg=0.256x 95%=[0.242,0.264] CV=0.7%/8.0%
+START assignments shuffled n=1
+DONE assignments shuffled n=      1 avg=0.266x 95%=[0.263,0.272] CV=2.4%/1.0%
+START updates ordered n=1
+DONE updates     ordered  n=      1 avg=0.661x 95%=[0.652,0.671] CV=1.8%/0.9%
+START updates shuffled n=1

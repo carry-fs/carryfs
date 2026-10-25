@@ -1,0 +1,42 @@
+[
+  {
+    "policy": "default",
+    "variant": "std",
+    "cpu_affinity": [
+      2
+    ],
+    "output": "pending\t1024\tordered\t500411793\t2108\t10493669\t492397300",
+    "user_seconds": 0.590688,
+    "system_seconds": 0.0060100000000000015
+  },
+  {
+    "policy": "default",
+    "variant": "bb",
+    "cpu_affinity": [
+      2
+    ],
+    "output": "pending\t1024\tordered\t500725249\t264\t10493669\t499432920",
+    "user_seconds": 0.10690199999999994,
+    "system_seconds": 0.496791
+  },
+  {
+    "policy": "no-trim",
+    "variant": "std",
+    "cpu_affinity": [
+      2
+    ],
+    "output": "pending\t1024\tordered\t500425152\t2024\t10493669\t499765820",
+    "user_seconds": 0.5995790000000001,
+    "system_seconds": 0.00497000000000003
+  },
+  {
+    "policy": "no-trim",
+    "variant": "bb",
+    "cpu_affinity": [
+      2
+    ],
+    "output": "pending\t1024\tordered\t500387202\t2856\t10493669\t499697129",
+    "user_seconds": 0.6001160000000001,
+    "system_seconds": 0.005040999999999962
+  }
+]

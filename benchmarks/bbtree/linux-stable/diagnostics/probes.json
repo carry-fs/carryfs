@@ -1,0 +1,4602 @@
+[
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300071706\t1208\t10493669\t299710200"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t304841498\t152\t10493669\t304544900"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t305772969\t164\t10493669\t305211560"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300508001\t1240\t10493669\t300165380"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300957727\t1196\t10493669\t300641590"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t303182854\t164\t10493669\t302866980"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t305655000\t152\t10493669\t305359770"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300903427\t968\t10493669\t300436320"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300986085\t1152\t10493669\t300868799"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t304595071\t156\t10493669\t304123430"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301577481\t152\t10493669\t301219470"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300108115\t1272\t10493669\t299839810"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300551890\t1224\t10493669\t300215950"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t306675410\t152\t10493669\t306420540"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t305153685\t152\t10493669\t304909180"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300211054\t1108\t10493669\t299099590"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301226574\t1148\t10493669\t300996490"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t306880437\t160\t10493669\t306466639"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t305380823\t140\t10493669\t305108640"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300161134\t1160\t10493669\t299939930"
+  },
+  {
+    "kind": "strace",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1000525915\t4024\t10493669\t999737950"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1000666784\t4012\t10493669\t998374080"
+  },
+  {
+    "kind": "strace",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1007336386\t352\t10493669\t848848899"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1005163019\t472\t10493669\t1004151350"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120003955\t81080\t1244\nassignments\t32\tordered\t120009685\t93720\t525280\nupdates\t32\tordered\t120028104\t23048\t880\npending\t32\tordered\t120002514\t23376\t131088\ndata_index\t32\tshuffled\t120004565\t102240\t1545\nassignments\t32\tshuffled\t120011914\t109992\t525280\nupdates\t32\tshuffled\t120019424\t21336\t852\npending\t32\tshuffled\t120066994\t24320\t131101\ndata_index\t256\tordered\t120104734\t7480\t79840\nassignments\t256\tordered\t120017014\t12040\t4259584\nupdates\t256\tordered\t120485890\t1704\t56212\npending\t256\tordered\t120077934\t2096\t1050496\ndata_index\t256\tshuffled\t120107363\t7456\t72169\nassignments\t256\tshuffled\t120077303\t11208\t4259584\nupdates\t256\tshuffled\t120379770\t1488\t55432\npending\t256\tshuffled\t120269892\t1776\t1050085\ndata_index\t1024\tordered\t120181163\t1024\t1277824\nassignments\t1024\tordered\t120104604\t2232\t17824768\nupdates\t1024\tordered\t120469940\t400\t224835\npending\t1024\tordered\t127922597\t48\t10493669\ndata_index\t1024\tshuffled\t121223022\t864\t1257501\nassignments\t1024\tshuffled\t120239641\t1472\t17824768\nupdates\t1024\tshuffled\t120633729\t360\t224463\npending\t1024\tshuffled\t127326832\t48\t10494121\ndata_index\t4096\tordered\t121098994\t232\t20446720\nassignments\t4096\tordered\t122781187\t344\t83881984\nupdates\t4096\tordered\t131783238\t80\t901140\ndata_index\t4096\tshuffled\t123238513\t152\t20214507\nassignments\t4096\tshuffled\t122554249\t232\t83881984\nupdates\t4096\tshuffled\t124749878\t72\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120018335\t63136\t1244\nassignments\t32\tordered\t120005334\t143304\t525280\nupdates\t32\tordered\t120023154\t21432\t880\npending\t32\tordered\t120013984\t19744\t131088\ndata_index\t32\tshuffled\t120003175\t52128\t1545\nassignments\t32\tshuffled\t120002794\t109808\t525280\nupdates\t32\tshuffled\t120057824\t16976\t852\npending\t32\tshuffled\t120019795\t18448\t131101\ndata_index\t256\tordered\t120028814\t5944\t79840\nassignments\t256\tordered\t120039894\t14032\t4259584\nupdates\t256\tordered\t120052074\t1976\t56212\npending\t256\tordered\t122267332\t216\t1050496\ndata_index\t256\tshuffled\t120161362\t4656\t72169\nassignments\t256\tshuffled\t120007334\t8016\t4259584\nupdates\t256\tshuffled\t120313761\t1672\t55432\npending\t256\tshuffled\t124119154\t208\t1050085\ndata_index\t1024\tordered\t120100423\t1664\t1277824\nassignments\t1024\tordered\t120324532\t2904\t17824768\nupdates\t1024\tordered\t120845216\t488\t224835\npending\t1024\tordered\t124411321\t48\t10493669\ndata_index\t1024\tshuffled\t120169473\t1016\t1257501\nassignments\t1024\tshuffled\t120588239\t1432\t17824768\nupdates\t1024\tshuffled\t121318191\t392\t224463\npending\t1024\tshuffled\t121603918\t272\t10494121\ndata_index\t4096\tordered\t122393421\t352\t20446720\nassignments\t4096\tordered\t120115873\t624\t83881984\nupdates\t4096\tordered\t122753317\t120\t901140\ndata_index\t4096\tshuffled\t120327541\t192\t20214507\nassignments\t4096\tshuffled\t123166783\t312\t83881984\nupdates\t4096\tshuffled\t126240243\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120024715\t50648\t1244\nassignments\t32\tordered\t120004645\t120392\t525280\nupdates\t32\tordered\t120078804\t16656\t880\npending\t32\tordered\t120002864\t20528\t131088\ndata_index\t32\tshuffled\t120009304\t49200\t1545\nassignments\t32\tshuffled\t120009915\t103272\t525280\nupdates\t32\tshuffled\t120000975\t15728\t852\npending\t32\tshuffled\t120032224\t19424\t131101\ndata_index\t256\tordered\t120043584\t6736\t79840\nassignments\t256\tordered\t120031625\t14152\t4259584\nupdates\t256\tordered\t120407540\t2048\t56212\npending\t256\tordered\t122993114\t232\t1050496\ndata_index\t256\tshuffled\t120120223\t4672\t72169\nassignments\t256\tshuffled\t120028974\t8464\t4259584\nupdates\t256\tshuffled\t120271662\t1808\t55432\npending\t256\tshuffled\t122267052\t200\t1050085\ndata_index\t1024\tordered\t120411421\t1616\t1277824\nassignments\t1024\tordered\t120216922\t2880\t17824768\nupdates\t1024\tordered\t120925746\t464\t224835\npending\t1024\tordered\t138815338\t48\t10493669\ndata_index\t1024\tshuffled\t121313451\t904\t1257501\nassignments\t1024\tshuffled\t120125134\t1712\t17824768\nupdates\t1024\tshuffled\t121070434\t408\t224463\npending\t1024\tshuffled\t120856866\t320\t10494121\ndata_index\t4096\tordered\t120969834\t352\t20446720\nassignments\t4096\tordered\t120337271\t640\t83881984\nupdates\t4096\tordered\t123912226\t136\t901140\ndata_index\t4096\tshuffled\t120578288\t208\t20214507\nassignments\t4096\tshuffled\t121409691\t344\t83881984\nupdates\t4096\tshuffled\t129798327\t96\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120000964\t81440\t1244\nassignments\t32\tordered\t120001775\t146232\t525280\nupdates\t32\tordered\t120001524\t23736\t880\npending\t32\tordered\t120000734\t22176\t131088\ndata_index\t32\tshuffled\t120010325\t93904\t1545\nassignments\t32\tshuffled\t120012034\t110456\t525280\nupdates\t32\tshuffled\t120029244\t19296\t852\npending\t32\tshuffled\t120010994\t20936\t131101\ndata_index\t256\tordered\t120078964\t7560\t79840\nassignments\t256\tordered\t120049944\t10792\t4259584\nupdates\t256\tordered\t120278581\t1656\t56212\npending\t256\tordered\t123909856\t216\t1050496\ndata_index\t256\tshuffled\t120085583\t7256\t72169\nassignments\t256\tshuffled\t120015374\t9040\t4259584\nupdates\t256\tshuffled\t120641978\t1504\t55432\npending\t256\tshuffled\t122100164\t200\t1050085\ndata_index\t1024\tordered\t120405280\t1064\t1277824\nassignments\t1024\tordered\t120111123\t1952\t17824768\nupdates\t1024\tordered\t120096003\t352\t224835\npending\t1024\tordered\t132490081\t48\t10493669\ndata_index\t1024\tshuffled\t120111903\t888\t1257501\nassignments\t1024\tshuffled\t120580029\t1344\t17824768\nupdates\t1024\tshuffled\t121995355\t320\t224463\npending\t1024\tshuffled\t125733857\t48\t10494121\ndata_index\t4096\tordered\t121572028\t224\t20446720\nassignments\t4096\tordered\t122679088\t384\t83881984\nupdates\t4096\tordered\t125240462\t80\t901140\ndata_index\t4096\tshuffled\t123478990\t176\t20214507\nassignments\t4096\tshuffled\t123583869\t240\t83881984\nupdates\t4096\tshuffled\t123852806\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120010934\t89432\t1244\nassignments\t32\tordered\t120000395\t127960\t525280\nupdates\t32\tordered\t120013635\t22552\t880\npending\t32\tordered\t120013964\t23168\t131088\ndata_index\t32\tshuffled\t120016674\t86952\t1545\nassignments\t32\tshuffled\t120000465\t102352\t525280\nupdates\t32\tshuffled\t120021514\t19864\t852\npending\t32\tshuffled\t120009884\t21544\t131101\ndata_index\t256\tordered\t120043134\t7408\t79840\nassignments\t256\tordered\t120066764\t10600\t4259584\nupdates\t256\tordered\t120671497\t1416\t56212\npending\t256\tordered\t121773127\t208\t1050496\ndata_index\t256\tshuffled\t120000814\t5968\t72169\nassignments\t256\tshuffled\t120082714\t7960\t4259584\nupdates\t256\tshuffled\t120122113\t1520\t55432\npending\t256\tshuffled\t122518199\t208\t1050085\ndata_index\t1024\tordered\t120372651\t928\t1277824\nassignments\t1024\tordered\t120071914\t2304\t17824768\nupdates\t1024\tordered\t121195453\t376\t224835\npending\t1024\tordered\t134806478\t48\t10493669\ndata_index\t1024\tshuffled\t120237502\t1032\t1257501\nassignments\t1024\tshuffled\t120390501\t1296\t17824768\nupdates\t1024\tshuffled\t121241612\t328\t224463\npending\t1024\tshuffled\t137348003\t48\t10494121\ndata_index\t4096\tordered\t122387460\t224\t20446720\nassignments\t4096\tordered\t122637348\t352\t83881984\nupdates\t4096\tordered\t126213763\t80\t901140\ndata_index\t4096\tshuffled\t122303332\t160\t20214507\nassignments\t4096\tshuffled\t120419791\t240\t83881984\nupdates\t4096\tshuffled\t131282893\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120001394\t58920\t1244\nassignments\t32\tordered\t120003014\t129960\t525280\nupdates\t32\tordered\t120061703\t21128\t880\npending\t32\tordered\t120009604\t20248\t131088\ndata_index\t32\tshuffled\t120010954\t56544\t1545\nassignments\t32\tshuffled\t120002125\t99448\t525280\nupdates\t32\tshuffled\t120014394\t19312\t852\npending\t32\tshuffled\t120039644\t21160\t131101\ndata_index\t256\tordered\t120037944\t6792\t79840\nassignments\t256\tordered\t120056603\t14680\t4259584\nupdates\t256\tordered\t120177742\t2056\t56212\npending\t256\tordered\t121227682\t224\t1050496\ndata_index\t256\tshuffled\t120232322\t4648\t72169\nassignments\t256\tshuffled\t120026234\t7816\t4259584\nupdates\t256\tshuffled\t120104303\t1704\t55432\npending\t256\tshuffled\t120238812\t184\t1050085\ndata_index\t1024\tordered\t120053203\t1512\t1277824\nassignments\t1024\tordered\t120227002\t3136\t17824768\nupdates\t1024\tordered\t120808226\t512\t224835\npending\t1024\tordered\t127425151\t48\t10493669\ndata_index\t1024\tshuffled\t120630178\t1024\t1257501\nassignments\t1024\tshuffled\t120606598\t1584\t17824768\nupdates\t1024\tshuffled\t121585599\t432\t224463\npending\t1024\tshuffled\t120852146\t336\t10494121\ndata_index\t4096\tordered\t120751097\t344\t20446720\nassignments\t4096\tordered\t121277772\t656\t83881984\nupdates\t4096\tordered\t122805177\t112\t901140\ndata_index\t4096\tshuffled\t121814356\t192\t20214507\nassignments\t4096\tshuffled\t121396741\t320\t83881984\nupdates\t4096\tshuffled\t123513770\t88\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120009545\t51472\t1244\nassignments\t32\tordered\t120001914\t126240\t525280\nupdates\t32\tordered\t120025775\t19008\t880\npending\t32\tordered\t120002004\t19504\t131088\ndata_index\t32\tshuffled\t120018764\t47136\t1545\nassignments\t32\tshuffled\t120001365\t103320\t525280\nupdates\t32\tshuffled\t120027144\t17304\t852\npending\t32\tshuffled\t120022215\t19864\t131101\ndata_index\t256\tordered\t120074042\t6176\t79840\nassignments\t256\tordered\t120029484\t12496\t4259584\nupdates\t256\tordered\t120148123\t2344\t56212\npending\t256\tordered\t120015034\t224\t1050496\ndata_index\t256\tshuffled\t120102394\t5144\t72169\nassignments\t256\tshuffled\t120062233\t8304\t4259584\nupdates\t256\tshuffled\t120306962\t1952\t55432\npending\t256\tshuffled\t120288991\t208\t1050085\ndata_index\t1024\tordered\t120446600\t1744\t1277824\nassignments\t1024\tordered\t120237382\t3240\t17824768\nupdates\t1024\tordered\t121430270\t504\t224835\npending\t1024\tordered\t137325343\t56\t10493669\ndata_index\t1024\tshuffled\t120678788\t1000\t1257501\nassignments\t1024\tshuffled\t120337781\t1776\t17824768\nupdates\t1024\tshuffled\t120233652\t376\t224463\npending\t1024\tshuffled\t123224602\t336\t10494121\ndata_index\t4096\tordered\t122934676\t328\t20446720\nassignments\t4096\tordered\t120809006\t600\t83881984\nupdates\t4096\tordered\t126116664\t120\t901140\ndata_index\t4096\tshuffled\t122182383\t200\t20214507\nassignments\t4096\tshuffled\t122965845\t344\t83881984\nupdates\t4096\tshuffled\t126837637\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120005045\t65136\t1244\nassignments\t32\tordered\t120001974\t124560\t525280\nupdates\t32\tordered\t120028304\t22096\t880\npending\t32\tordered\t120025544\t22176\t131088\ndata_index\t32\tshuffled\t120005554\t83472\t1545\nassignments\t32\tshuffled\t120001035\t114784\t525280\nupdates\t32\tshuffled\t120009974\t18448\t852\npending\t32\tshuffled\t120016664\t22648\t131101\ndata_index\t256\tordered\t120069523\t8208\t79840\nassignments\t256\tordered\t120033444\t10752\t4259584\nupdates\t256\tordered\t120233002\t1568\t56212\npending\t256\tordered\t120142413\t2080\t1050496\ndata_index\t256\tshuffled\t120029364\t8464\t72169\nassignments\t256\tshuffled\t120066134\t9784\t4259584\nupdates\t256\tshuffled\t120182662\t1536\t55432\npending\t256\tshuffled\t120424120\t2024\t1050085\ndata_index\t1024\tordered\t120146553\t968\t1277824\nassignments\t1024\tordered\t120003074\t1992\t17824768\nupdates\t1024\tordered\t121999334\t336\t224835\npending\t1024\tordered\t133660929\t56\t10493669\ndata_index\t1024\tshuffled\t120390570\t832\t1257501\nassignments\t1024\tshuffled\t120001334\t1432\t17824768\nupdates\t1024\tshuffled\t122048144\t296\t224463\npending\t1024\tshuffled\t133965646\t48\t10494121\ndata_index\t4096\tordered\t124578459\t224\t20446720\nassignments\t4096\tordered\t121412781\t360\t83881984\nupdates\t4096\tordered\t121612769\t72\t901140\ndata_index\t4096\tshuffled\t124411861\t184\t20214507\nassignments\t4096\tshuffled\t120949635\t240\t83881984\nupdates\t4096\tshuffled\t124226072\t72\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120013405\t90584\t1244\nassignments\t32\tordered\t120001324\t115784\t525280\nupdates\t32\tordered\t120039794\t21288\t880\npending\t32\tordered\t120022414\t23800\t131088\ndata_index\t32\tshuffled\t120002444\t92688\t1545\nassignments\t32\tshuffled\t120000305\t108248\t525280\nupdates\t32\tshuffled\t120046354\t18752\t852\npending\t32\tshuffled\t120008944\t22664\t131101\ndata_index\t256\tordered\t120032195\t8440\t79840\nassignments\t256\tordered\t120001274\t12752\t4259584\nupdates\t256\tordered\t120276431\t2024\t56212\npending\t256\tordered\t120047004\t2472\t1050496\ndata_index\t256\tshuffled\t120016834\t7880\t72169\nassignments\t256\tshuffled\t120113033\t10296\t4259584\nupdates\t256\tshuffled\t120666478\t1592\t55432\npending\t256\tshuffled\t120274722\t2136\t1050085\ndata_index\t1024\tordered\t120373831\t1096\t1277824\nassignments\t1024\tordered\t120399150\t2048\t17824768\nupdates\t1024\tordered\t120448130\t392\t224835\npending\t1024\tordered\t130144345\t64\t10493669\ndata_index\t1024\tshuffled\t120642868\t960\t1257501\nassignments\t1024\tshuffled\t120277541\t1488\t17824768\nupdates\t1024\tshuffled\t120338201\t352\t224463\npending\t1024\tshuffled\t124414321\t48\t10494121\ndata_index\t4096\tordered\t123471090\t232\t20446720\nassignments\t4096\tordered\t121764517\t352\t83881984\nupdates\t4096\tordered\t128865967\t88\t901140\ndata_index\t4096\tshuffled\t124585949\t176\t20214507\nassignments\t4096\tshuffled\t122147663\t240\t83881984\nupdates\t4096\tshuffled\t126115394\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120001924\t64336\t1244\nassignments\t32\tordered\t120005674\t133872\t525280\nupdates\t32\tordered\t120003964\t19064\t880\npending\t32\tordered\t120029024\t20904\t131088\ndata_index\t32\tshuffled\t120007035\t56208\t1545\nassignments\t32\tshuffled\t120006844\t109944\t525280\nupdates\t32\tshuffled\t120010304\t18136\t852\npending\t32\tshuffled\t120004795\t20320\t131101\ndata_index\t256\tordered\t120093583\t6832\t79840\nassignments\t256\tordered\t120024954\t13784\t4259584\nupdates\t256\tordered\t120103213\t2304\t56212\npending\t256\tordered\t120498289\t232\t1050496\ndata_index\t256\tshuffled\t120130493\t4600\t72169\nassignments\t256\tshuffled\t120040104\t7360\t4259584\nupdates\t256\tshuffled\t120241522\t1904\t55432\npending\t256\tshuffled\t120483600\t216\t1050085\ndata_index\t1024\tordered\t120105784\t1672\t1277824\nassignments\t1024\tordered\t120172002\t3088\t17824768\nupdates\t1024\tordered\t121052384\t536\t224835\npending\t1024\tordered\t139659650\t56\t10493669\ndata_index\t1024\tshuffled\t120507270\t1040\t1257501\nassignments\t1024\tshuffled\t120341401\t1784\t17824768\nupdates\t1024\tshuffled\t120034134\t384\t224463\npending\t1024\tshuffled\t123281402\t376\t10494121\ndata_index\t4096\tordered\t120042374\t352\t20446720\nassignments\t4096\tordered\t120765397\t672\t83881984\nupdates\t4096\tordered\t127057775\t128\t901140\ndata_index\t4096\tshuffled\t120885525\t208\t20214507\nassignments\t4096\tshuffled\t122346751\t312\t83881984\nupdates\t4096\tshuffled\t133415352\t88\t900563"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300700759\t1088\t10493669\t299284280"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300359421\t1760\t10493669\t298916419"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300402462\t1588\t10493669\t300075300"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300273523\t1180\t10493669\t300086660"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300232684\t1268\t10493669\t299951920"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300416732\t1648\t10493669\t300086820"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300627760\t1548\t10493669\t300401370"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300802898\t1116\t10493669\t300503470"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300206054\t1060\t10493669\t299880990"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300276093\t1688\t10493669\t300074940"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300744318\t1480\t10493669\t300558239"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300020876\t1032\t10493669\t299968800"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301012326\t1136\t10493669\t300835860"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300114365\t1664\t10493669\t300053290"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300406022\t1628\t10493669\t300130720"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300136454\t1116\t10493669\t299709850"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300639480\t1292\t10493669\t300339990"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300748399\t1728\t10493669\t300340900"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300166724\t1752\t10493669\t299833780"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300489081\t1180\t10493669\t300246559"
+  },
+  {
+    "kind": "strace",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1000024060\t3860\t10493669\t998921530"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1000175708\t3908\t10493669\t999068870"
+  },
+  {
+    "kind": "strace",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1000320066\t5828\t10493669\t999371429"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      1000
+    ],
+    "output": "pending\t1024\tordered\t1000767852\t5732\t10493669\t999760880"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120001605\t84144\t1244\nassignments\t32\tordered\t120004434\t124784\t525280\nupdates\t32\tordered\t120051284\t22472\t880\npending\t32\tordered\t120039744\t19048\t131088\ndata_index\t32\tshuffled\t120003745\t74088\t1545\nassignments\t32\tshuffled\t120000344\t118304\t525280\nupdates\t32\tshuffled\t120027354\t20592\t852\npending\t32\tshuffled\t120026914\t20072\t131101\ndata_index\t256\tordered\t120147152\t7288\t79840\nassignments\t256\tordered\t120033934\t11528\t4259584\nupdates\t256\tordered\t120402711\t1760\t56212\npending\t256\tordered\t120366280\t2224\t1050496\ndata_index\t256\tshuffled\t120089403\t8000\t72169\nassignments\t256\tshuffled\t120006115\t10512\t4259584\nupdates\t256\tshuffled\t120352061\t1560\t55432\npending\t256\tshuffled\t120291161\t2432\t1050085\ndata_index\t1024\tordered\t120273371\t992\t1277824\nassignments\t1024\tordered\t120184963\t2096\t17824768\nupdates\t1024\tordered\t120817866\t360\t224835\npending\t1024\tordered\t120443009\t504\t10493669\ndata_index\t1024\tshuffled\t120548259\t888\t1257501\nassignments\t1024\tshuffled\t120418470\t1320\t17824768\nupdates\t1024\tshuffled\t122388411\t376\t224463\npending\t1024\tshuffled\t121485720\t512\t10494121\ndata_index\t4096\tordered\t123807797\t240\t20446720\nassignments\t4096\tordered\t121587268\t392\t83881984\nupdates\t4096\tordered\t126270162\t96\t901140\ndata_index\t4096\tshuffled\t122117014\t168\t20214507\nassignments\t4096\tshuffled\t122086084\t248\t83881984\nupdates\t4096\tshuffled\t127171974\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120018754\t60280\t1244\nassignments\t32\tordered\t120004225\t138800\t525280\nupdates\t32\tordered\t120018284\t21048\t880\npending\t32\tordered\t120003084\t20624\t131088\ndata_index\t32\tshuffled\t120005614\t56608\t1545\nassignments\t32\tshuffled\t120001085\t111160\t525280\nupdates\t32\tshuffled\t120011305\t18048\t852\npending\t32\tshuffled\t120005574\t20848\t131101\ndata_index\t256\tordered\t120125103\t6936\t79840\nassignments\t256\tordered\t120020265\t12808\t4259584\nupdates\t256\tordered\t120252112\t2384\t56212\npending\t256\tordered\t120179283\t2864\t1050496\ndata_index\t256\tshuffled\t120063924\t4624\t72169\nassignments\t256\tshuffled\t120082914\t8216\t4259584\nupdates\t256\tshuffled\t120265342\t1840\t55432\npending\t256\tshuffled\t120110433\t2120\t1050085\ndata_index\t1024\tordered\t120358141\t1688\t1277824\nassignments\t1024\tordered\t120035844\t2904\t17824768\nupdates\t1024\tordered\t121346042\t504\t224835\npending\t1024\tordered\t120125023\t728\t10493669\ndata_index\t1024\tshuffled\t120261552\t1024\t1257501\nassignments\t1024\tshuffled\t120432740\t1608\t17824768\nupdates\t1024\tshuffled\t122014884\t432\t224463\npending\t1024\tshuffled\t121132903\t440\t10494121\ndata_index\t4096\tordered\t122070794\t344\t20446720\nassignments\t4096\tordered\t120083493\t760\t83881984\nupdates\t4096\tordered\t121293022\t128\t901140\ndata_index\t4096\tshuffled\t123254202\t208\t20214507\nassignments\t4096\tshuffled\t121973885\t328\t83881984\nupdates\t4096\tshuffled\t121366951\t96\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120006595\t57048\t1244\nassignments\t32\tordered\t120000394\t124112\t525280\nupdates\t32\tordered\t120030904\t20264\t880\npending\t32\tordered\t120031704\t23768\t131088\ndata_index\t32\tshuffled\t120003185\t56128\t1545\nassignments\t32\tshuffled\t120002965\t105264\t525280\nupdates\t32\tshuffled\t120008124\t17312\t852\npending\t32\tshuffled\t120017684\t18880\t131101\ndata_index\t256\tordered\t120135753\t6048\t79840\nassignments\t256\tordered\t120023814\t13384\t4259584\nupdates\t256\tordered\t120104833\t2128\t56212\npending\t256\tordered\t120249212\t2976\t1050496\ndata_index\t256\tshuffled\t120165853\t4776\t72169\nassignments\t256\tshuffled\t120000565\t8560\t4259584\nupdates\t256\tshuffled\t120062964\t1792\t55432\npending\t256\tshuffled\t120395250\t2248\t1050085\ndata_index\t1024\tordered\t120322841\t1640\t1277824\nassignments\t1024\tordered\t120023554\t3288\t17824768\nupdates\t1024\tordered\t120050773\t496\t224835\npending\t1024\tordered\t121080244\t704\t10493669\ndata_index\t1024\tshuffled\t120538259\t1064\t1257501\nassignments\t1024\tshuffled\t120486549\t1880\t17824768\nupdates\t1024\tshuffled\t120396630\t400\t224463\npending\t1024\tshuffled\t121575279\t424\t10494121\ndata_index\t4096\tordered\t120736777\t328\t20446720\nassignments\t4096\tordered\t120930655\t696\t83881984\nupdates\t4096\tordered\t120560579\t128\t901140\ndata_index\t4096\tshuffled\t122308551\t216\t20214507\nassignments\t4096\tshuffled\t122070604\t336\t83881984\nupdates\t4096\tshuffled\t121934255\t96\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120000885\t83552\t1244\nassignments\t32\tordered\t120000644\t157552\t525280\nupdates\t32\tordered\t120051394\t22560\t880\npending\t32\tordered\t120035374\t18672\t131088\ndata_index\t32\tshuffled\t120011234\t61808\t1545\nassignments\t32\tshuffled\t120009135\t76024\t525280\nupdates\t32\tshuffled\t120040814\t16688\t852\npending\t32\tshuffled\t120023975\t23680\t131101\ndata_index\t256\tordered\t120083734\t8048\t79840\nassignments\t256\tordered\t120033644\t12600\t4259584\nupdates\t256\tordered\t120330302\t1896\t56212\npending\t256\tordered\t120043344\t2304\t1050496\ndata_index\t256\tshuffled\t120009954\t8432\t72169\nassignments\t256\tshuffled\t120011114\t10880\t4259584\nupdates\t256\tshuffled\t120332381\t1688\t55432\npending\t256\tshuffled\t120244782\t2152\t1050085\ndata_index\t1024\tordered\t120228082\t1064\t1277824\nassignments\t1024\tordered\t120164273\t2192\t17824768\nupdates\t1024\tordered\t120481008\t368\t224835\npending\t1024\tordered\t120924976\t576\t10493669\ndata_index\t1024\tshuffled\t120143183\t984\t1257501\nassignments\t1024\tshuffled\t120083963\t1352\t17824768\nupdates\t1024\tshuffled\t122156753\t384\t224463\npending\t1024\tshuffled\t121323911\t488\t10494121\ndata_index\t4096\tordered\t122898766\t232\t20446720\nassignments\t4096\tordered\t122433720\t368\t83881984\nupdates\t4096\tordered\t128278543\t88\t901140\ndata_index\t4096\tshuffled\t120259061\t160\t20214507\nassignments\t4096\tshuffled\t121460570\t224\t83881984\nupdates\t4096\tshuffled\t121491760\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120000365\t104480\t1244\nassignments\t32\tordered\t120005204\t139464\t525280\nupdates\t32\tordered\t120060184\t22976\t880\npending\t32\tordered\t120034744\t23680\t131088\ndata_index\t32\tshuffled\t120007534\t103096\t1545\nassignments\t32\tshuffled\t120004925\t121152\t525280\nupdates\t32\tshuffled\t120009504\t20272\t852\npending\t32\tshuffled\t120008774\t22680\t131101\ndata_index\t256\tordered\t120095673\t8408\t79840\nassignments\t256\tordered\t120009454\t11216\t4259584\nupdates\t256\tordered\t120313652\t1912\t56212\npending\t256\tordered\t120067064\t2376\t1050496\ndata_index\t256\tshuffled\t120081474\t7328\t72169\nassignments\t256\tshuffled\t120023734\t9520\t4259584\nupdates\t256\tshuffled\t120086564\t1576\t55432\npending\t256\tshuffled\t120228913\t2144\t1050085\ndata_index\t1024\tordered\t120326661\t1096\t1277824\nassignments\t1024\tordered\t120416039\t2152\t17824768\nupdates\t1024\tordered\t123188083\t368\t224835\npending\t1024\tordered\t120947785\t584\t10493669\ndata_index\t1024\tshuffled\t120394910\t1024\t1257501\nassignments\t1024\tshuffled\t120136373\t1512\t17824768\nupdates\t1024\tshuffled\t120925845\t376\t224463\npending\t1024\tshuffled\t121694058\t512\t10494121\ndata_index\t4096\tordered\t122795816\t240\t20446720\nassignments\t4096\tordered\t120194912\t360\t83881984\nupdates\t4096\tordered\t123024994\t80\t901140\ndata_index\t4096\tshuffled\t125027044\t160\t20214507\nassignments\t4096\tshuffled\t122689238\t216\t83881984\nupdates\t4096\tshuffled\t120578799\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120005364\t53576\t1244\nassignments\t32\tordered\t120009715\t114968\t525280\nupdates\t32\tordered\t120072894\t14752\t880\npending\t32\tordered\t120026594\t18048\t131088\ndata_index\t32\tshuffled\t120007055\t45120\t1545\nassignments\t32\tshuffled\t120005214\t91888\t525280\nupdates\t32\tshuffled\t120039814\t16976\t852\npending\t32\tshuffled\t120025665\t20376\t131101\ndata_index\t256\tordered\t120011874\t5848\t79840\nassignments\t256\tordered\t120022065\t11112\t4259584\nupdates\t256\tordered\t120172333\t1800\t56212\npending\t256\tordered\t120103954\t3040\t1050496\ndata_index\t256\tshuffled\t120054573\t4776\t72169\nassignments\t256\tshuffled\t120079504\t8536\t4259584\nupdates\t256\tshuffled\t120014315\t1744\t55432\npending\t256\tshuffled\t120226502\t2392\t1050085\ndata_index\t1024\tordered\t120358130\t1712\t1277824\nassignments\t1024\tordered\t120085893\t3120\t17824768\nupdates\t1024\tordered\t120850876\t448\t224835\npending\t1024\tordered\t120109233\t720\t10493669\ndata_index\t1024\tshuffled\t120574648\t1056\t1257501\nassignments\t1024\tshuffled\t120425570\t1704\t17824768\nupdates\t1024\tshuffled\t121626398\t368\t224463\npending\t1024\tshuffled\t120284942\t440\t10494121\ndata_index\t4096\tordered\t121370661\t288\t20446720\nassignments\t4096\tordered\t121816857\t528\t83881984\nupdates\t4096\tordered\t126337552\t88\t901140\ndata_index\t4096\tshuffled\t120291892\t168\t20214507\nassignments\t4096\tshuffled\t121353771\t272\t83881984\nupdates\t4096\tshuffled\t120282631\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120009404\t62752\t1244\nassignments\t32\tordered\t120001054\t119952\t525280\nupdates\t32\tordered\t120057354\t15784\t880\npending\t32\tordered\t120053774\t22216\t131088\ndata_index\t32\tshuffled\t120001925\t47688\t1545\nassignments\t32\tshuffled\t120008184\t108672\t525280\nupdates\t32\tshuffled\t120036394\t14416\t852\npending\t32\tshuffled\t120033874\t21784\t131101\ndata_index\t256\tordered\t120026474\t6792\t79840\nassignments\t256\tordered\t120062534\t13616\t4259584\nupdates\t256\tordered\t120241752\t1984\t56212\npending\t256\tordered\t120395411\t2720\t1050496\ndata_index\t256\tshuffled\t120199793\t4232\t72169\nassignments\t256\tshuffled\t120056614\t7192\t4259584\nupdates\t256\tshuffled\t120078124\t1840\t55432\npending\t256\tshuffled\t120380420\t2360\t1050085\ndata_index\t1024\tordered\t120065203\t1608\t1277824\nassignments\t1024\tordered\t120024344\t3168\t17824768\nupdates\t1024\tordered\t121065834\t488\t224835\npending\t1024\tordered\t120012524\t680\t10493669\ndata_index\t1024\tshuffled\t120673808\t912\t1257501\nassignments\t1024\tshuffled\t120110363\t1712\t17824768\nupdates\t1024\tshuffled\t121667118\t424\t224463\npending\t1024\tshuffled\t120806536\t464\t10494121\ndata_index\t4096\tordered\t122616118\t376\t20446720\nassignments\t4096\tordered\t120896916\t712\t83881984\nupdates\t4096\tordered\t123191413\t128\t901140\ndata_index\t4096\tshuffled\t122263763\t208\t20214507\nassignments\t4096\tshuffled\t120112813\t320\t83881984\nupdates\t4096\tshuffled\t127844067\t96\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120000454\t94736\t1244\nassignments\t32\tordered\t120004164\t149024\t525280\nupdates\t32\tordered\t120072284\t23336\t880\npending\t32\tordered\t120016064\t24152\t131088\ndata_index\t32\tshuffled\t120003164\t97928\t1545\nassignments\t32\tshuffled\t120012125\t112280\t525280\nupdates\t32\tshuffled\t120004974\t20128\t852\npending\t32\tshuffled\t120015764\t22432\t131101\ndata_index\t256\tordered\t120159612\t8064\t79840\nassignments\t256\tordered\t120010715\t11672\t4259584\nupdates\t256\tordered\t120296761\t1656\t56212\npending\t256\tordered\t120010835\t2528\t1050496\ndata_index\t256\tshuffled\t120023044\t8040\t72169\nassignments\t256\tshuffled\t120041574\t10624\t4259584\nupdates\t256\tshuffled\t120352871\t1712\t55432\npending\t256\tshuffled\t120248781\t2544\t1050085\ndata_index\t1024\tordered\t120137812\t1072\t1277824\nassignments\t1024\tordered\t120168083\t2120\t17824768\nupdates\t1024\tordered\t120580818\t384\t224835\npending\t1024\tordered\t120989525\t584\t10493669\ndata_index\t1024\tshuffled\t120359631\t952\t1257501\nassignments\t1024\tshuffled\t120129993\t1496\t17824768\nupdates\t1024\tshuffled\t120753067\t336\t224463\npending\t1024\tshuffled\t120958825\t520\t10494121\ndata_index\t4096\tordered\t122382601\t224\t20446720\nassignments\t4096\tordered\t122508870\t328\t83881984\nupdates\t4096\tordered\t123340022\t88\t901140\ndata_index\t4096\tshuffled\t123104974\t176\t20214507\nassignments\t4096\tshuffled\t120265441\t216\t83881984\nupdates\t4096\tshuffled\t131795288\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120006344\t96848\t1244\nassignments\t32\tordered\t120009224\t133704\t525280\nupdates\t32\tordered\t120032434\t20848\t880\npending\t32\tordered\t120008584\t23400\t131088\ndata_index\t32\tshuffled\t120007564\t102112\t1545\nassignments\t32\tshuffled\t120004245\t114816\t525280\nupdates\t32\tshuffled\t121927105\t18360\t852\npending\t32\tshuffled\t120029074\t20952\t131101\ndata_index\t256\tordered\t120077003\t8520\t79840\nassignments\t256\tordered\t120127763\t12264\t4259584\nupdates\t256\tordered\t120404641\t1712\t56212\npending\t256\tordered\t120146753\t2608\t1050496\ndata_index\t256\tshuffled\t120069384\t6944\t72169\nassignments\t256\tshuffled\t120098334\t9624\t4259584\nupdates\t256\tshuffled\t120163513\t1520\t55432\npending\t256\tshuffled\t120313450\t2376\t1050085\ndata_index\t1024\tordered\t120136623\t1024\t1277824\nassignments\t1024\tordered\t120131113\t2352\t17824768\nupdates\t1024\tordered\t121899585\t400\t224835\npending\t1024\tordered\t120487169\t576\t10493669\ndata_index\t1024\tshuffled\t120397201\t952\t1257501\nassignments\t1024\tshuffled\t120383951\t1376\t17824768\nupdates\t1024\tshuffled\t120553069\t336\t224463\npending\t1024\tshuffled\t121383521\t496\t10494121\ndata_index\t4096\tordered\t122654568\t224\t20446720\nassignments\t4096\tordered\t121499739\t368\t83881984\nupdates\t4096\tordered\t122999765\t88\t901140\ndata_index\t4096\tshuffled\t121478420\t160\t20214507\nassignments\t4096\tshuffled\t121001645\t216\t83881984\nupdates\t4096\tshuffled\t131565000\t80\t900563"
+  },
+  {
+    "kind": "multi-case",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [],
+    "output": "data_index\t32\tordered\t120004015\t53664\t1244\nassignments\t32\tordered\t120002325\t122024\t525280\nupdates\t32\tordered\t120001224\t20832\t880\npending\t32\tordered\t120020094\t22800\t131088\ndata_index\t32\tshuffled\t120005934\t56640\t1545\nassignments\t32\tshuffled\t120002894\t103096\t525280\nupdates\t32\tshuffled\t120024575\t18672\t852\npending\t32\tshuffled\t120087433\t19296\t131101\ndata_index\t256\tordered\t120072744\t6624\t79840\nassignments\t256\tordered\t120053514\t12656\t4259584\nupdates\t256\tordered\t120179173\t2152\t56212\npending\t256\tordered\t120352720\t2944\t1050496\ndata_index\t256\tshuffled\t120056694\t4720\t72169\nassignments\t256\tshuffled\t120028384\t8344\t4259584\nupdates\t256\tshuffled\t120476639\t1800\t55432\npending\t256\tshuffled\t120071873\t2144\t1050085\ndata_index\t1024\tordered\t120521739\t1224\t1277824\nassignments\t1024\tordered\t120171012\t2752\t17824768\nupdates\t1024\tordered\t121801526\t504\t224835\npending\t1024\tordered\t120082013\t688\t10493669\ndata_index\t1024\tshuffled\t120588668\t960\t1257501\nassignments\t1024\tshuffled\t120087903\t1712\t17824768\nupdates\t1024\tshuffled\t120407080\t376\t224463\npending\t1024\tshuffled\t120862776\t408\t10494121\ndata_index\t4096\tordered\t120066154\t328\t20446720\nassignments\t4096\tordered\t120260921\t680\t83881984\nupdates\t4096\tordered\t122119223\t112\t901140\ndata_index\t4096\tshuffled\t120434290\t192\t20214507\nassignments\t4096\tshuffled\t122016314\t320\t83881984\nupdates\t4096\tshuffled\t128594020\t96\t900563"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300003046\t5745728\t1\t299792110"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300006556\t1012800\t1\t299616370"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001336\t5268416\t1\t299543390"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300005626\t1156096\t1\t299644580"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300016255\t1096640\t1\t299658459"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001956\t5101504\t1\t299679610"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300009306\t1169536\t1\t299671380"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300002786\t6708864\t1\t299393060"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001256\t5764288\t1\t299798780"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001976\t987904\t1\t299773580"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300000896\t5286592\t1\t299844100"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300008446\t1034688\t1\t299739900"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300040276\t847168\t1\t299564620"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300000305\t4085184\t1\t299805009"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300000326\t814848\t1\t299756110"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001156\t5775424\t1\t299659320"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300000946\t6942400\t1\t299445200"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300044325\t1091072\t1\t299674340"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001066\t5389696\t1\t299674830"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300003536\t1131584\t1\t299719580"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300017256\t1115008\t1\t299638020"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001316\t5154368\t1\t299349120"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300003266\t999872\t1\t298237460"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001916\t6515904\t1\t299760020"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300004446\t5668608\t1\t299949210"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300007926\t1173888\t1\t299789960"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300000316\t5646720\t1\t299732100"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300003316\t1149888\t1\t299756310"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300027296\t1048384\t1\t299828850"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300005356\t5038336\t1\t299872510"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300016435\t1028352\t1\t299848449"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300005496\t6557888\t1\t299636700"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300000116\t5586624\t1\t299764800"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300005296\t1115712\t1\t299790900"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300001926\t5795584\t1\t299426510"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300005706\t1053952\t1\t299848600"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300004756\t1013120\t1\t299669780"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300004676\t5489344\t1\t299246350"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300014886\t1187328\t1\t299341160"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1\tordered\t300000625\t6256256\t1\t299672769"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300475191\t2708\t1277824\t300197200"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300275103\t4280\t1277824\t299865890"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300256013\t2504\t1277824\t299938180"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 0,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300127574\t3636\t1277824\t299914420"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300188814\t3788\t1277824\t299606120"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300144635\t2524\t1277824\t299947730"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300232943\t3896\t1277824\t299995300"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 1,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300251273\t2668\t1277824\t300019590"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300251962\t2656\t1277824\t300045779"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300117725\t3800\t1277824\t299945890"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300548360\t2368\t1277824\t300388690"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 2,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300128895\t3348\t1277824\t299711480"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300212024\t3396\t1277824\t299700260"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300311953\t2536\t1277824\t299788640"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300215454\t4124\t1277824\t299847780"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 3,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300298223\t2764\t1277824\t299977960"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300040246\t2804\t1277824\t299735730"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300153253\t3696\t1277824\t299741049"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300391922\t2608\t1277824\t299972540"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 4,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300254393\t3088\t1277824\t300011490"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300137315\t3732\t1277824\t299932570"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300235564\t2360\t1277824\t299966360"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300102665\t4312\t1277824\t299780470"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 5,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300336722\t2624\t1277824\t300023870"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300179054\t2468\t1277824\t299931530"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300111015\t3700\t1277824\t299902970"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300020115\t2468\t1277824\t299799509"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 6,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300203964\t3944\t1277824\t299961010"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300353627\t3552\t1277824\t300147160"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300400912\t2540\t1277824\t300183120"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300265903\t4004\t1277824\t299931850"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 7,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300369022\t2636\t1277824\t299951390"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300461881\t2496\t1277824\t300008870"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300061385\t3780\t1277824\t299569520"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300191034\t2484\t1277824\t299777320"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 8,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300079584\t3508\t1277824\t299714739"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300209103\t3892\t1277824\t299885460"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300233073\t2580\t1277824\t299859620"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300042805\t4060\t1277824\t299743320"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 9,
+    "parameters": [
+      "data_index",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "data_index\t1024\tordered\t300062615\t2732\t1277824\t299895300"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300696298\t1228\t10493669\t300647250"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t303838828\t156\t10493669\t303580600"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300758318\t1180\t10493669\t300502230"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t302479561\t156\t10493669\t302309400"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t307079206\t156\t10493669\t307031740"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300229483\t1224\t10493669\t300045700"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t306014926\t148\t10493669\t305814410"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300016985\t960\t10493669\t299685850"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300232024\t960\t10493669\t299890700"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t305781938\t160\t10493669\t305587320"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300361882\t1208\t10493669\t300132430"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300701769\t160\t10493669\t300506040"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t304436981\t156\t10493669\t304257999"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300703189\t1228\t10493669\t300485320"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t304934077\t156\t10493669\t304425250"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300760389\t1200\t10493669\t300347710"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300867027\t1172\t10493669\t300434710"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300432092\t152\t10493669\t300056630"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300941907\t1128\t10493669\t300316880"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300044455\t140\t10493669\t299469270"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t305230375\t148\t10493669\t305126540"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301121234\t1124\t10493669\t300723709"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300252373\t140\t10493669\t299892710"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301134224\t1068\t10493669\t300601730"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300204814\t1088\t10493669\t299756260"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t307199445\t140\t10493669\t306677120"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300293733\t1180\t10493669\t299801590"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t307181315\t160\t10493669\t306812880"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301447271\t148\t10493669\t301005890"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300680659\t1148\t10493669\t300296430"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t304364073\t148\t10493669\t303916250"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300008035\t1212\t10493669\t299639910"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300586330\t1164\t10493669\t300257970"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301388092\t144\t10493669\t301071650"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300498370\t1184\t10493669\t300110150"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t308814719\t152\t10493669\t308560130"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "nightly",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t305334244\t144\t10493669\t305053880"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "nightly",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t300779348\t1152\t10493669\t300579230"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "bb",
+    "policy": "stable",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t308559091\t156\t10493669\t308255349"
+  },
+  {
+    "kind": "compiler-control",
+    "variant": "std",
+    "policy": "stable",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      1024,
+      "ordered",
+      300
+    ],
+    "output": "pending\t1024\tordered\t301009875\t1132\t10493669\t300775460"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      1
+    ],
+    "output": "data_index\t1\t1\t192\t0\t0\t1"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      32
+    ],
+    "output": "data_index\t32\t5\t1056\t0\t0\t1244"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      256
+    ],
+    "output": "data_index\t256\t42\t8640\t0\t0\t79840"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      1024
+    ],
+    "output": "data_index\t1024\t171\t35232\t0\t0\t1277824"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      4096
+    ],
+    "output": "data_index\t4096\t681\t139968\t0\t0\t20446720"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      1
+    ],
+    "output": "assignments\t1\t1\t192\t0\t0\t16384"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      32
+    ],
+    "output": "assignments\t32\t6\t1312\t0\t0\t525280"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      256
+    ],
+    "output": "assignments\t256\t35\t9056\t0\t0\t4259584"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      1024
+    ],
+    "output": "assignments\t1024\t135\t43552\t0\t0\t17824768"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      4096
+    ],
+    "output": "assignments\t4096\t530\t173056\t0\t0\t83881984"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      1
+    ],
+    "output": "updates\t1\t8\t632\t1\t0\t0"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      32
+    ],
+    "output": "updates\t32\t157\t4960\t1\t0\t880"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      256
+    ],
+    "output": "updates\t256\t1258\t40576\t2\t0\t56212"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      1024
+    ],
+    "output": "updates\t1024\t5035\t164032\t5\t0\t224835"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      4096
+    ],
+    "output": "updates\t4096\t20137\t654112\t17\t0\t901140"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      1
+    ],
+    "output": "pending\t1\t5\t12840\t2\t0\t4096"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      32
+    ],
+    "output": "pending\t32\t44\t142824\t2\t0\t131088"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      256
+    ],
+    "output": "pending\t256\t308\t1085176\t3\t0\t1050496"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      1024
+    ],
+    "output": "pending\t1024\t1229\t4316848\t6\t0\t10493669"
+  },
+  {
+    "kind": "allocations",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      4096
+    ],
+    "output": "pending\t4096\t4909\t17241808\t18\t0\t142637871"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      1
+    ],
+    "output": "data_index\t1\t1\t1089\t1\t1\t1"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      32
+    ],
+    "output": "data_index\t32\t1\t1089\t1\t1\t1244"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      256
+    ],
+    "output": "data_index\t256\t7\t7233\t7\t7\t79840"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      1024
+    ],
+    "output": "data_index\t1024\t25\t25665\t25\t25\t1277824"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "data_index",
+      4096
+    ],
+    "output": "data_index\t4096\t97\t97857\t97\t97\t20446720"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      1
+    ],
+    "output": "assignments\t1\t1\t1089\t1\t1\t16384"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      32
+    ],
+    "output": "assignments\t32\t2\t1345\t1\t1\t525280"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      256
+    ],
+    "output": "assignments\t256\t7\t8257\t6\t6\t4259584"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      1024
+    ],
+    "output": "assignments\t1024\t22\t36929\t20\t20\t17824768"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "assignments",
+      4096
+    ],
+    "output": "assignments\t4096\t78\t143425\t76\t76\t83881984"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      1
+    ],
+    "output": "updates\t1\t8\t1177\t2\t1\t0"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      32
+    ],
+    "output": "updates\t32\t156\t6305\t5\t4\t880"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      256
+    ],
+    "output": "updates\t256\t1245\t46913\t31\t29\t56212"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      1024
+    ],
+    "output": "updates\t1024\t4982\t187457\t123\t118\t224835"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "updates",
+      4096
+    ],
+    "output": "updates\t4096\t19926\t748609\t487\t470\t901140"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      1
+    ],
+    "output": "pending\t1\t5\t13561\t3\t1\t4096"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      32
+    ],
+    "output": "pending\t32\t42\t144025\t5\t3\t131088"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      256
+    ],
+    "output": "pending\t256\t279\t1082521\t16\t13\t1050496"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      1024
+    ],
+    "output": "pending\t1024\t1108\t4302785\t56\t50\t10493669"
+  },
+  {
+    "kind": "allocations",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "alloc",
+      "pending",
+      4096
+    ],
+    "output": "pending\t4096\t4429\t17185313\t219\t201\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5030\t232356615\t20368169\t20463334\t25545849\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5842\t219815257\t28804930\t18786294\t31020850\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5873\t218717182\t29687855\t18123153\t31875067\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5350\t232291297\t20702789\t20056712\t25652962\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5264\t229442250\t20606594\t19974375\t28581789\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5823\t220468213\t28631084\t17631595\t31753761\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5975\t218610565\t30330701\t18195372\t31073704\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5241\t229961429\t20921263\t21242769\t26612693\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5271\t230065382\t21271798\t21031460\t26279840\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t6243\t220686741\t28612282\t17627738\t31613518\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1149\t232586281\t21212936\t20914218\t24900094\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t144\t251957552\t4832558\t4561097\t39124684\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t157\t251451678\t4399383\t4332492\t40196119\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1197\t235485930\t20794133\t19818133\t23775161\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1190\t234801217\t21150249\t19895963\t23885897\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t140\t252688735\t4880938\t4260197\t38141485\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t149\t251978300\t4498154\t4204240\t39868317\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1118\t234616226\t20341970\t20573770\t24331132\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1137\t234784445\t20804827\t20194921\t23832209\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t140\t252573874\t4309447\t4245839\t39299521\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t32\t253685639\t8024303\t6381809\t38113025\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t86\t243944286\t16310329\t11350510\t30837676\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t84\t242180972\t16607841\t14351135\t29343673\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t32\t246627390\t8835955\t7651373\t39129965\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t30\t253158625\t8813964\t6990439\t40043698\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t79\t245778648\t15554448\t11110163\t28188360\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t103\t243587802\t13312698\t12314009\t32387681\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t28\t246658075\t9423226\t7072511\t41516628\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t27\t249138644\t9132920\t7601157\t39840348\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t80\t242838227\t18032945\t12154547\t29323863\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5237\t231952447\t20657023\t20231098\t25893673\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t6025\t222436219\t29245281\t18067472\t30661544\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5304\t220428318\t29057584\t17580009\t31612167\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t4480\t230696948\t20439186\t20767665\t27064576\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t4880\t231271409\t20675553\t20798127\t25912720\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5657\t221084257\t29269070\t17093363\t31093118\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t6102\t222275649\t29301159\t17112899\t29846659\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5306\t231837184\t20956886\t20054018\t25773923\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t4770\t230717708\t20286632\t21578637\t26096936\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      256,
+      300
+    ],
+    "output": "256\t5944\t220538211\t29849699\t17878461\t30087305\t1050496"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1146\t234527290\t21181625\t20647228\t23396128\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1601\t212836769\t32571635\t19859046\t34289955\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1791\t211024762\t33014278\t20052944\t35491080\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1114\t231717194\t21553664\t20485815\t26020236\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1079\t233855061\t20782774\t20545484\t24738827\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1791\t209875285\t34322123\t20005861\t35427150\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1814\t209755471\t33562278\t20081755\t36124369\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1110\t234311852\t20945269\t20538585\t23966122\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1146\t232856080\t21317421\t20964523\t24519376\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      1024,
+      300
+    ],
+    "output": "1024\t1492\t208446995\t34260884\t19993379\t36957841\t10493669"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t183\t237550099\t24694764\t17663521\t20921413\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t219\t239348663\t27703875\t12536053\t20941740\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t208\t237807320\t29616729\t12512983\t20794966\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t198\t235668107\t26926655\t17454324\t21245939\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t185\t236766124\t27103281\t16514832\t19639059\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t199\t239399114\t28840454\t11998748\t19941287\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t195\t240506489\t29462712\t11756249\t19777451\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t183\t236483651\t27299958\t17060393\t20134925\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t192\t234920911\t27287024\t16827888\t21315028\t142637871"
+  },
+  {
+    "kind": "phases",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "phases",
+      4096,
+      300
+    ],
+    "output": "4096\t193\t237750234\t29885474\t12155260\t20252027\t142637871"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300018736\t18234368\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300003516\t8023040\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300025285\t8436736\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300001016\t18097152\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300000835\t17550336\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300006315\t7537664\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300018575\t8071168\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300007736\t17368064\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300007226\t15608832\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300034505\t8356864\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300012245\t8476672\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300013206\t16724992\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300021335\t15528960\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300007965\t6815744\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300032656\t7073792\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300005236\t15696896\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300013295\t17437696\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300007826\t8612864\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300003836\t8039424\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "false"
+    ],
+    "output": "1024\tfalse\t300002225\t16158720\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300004546\t17419264\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300035185\t8541184\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300019045\t8993792\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300010316\t16717824\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300005835\t17599488\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300023635\t8802304\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300018706\t8941568\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300001955\t18268160\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300011516\t16985088\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300007765\t9186304\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300016415\t9184256\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300010626\t16534528\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300012346\t17522688\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300034205\t8866816\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300001064\t8968192\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300012845\t15984640\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300022266\t17224704\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300010156\t9088000\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300001676\t8145920\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1024,
+      300,
+      "true"
+    ],
+    "output": "1024\ttrue\t300008115\t14606336\t262144"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t302437961\t1376256\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t302036864\t1654784\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t301805548\t1572864\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t302460002\t1245184\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t302789808\t1114112\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t300754877\t1703936\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t300447501\t1474560\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t302190164\t1458176\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t302168885\t1294336\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t302618590\t1785856\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t303363593\t1572864\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t301863407\t1212416\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t301347153\t1097728\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t301320283\t1441792\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t301147134\t1622016\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t300012505\t1359872\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t300196634\t1490944\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t301788578\t1589248\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t301160804\t1703936\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "false"
+    ],
+    "output": "1048576\tfalse\t300094545\t1294336\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301330182\t1327104\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300424752\t2785280\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301521791\t2539520\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301657199\t1458176\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300748308\t1081344\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300601240\t2654208\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301054576\t2834432\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300987545\t1212416\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301405942\t1425408\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301296703\t2326528\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301969226\t2834432\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300220403\t1687552\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301850228\t1359872\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300682899\t2801664\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301205123\t2850816\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t303550321\t1458176\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t303944277\t1228800\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t301856037\t2719744\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300605380\t2555904\t4310532874"
+  },
+  {
+    "kind": "steady-lookup",
+    "variant": "std",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "lookup",
+      1048576,
+      300,
+      "true"
+    ],
+    "output": "1048576\ttrue\t300472402\t950272\t4310532874"
+  },
+  {
+    "kind": "perf-record",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [],
+    "output": "pending\t1024\tordered\t1500568222\t5716\t10493669\t1498124559"
+  },
+  {
+    "kind": "perf-record",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [],
+    "output": "pending\t1024\tordered\t1504260577\t708\t10493669\t1495061340"
+  }
+]

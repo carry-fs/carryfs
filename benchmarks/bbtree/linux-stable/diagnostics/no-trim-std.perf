@@ -1,0 +1,8 @@
+# started on Sun Oct 25 19:07:05 2026
+
+1102.54,msec,task-clock,1102542190,100.00,,
+1138,,page-faults,1102542190,100.00,,
+1138,,minor-faults,1102542190,100.00,,
+0,,major-faults,1102542190,100.00,,
+23,,context-switches,1102542190,100.00,,
+0,,cpu-migrations,1102542190,100.00,,

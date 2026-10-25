@@ -1,0 +1,184 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 37  of event 'cpu-clock:u'
+# Event count (approx.): 373737370
+#
+# Overhead  Symbol                                                                                                           IPC   [IPC Coverage]
+# ........  ...............................................................................................................  ....................
+#
+    29.73%  [.] 0x00000000000b2ff4                                                                                           -      -            
+            |          
+            |--27.03%--0x7c03052b3dbe
+            |          maps::pending
+            |          checked_sub_instant (inlined)
+            |          checked_duration_since (inlined)
+            |          duration_since (inlined)
+            |          sub (inlined)
+            |          elapsed (inlined)
+            |          maps::main
+            |          
+             --2.70%--0x7c03052b4470
+                       0x7c03052b5249
+                       posix_memalign
+                       aligned_malloc (inlined)
+                       alloc (inlined)
+                       alloc_zeroed (inlined)
+                       __rdl_alloc_zeroed (inlined)
+                       <bbtree::tree::node_stack::NodeStackMut<u64, alloc::vec::Vec<u8>, bbtree::inline_key::Auto>>::insert_splitting::<bbtree::allocator::Global>
+                       0x3f
+
+    21.62%  [.] maps::pending                                                                                                -      -            
+            |          
+            |--8.11%--0x13b90
+            |          
+             --5.41%--checked_sub_instant (inlined)
+                       checked_duration_since (inlined)
+                       duration_since (inlined)
+                       sub (inlined)
+                       elapsed (inlined)
+                       maps::main
+
+     5.41%  [.] 0x0000000000198484                                                                                           -      -            
+            |
+            ---maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     5.41%  [.] 0x0000000000198489                                                                                           -      -            
+            |
+            ---maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     2.70%  [.] <bbtree::tree::node_stack::NodeStackMut<u64, alloc::vec::Vec<u8>, bbtree::inline_key::Auto>>::search::<u64>  -      -            
+            |
+            ---0xfff
+
+     2.70%  [.] __rustc::__rust_alloc                                                                                        -      -            
+            |
+            ---0x7c0305412abf
+
+     2.70%  [.] 0x00000000000b0f83                                                                                           -      -            
+            |
+            ---0x7c03052b2174
+               0x7c03052b2328
+               maps::pending
+               maps::main
+
+     2.70%  [.] 0x00000000000b2221                                                                                           -      -            
+            |
+            ---0x7c03052b2328
+               maps::pending
+               maps::main
+
+     2.70%  [.] 0x00000000000b2406                                                                                           -      -            
+            |
+            ---0x7c03052b3dbe
+               maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     2.70%  [.] 0x00000000000b2ec5                                                                                           -      -            
+            |
+            ---0x7c03052b4470
+               0x7c03052b5249
+               posix_memalign
+               aligned_malloc (inlined)
+               alloc (inlined)
+               alloc_zeroed (inlined)
+               __rdl_alloc_zeroed (inlined)
+               <bbtree::tree::node_stack::NodeStackMut<u64, alloc::vec::Vec<u8>, bbtree::inline_key::Auto>>::insert_splitting::<bbtree::allocator::Global>
+               0x3f
+
+     2.70%  [.] 0x00000000000b2ed2                                                                                           -      -            
+            |
+            ---0x7c03052b3dbe
+               maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     2.70%  [.] 0x00000000000b2ef4                                                                                           -      -            
+            |
+            ---0x7c03052b3dbe
+               maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     2.70%  [.] 0x00000000000b2ff8                                                                                           -      -            
+            |
+            ---0x7c03052b3dbe
+               maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     2.70%  [.] 0x00000000000b3300                                                                                           -      -            
+            |
+            ---0x7c03052b3dbe
+               maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     2.70%  [.] 0x00000000000b3ca0                                                                                           -      -            
+            |
+            ---maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+     2.70%  [.] 0x0000000000197bae                                                                                           -      -            
+            |
+            ---maps::pending
+
+     2.70%  [.] 0x0000000000197bb3                                                                                           -      -            
+            |
+            ---maps::pending
+
+     2.70%  [.] 0x000000000019848e                                                                                           -      -            
+            |
+            ---maps::pending
+               checked_sub_instant (inlined)
+               checked_duration_since (inlined)
+               duration_since (inlined)
+               sub (inlined)
+               elapsed (inlined)
+               maps::main
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

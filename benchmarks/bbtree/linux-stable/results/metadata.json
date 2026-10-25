@@ -1,0 +1,36 @@
+{
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)\n",
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+  "cpu": "AMD EPYC 7543 32-Core Processor",
+  "rustflags": null,
+  "carryfs_commit": "df656f3d053167f4788d53e33a3ce7a8fdb0b03e",
+  "bbtree_commit": "8adae97a0ed97e5c98fa2790312eb0aec9719846",
+  "blocks": 3,
+  "pairs_per_block": 10,
+  "minimum_map_wall_ms": 300,
+  "warmup_ms": 100,
+  "cpu_affinity": [
+    2
+  ],
+  "started_utc": "2026-10-25T18:48:27Z",
+  "map_metric": "process CPU ns per complete lifecycle",
+  "core_metric": "wall ns per workload",
+  "ordering": "three independently seeded case orderings; A/B order alternates each pair",
+  "finished_utc": "2026-10-25T19:05:38Z",
+  "binary_sha256": {
+    "core-std": "92dc973625058d712f7191be7eb4ff14e75cdf5db0052e4fd9252b51d3a2347d",
+    "core-bb": "17b8658e2c79271296c1ff6e1d24fbda5e177e3bc232eb4c4a8d4818644f0c32",
+    "maps-std": "4be1e7252a47320fb9707f6c4de72f1c01b7b3ac0d962951d1af5bb6e4c43efe",
+    "maps-bb": "a2b0b4b35fa8a122aac0f354c2cbbbb6f79a7774c94129b7e34ffa1bfd3ca059"
+  },
+  "inherited_allocator_settings": {},
+  "build_affinity": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "map_functions_sha256": "9df0438583f7f8b38c51089c59ae27ee82a0b4b9445ad1c3081285162a7577cf",
+  "archive_sha256": "b274df38a785bb213e2b3c7c3b8c89ecd4dbf423f03ff8475ebce1d151fded4c"
+}

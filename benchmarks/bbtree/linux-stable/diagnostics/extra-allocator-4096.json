@@ -1,0 +1,626 @@
+[
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t304395213\t31\t142637871\t299103400"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t302123875\t104\t142637871\t298328240"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t304336973\t86\t142637871\t302572990"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t308098196\t33\t142637871\t307995940"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301593809\t32\t142637871\t301429369"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300309253\t98\t142637871\t300050310"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t302259323\t105\t142637871\t302022640"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t308267864\t34\t142637871\t307752880"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t302902818\t31\t142637871\t302489330"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300598449\t89\t142637871\t300191460"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301657259\t98\t142637871\t298722450"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t302734348\t30\t142637871\t302519550"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t304080545\t33\t142637871\t303542280"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300757947\t97\t142637871\t300341639"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300458352\t91\t142637871\t300095090"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300277493\t32\t142637871\t300042570"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t305753479\t31\t142637871\t305670160"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t302224754\t98\t142637871\t301736610"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300017185\t105\t142637871\t299694350"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "default",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t302057006\t31\t142637871\t301708800"
+  },
+  {
+    "kind": "strace",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1007025083\t84\t142637871\t847214419"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "std",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1001734655\t101\t142637871\t998643390"
+  },
+  {
+    "kind": "strace",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1000579146\t248\t142637871\t895556590"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "bb",
+    "policy": "default",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1001259129\t316\t142637871\t1000632179"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301546261\t212\t142637871\t301264330"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301530770\t177\t142637871\t301148750"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300997186\t206\t142637871\t300543610"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 1,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300272303\t205\t142637871\t299870090"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300066815\t267\t142637871\t299683770"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 2,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300508171\t252\t142637871\t300092550"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300386702\t289\t142637871\t300053660"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 3,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300570130\t222\t142637871\t300198080"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300314932\t236\t142637871\t299902980"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 4,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301221754\t204\t142637871\t300853910"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300617380\t230\t142637871\t300026050"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 5,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300984476\t212\t142637871\t300651260"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300069485\t258\t142637871\t299698370"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 6,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301274303\t278\t142637871\t300806110"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300061465\t315\t142637871\t299645600"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 7,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300020645\t242\t142637871\t299561020"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301552519\t267\t142637871\t301239219"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 8,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300211903\t254\t142637871\t299916160"
+  },
+  {
+    "kind": "isolated",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t300322652\t288\t142637871\t300000500"
+  },
+  {
+    "kind": "isolated",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 9,
+    "parameters": [
+      "pending",
+      4096,
+      "ordered",
+      300
+    ],
+    "output": "pending\t4096\tordered\t301042946\t207\t142637871\t300782710"
+  },
+  {
+    "kind": "strace",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1000311909\t823\t142637871\t1000022570"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "std",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1000744654\t813\t142637871\t999663849"
+  },
+  {
+    "kind": "strace",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1000632647\t982\t142637871\t999517610"
+  },
+  {
+    "kind": "perf-stat",
+    "variant": "bb",
+    "policy": "no-trim",
+    "pair": 0,
+    "parameters": [
+      "pending",
+      "4096",
+      "ordered",
+      "1000"
+    ],
+    "output": "pending\t4096\tordered\t1000373559\t959\t142637871\t999188370"
+  }
+]

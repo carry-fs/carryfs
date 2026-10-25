@@ -1,0 +1,14 @@
+# Supply terminal confirmation without changing the downloaded installer.
+set timeout 600
+spawn bash -o pipefail -c [lindex $argv 0]
+expect {
+    -exact {[y/N]} { send -- "y\r"; exp_continue }
+    timeout { puts stderr "Timed out waiting for installer"; exit 1 }
+    eof {}
+}
+set result [wait]
+if {[lindex $result 2] != 0 || [llength $result] != 4} {
+    puts stderr "Installer did not exit normally: $result"
+    exit 1
+}
+exit [lindex $result 3]

@@ -1,4 +1,3 @@
-# ci-standard: except make-entry — the repo has no Makefile; release builds call cargo like ci.yml
 name: release
 
 on:
@@ -8,6 +7,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - RELEASE_NOTES.md
       - packaging/**
       - fuse/packaging/**
       - windows/packaging/**
@@ -93,6 +93,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: dist
@@ -105,4 +106,10 @@ jobs:
           flag=
           case $GITHUB_REF_NAME in *-*) flag=--prerelease ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes $flag
+            --verify-tag --title "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md $flag
+
+  publish-index:
+    needs: release
+    uses: ./.github/workflows/publish-scripts.yml
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

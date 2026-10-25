@@ -1,0 +1,93 @@
+name: extended-checks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-checks-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  core:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [miri, fuzz]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Nightly Rust
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustc +nightly --version
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            fuzz/target
+          key: extended-${{ runner.os }}-${{ matrix.check }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+      - name: Miri components
+        if: matrix.check == 'miri'
+        run: rustup component add --toolchain nightly miri rust-src
+      - name: cargo-fuzz
+        if: matrix.check == 'fuzz'
+        run: cargo install cargo-fuzz --locked
+      - name: Check
+        run: bash scripts/check-${{ matrix.check }}.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: extended-${{ matrix.check }}
+          path: |
+            build/check-${{ matrix.check }}/
+            fuzz/artifacts/
+          retention-days: 7
+
+  fsyncdir:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: extended-${{ runner.os }}-fsyncdir-${{ hashFiles('Cargo.lock') }}
+      - name: FUSE and loop devices
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 udev util-linux
+          sudo modprobe fuse
+          sudo modprobe loop
+          test -c /dev/fuse
+      - name: Build
+        run: cargo build --release --locked -p carryfs-core -p carryfs-fuse
+      - name: Directory synchronization
+        run: |
+          mkdir -p build
+          sudo python3 fuse/tests/fsyncdir.py 2>&1 | tee build/check-fsyncdir.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: extended-fsyncdir
+          path: |
+            build/check-fsyncdir.log
+            build/fsyncdir-*/*/probe.log
+          retention-days: 7

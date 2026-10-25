@@ -2,7 +2,7 @@
 set -eu
 
 repository=carry-fs/carryfs
-api=https://api.github.com/repos/$repository
+release_index=https://carryfs.com/releases.txt
 work=
 
 die() { printf 'carryfs: %s\n' "$*" >&2; exit 1; }
@@ -54,9 +54,9 @@ newer_version() {
 download() {
     curl --fail --silent --show-error --location --proto '=https' \
         --proto-redir '=https' --connect-timeout 15 --max-time 300 \
-        --retry 2 -H 'Accept: application/vnd.github+json' \
+        --retry 2 \
         -H 'User-Agent: carryfs-installer' --output "$2" "$1" ||
-        die "Download failed: $1. Check the connection, release availability, and GitHub API rate limit."
+        die "Download failed: $1. Check the connection and release availability."
 }
 
 check_distribution() {
@@ -72,11 +72,11 @@ check_distribution() {
 
 prerequisites() {
     missing=0
-    tools='curl jq tar awk mktemp'
+    tools='curl tar awk mktemp'
     [ "$local_build" = 0 ] || tools='cargo awk mktemp'
     for tool in $tools; do
         if ! command -v "$tool" >/dev/null 2>&1; then
-            printf 'Missing %s. curl: https://curl.se/download.html; jq: https://jqlang.org/download/; cargo: https://rustup.rs/\n' "$tool" >&2
+            printf 'Missing %s. curl: https://curl.se/download.html; cargo: https://rustup.rs/\n' "$tool" >&2
             missing=1
         fi
     done
@@ -134,26 +134,19 @@ select_release() {
     if [ -n "$requested" ]; then
         tag=v$requested
     else
-        : > "$work/tags"
-        page=1
-        while :; do
-            download "$api/releases?per_page=100&page=$page" "$work/releases.json"
-            jq -e 'type == "array"' "$work/releases.json" >/dev/null || die 'Invalid release list from GitHub.'
-            jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name |
-                select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' \
-                "$work/releases.json" >> "$work/tags"
-            [ "$(jq length "$work/releases.json")" -eq 100 ] || break
-            page=$((page + 1))
-        done
+        download "$release_index" "$work/versions"
         major=
         if [ -n "$installed" ] && [ "$upgrade" = 0 ]; then major=${installed%%.*}; fi
         tag=$(awk -v major="$major" '
-            { v=substr($0,2); split(v,n,".") }
+            { sub(/\r$/, "") }
+            $0 == "" { next }
+            $0 !~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { exit 1 }
+            { split($0,n,".") }
             major != "" && n[1] != major { next }
             !best || n[1]+0>a || (n[1]+0==a && n[2]+0>b) || (n[1]+0==a && n[2]+0==b && n[3]+0>c) {
                 best=$0; a=n[1]+0; b=n[2]+0; c=n[3]+0
             }
-            END { print best }' "$work/tags")
+            END { if(best) print "v" best }' "$work/versions") || die 'Invalid release index from carryfs.com.'
         [ -n "$tag" ] || die 'No published stable release matches this installation. Use --version for an explicit published tag.'
     fi
     selected=${tag#v}
@@ -163,8 +156,6 @@ select_release() {
             exit 0
         fi
     fi
-    download "$api/releases/tags/$tag" "$work/release.json"
-    jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false' "$work/release.json" >/dev/null || die 'Invalid release metadata from GitHub.'
 }
 
 verify_package() {
@@ -262,7 +253,7 @@ uninstall_linux() {
 }
 
 main() {
-    requested= upgrade=0 uninstall=0 local_build=0 installed=
+    requested='' upgrade=0 uninstall=0 local_build=0 installed=''
     while [ "$#" -gt 0 ]; do
         case $1 in
             --version)

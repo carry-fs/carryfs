@@ -1,0 +1,80 @@
+name: installer-checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published package version for the install/uninstall smoke test
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-checks-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARRYFS_VERSION: ${{ inputs.version }}
+
+jobs:
+  selection:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Release index and version selection
+        run: python -m unittest discover -s tests/installers -p 'test_*.py' -v
+      - name: PowerShell selection
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests/installers/selection.ps1
+
+  ubuntu-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prerequisites without jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl fuse3 udisks2 systemd udev procps coreutils expect
+          sudo apt-get remove -y jq
+          if command -v jq >/dev/null; then
+            echo 'jq must be absent for this check.' >&2
+            exit 1
+          fi
+          sudo modprobe fuse
+          test -c /dev/fuse
+          systemctl is-active systemd-udevd
+      - name: Install, verify adapter, reinstall, and uninstall
+        run: bash tests/installers/smoke-ubuntu.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: installer-checks-ubuntu
+          path: smoke-logs/
+          retention-days: 7
+
+  windows-install:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install WinFsp and verify the checkout installer
+        shell: powershell
+        run: .\tests\installers\smoke-windows.ps1
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: installer-checks-windows
+          path: smoke-logs/
+          retention-days: 7

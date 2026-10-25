@@ -86,9 +86,34 @@ Run the checks before you send a change:
 bash scripts/check.sh
 ```
 
-It runs the format reference check in `spec/verify.py`, then
+It runs the format reference check in `spec/verify.py`, installer selection
+and release-index tests, then
 `cargo fmt --check`, `cargo check`, Clippy with warnings as errors, and the
 tests.
+
+To run only the installer checks:
+
+```sh
+python3 -m unittest discover -s tests/installers -p 'test_*.py'
+```
+
+On Windows, also run `powershell -NoProfile -File tests/installers/selection.ps1`.
+
+The website publisher generates `https://carryfs.com/releases.txt` from
+published releases with all three platform packages and `SHA256SUMS` uploaded.
+Release publication calls the same publisher after the assets are available.
+Tagged runs update only the index, preserving the website's installer scripts.
+The index is generated automatically; do not add unreleased versions by hand.
+If index publication fails after a release succeeds, rerun the failed
+publisher job to rebuild it from the published releases.
+
+The [installer-checks workflow](.github/workflows/installer-checks.yml) runs
+selection tests on Ubuntu, macOS, and Windows, then installs a selected
+published package on disposable Ubuntu and Windows hosts. Start it manually
+and choose the package version. It checks adapter installation, reinstall,
+and uninstall; the Ubuntu job removes `jq` first.
+[Initial verification](https://github.com/carry-fs/carryfs/actions/runs/40237648047)
+passed using an existing published package and the checkout's installers.
 
 ### Miri
 

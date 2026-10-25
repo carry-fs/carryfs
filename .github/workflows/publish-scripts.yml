@@ -8,7 +8,13 @@ on:
     paths:
       - install.sh
       - install.ps1
+      - scripts/release-index.py
+      - .github/workflows/publish-scripts.yml
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      APP_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -22,6 +28,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - name: Generate release index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+          python3 scripts/release-index.py < releases.json > releases.txt
+          case $GITHUB_REF in
+            refs/tags/*-*) ;;
+            refs/tags/*)
+              version=${GITHUB_REF#refs/tags/v}
+              grep -Fx "$version" releases.txt >/dev/null || {
+                echo "::error::Published release $version is missing or incomplete in the release index."
+                exit 1
+              }
+              ;;
+          esac
       # A token for carryfs.com alone, minted per run from the carryfs-publisher
       # app. Deploy keys are disabled on that repository.
       - id: app
@@ -41,14 +64,19 @@ jobs:
       - name: Copy and push
         run: |
           set -euo pipefail
-          cp install.sh install.ps1 website/
+          # Tagged releases update metadata without replacing newer website scripts.
+          case $GITHUB_REF in
+            refs/tags/*) ;;
+            *) cp install.sh install.ps1 website/ ;;
+          esac
+          cp releases.txt website/
           cd website
-          git add install.sh install.ps1
+          git add install.sh install.ps1 releases.txt
           if git diff --cached --quiet; then
-            echo "Website already has these scripts."
+            echo "Website installers and release index are current."
             exit 0
           fi
           # Author the commit as whoever pushed the scripts to master.
           git -c user.name="$GITHUB_ACTOR" -c user.email="$GITHUB_ACTOR_ID+$GITHUB_ACTOR@users.noreply.github.com" \
-            commit -m "Publish install scripts from carry-fs/carryfs@${GITHUB_SHA::7}"
+            commit -m "Publish installer metadata from carry-fs/carryfs@${GITHUB_SHA::7}"
           git push origin HEAD:master

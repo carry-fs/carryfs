@@ -3,7 +3,7 @@ param([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall)
 
 $ErrorActionPreference = 'Stop'
 $CarryFSRepository = 'carry-fs/carryfs'
-$CarryFSApi = "https://api.github.com/repos/$CarryFSRepository"
+$CarryFSReleaseIndex = 'https://carryfs.com/releases.txt'
 
 function ConvertTo-CarryFSVersion([string]$Value) {
     $identifier = '(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
@@ -38,34 +38,28 @@ function Compare-CarryFSVersion($A, $B) {
     return [Math]::Sign($A.Pre.Count - $B.Pre.Count)
 }
 
-function Get-CarryFSReleases {
-    $page = 1
-    do {
-        $uri = "$CarryFSApi/releases?per_page=100&page=$page"
-        try {
-            $batch = Invoke-RestMethod -Uri $uri -Headers @{
-                Accept = 'application/vnd.github+json'; 'User-Agent' = 'carryfs-installer'
-            } -UseBasicParsing -TimeoutSec 300
-            $batch = @($batch)
-        } catch {
-            throw "Cannot list CarryFS releases. Check your connection and GitHub API rate limit. $($_.Exception.Message)"
+function Get-CarryFSVersions {
+    try {
+        $index = Invoke-RestMethod -Uri $CarryFSReleaseIndex -UseBasicParsing -TimeoutSec 300
+    } catch {
+        throw "Cannot read CarryFS release index at $CarryFSReleaseIndex. $($_.Exception.Message)"
+    }
+    foreach ($line in ([string]$index -split "\r?\n")) {
+        if ($line -eq '') { continue }
+        if ($line -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw 'Invalid release index from carryfs.com.'
         }
-        foreach ($release in $batch) { $release }
-        $page++
-    } while ($batch.Count -eq 100)
+        $line
+    }
 }
 
-function Select-CarryFSRelease($Releases, $Installed, [switch]$Upgrade) {
+function Select-CarryFSVersion($Versions, $Installed, [switch]$Upgrade) {
     $best = $null
-    $bestVersion = $null
-    foreach ($release in $Releases) {
-        if ($release.draft -ne $false -or $release.prerelease -ne $false -or
-            $release.tag_name -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { continue }
-        $candidate = ConvertTo-CarryFSVersion $release.tag_name
+    foreach ($value in $Versions) {
+        $candidate = ConvertTo-CarryFSVersion $value
         if ($Installed -and -not $Upgrade -and $candidate.Core.Major -ne $Installed.Core.Major) { continue }
-        if (-not $best -or (Compare-CarryFSVersion $candidate $bestVersion) -gt 0) {
-            $best = $release
-            $bestVersion = $candidate
+        if (-not $best -or (Compare-CarryFSVersion $candidate $best) -gt 0) {
+            $best = $candidate
         }
     }
     if (-not $best) { throw 'No published stable release matches this installation. Use -Version for an explicit published tag.' }
@@ -208,15 +202,10 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Loca
         $selected = Get-CarryFSCheckoutVersion $PSScriptRoot
     } else {
         if ($requested) {
-            $uri = "$CarryFSApi/releases/tags/v$($requested.Text)"
-            $release = Invoke-RestMethod -Uri $uri -Headers @{
-                Accept = 'application/vnd.github+json'; 'User-Agent' = 'carryfs-installer'
-            } -UseBasicParsing -TimeoutSec 300
-            if ($release.tag_name -cne "v$($requested.Text)" -or $release.draft -ne $false) { throw 'Invalid release metadata from GitHub.' }
+            $selected = $requested
         } else {
-            $release = Select-CarryFSRelease @(Get-CarryFSReleases) $installed -Upgrade:$Upgrade
+            $selected = Select-CarryFSVersion @(Get-CarryFSVersions) $installed -Upgrade:$Upgrade
         }
-        $selected = ConvertTo-CarryFSVersion $release.tag_name
         if ($installed -and ((Compare-CarryFSVersion $selected $installed) -eq 0 -or (-not $requested -and (Compare-CarryFSVersion $selected $installed) -lt 0))) {
             Write-Host "CarryFS $($installed.Text) is already current for this selection."
             return
@@ -231,7 +220,7 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Loca
             $origin = "Built from $PSScriptRoot."
         } else {
             $asset = "carryfs-$($selected.Text)-windows-x86_64.zip"
-            $base = "https://github.com/$CarryFSRepository/releases/download/$($release.tag_name)"
+            $base = "https://github.com/$CarryFSRepository/releases/download/v$($selected.Text)"
             $archive = Join-Path $work $asset
             $checksums = Join-Path $work 'SHA256SUMS'
             Save-CarryFSDownload "$base/$asset" $archive

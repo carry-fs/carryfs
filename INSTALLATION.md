@@ -18,10 +18,10 @@ UDisks. The installer requires a running systemd host.
 
 ```sh
 # Ubuntu
-sudo apt install curl jq fuse3 udisks2 systemd udev procps coreutils
+sudo apt install curl fuse3 udisks2 systemd udev procps coreutils
 
 # Arch Linux
-sudo pacman -S curl jq fuse3 udisks2 procps-ng coreutils
+sudo pacman -S curl fuse3 udisks2 procps-ng coreutils
 ```
 
 `/dev/fuse` must exist. If it doesn't, load the kernel module with
@@ -50,7 +50,12 @@ Install [WinFsp](https://winfsp.dev/rel/) 2.1 or later.
 
 ## Install a release package
 
-Run the install script to install the latest stable release.
+Run the install script to install the latest stable release. Both installers
+read the published versions from `https://carryfs.com/releases.txt` and download
+packages from GitHub Releases. The Unix installer does not require `jq`.
+
+An existing installation stays within its current major version. Use
+`--upgrade` on Unix or `-Upgrade` on Windows to allow a newer major version.
 
 Linux and macOS:
 

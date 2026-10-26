@@ -8,6 +8,7 @@
 <p align="center"><b>Your files, across macOS, Linux, and Windows.</b></p>
 
 <p align="center">
+  <a href="https://github.com/carry-fs/carryfs/releases"><img alt="Release version" src="https://img.shields.io/github/v/release/carry-fs/carryfs?include_prereleases&amp;style=flat-square"></a>
   <a href="https://github.com/carry-fs/carryfs/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/carry-fs/carryfs/ci.yml?branch=master&label=ci&style=flat-square"></a>
   <a href="#current-status"><img alt="Status: public beta" src="https://img.shields.io/badge/status-public%20beta-orange?style=flat-square"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0 OR GPL-2.0-only" src="https://img.shields.io/badge/license-Apache--2.0%20OR%20GPL--2.0--only-blue?style=flat-square"></a>

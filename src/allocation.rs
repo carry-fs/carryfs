@@ -429,7 +429,7 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         }
     }
 
-    pub(crate) fn mark(&self) -> Undo {
+    pub(crate) fn mark(&mut self) -> Undo {
         Undo {
             forest: self.forest.mark(),
             catalog: self.catalog.clone(),

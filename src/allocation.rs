@@ -429,7 +429,7 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         }
     }
 
-    pub(crate) fn mark(&self) -> Undo {
+    pub(crate) fn mark(&mut self) -> Undo {
         Undo {
             forest: self.forest.mark(),
             catalog: self.catalog.clone(),
@@ -464,10 +464,9 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
     /// `seal` itself adds.
     pub(crate) fn fits_batch(&mut self) -> bool {
         let usable = *self.usable.get_or_insert_with(|| {
-            self.workspace
-                .iter()
-                .filter(|slot| !self.release.contains(slot) && !self.excluded.contains(slot))
-                .count()
+            partition_slots(&self.workspace, &self.release, self.excluded)
+                .0
+                .len()
         });
         let height = [&self.catalog, &self.allocation, &self.cleanup]
             .iter()

@@ -507,6 +507,13 @@ struct Node {
     edge: Edge,
 }
 
+impl Node {
+    /// Whether `Forest::take` moved this draft out. No real branch is empty.
+    fn taken(&self) -> bool {
+        matches!(&self.entries, Entries::Branch(children) if children.is_empty())
+    }
+}
+
 pub(crate) struct Forest<'a, D> {
     pub device: &'a mut D,
     pub base: &'a Root,
@@ -529,6 +536,9 @@ pub(crate) struct Forest<'a, D> {
     sent: usize,
     /// Drafts left after the last `compact`.
     compacted: usize,
+    /// Drafts from this index on were made since the last mark, so no rewind
+    /// restores them and an edit may move them out instead of copying them.
+    owned: usize,
 }
 
 /// A forest's own state between the operations of a batch: everything except
@@ -595,6 +605,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             data_index: BTreeMap::new(),
             sent: 0,
             compacted: 0,
+            owned: 0,
         })
     }
 
@@ -610,6 +621,8 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             return Err(Error::InvalidInput("batch resumed against another root"));
         }
         Ok(Self {
+            // Earlier operations' drafts hang from the batch's saved roots.
+            owned: drafts.nodes.len(),
             device,
             base,
             cache,
@@ -705,9 +718,11 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         }
         self.drafts = self.nodes.len();
         self.compacted = self.nodes.len();
+        self.owned = self.nodes.len();
     }
 
-    pub fn mark(&self) -> Mark {
+    pub fn mark(&mut self) -> Mark {
+        self.owned = self.nodes.len();
         Mark {
             nodes: self.nodes.len(),
             retired: self.retired_log.len(),
@@ -914,7 +929,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             Link::Draft(id) => self
                 .nodes
                 .get(id)
-                .filter(|node| node.kind == kind)
+                .filter(|node| node.kind == kind && !node.taken())
                 .map(read)
                 .ok_or(Error::InvalidInput("unknown draft tree node")),
             Link::Disk(reference) => {
@@ -943,7 +958,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             Link::Draft(id) => self
                 .nodes
                 .get(id)
-                .filter(|node| node.kind == kind)
+                .filter(|node| node.kind == kind && !node.taken())
                 .cloned()
                 .ok_or(Error::InvalidInput("unknown draft tree node")),
             Link::Disk(reference) => {
@@ -964,6 +979,32 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                 Ok(node)
             }
         }
+    }
+
+    /// `load` for an edit that replaces the node at `edge`. A draft made since
+    /// the last mark hangs only from that edge, which the edit supersedes, so
+    /// it is moved out rather than copied; copying it was 14% of the time to
+    /// create a small file in a batch. It leaves an empty branch that `load`
+    /// and `read_node` refuse, so a stale edge to it fails instead of reading
+    /// the wrong node or an empty tree.
+    fn take(&mut self, edge: &Edge, kind: TreeKind) -> Result<Node> {
+        let Link::Draft(id) = edge.link else {
+            return self.load(edge, kind);
+        };
+        if id < self.owned {
+            return self.load(edge, kind);
+        }
+        let node = self
+            .nodes
+            .get_mut(id)
+            .filter(|node| node.kind == kind && !node.taken())
+            .ok_or(Error::InvalidInput("unknown draft tree node"))?;
+        let taken = Node {
+            kind,
+            entries: Entries::Branch(Vec::new()),
+            edge: node.edge.clone(),
+        };
+        Ok(std::mem::replace(node, taken))
     }
 
     fn load_disk(&mut self, reference: TreeRef, edge: &Edge, kind: TreeKind) -> Result<Node> {
@@ -1493,7 +1534,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         key: &[u8],
         value: &[u8],
     ) -> Result<Vec<Edge>> {
-        let node = self.load(root, kind)?;
+        let node = self.take(root, kind)?;
         let replacements = match node.entries {
             Entries::Leaf(mut records) => {
                 // The other records were checked when their page was decoded
@@ -1634,6 +1675,10 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         }
     }
 
+    /// Insert or replace a record. Drafts made since the last mark, or since
+    /// the forest was created if there is none, are moved out instead of
+    /// copied. A failed put can leave `root` unreadable, so after an error
+    /// rewind to an earlier mark or drop the forest.
     pub fn put(&mut self, root: Edge, kind: TreeKind, key: &[u8], value: &[u8]) -> Result<Edge> {
         if key.len() > 1024 || value.len() > 3072 {
             return Err(Error::InvalidInput("oversized record"));
@@ -3074,5 +3119,49 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// An edit moves the drafts it replaces, so a superseded edge must fail
+    /// every read, not answer as an empty tree. Pre-mark roots stay intact.
+    #[test]
+    fn a_superseded_draft_edge_fails_reads_and_premark_roots_survive_rewind() {
+        let (mut device, base) = initial();
+        let mut forest = Forest::new(&mut device, &base).unwrap();
+        let mut before = forest.root(base.cleanup, TreeKind::Cleanup).unwrap();
+        for id in 1..=600u64 {
+            before = forest
+                .put(before, TreeKind::Cleanup, &key(id), &[])
+                .unwrap();
+        }
+        let mark = forest.mark();
+        let first = forest
+            .put(before.clone(), TreeKind::Cleanup, &key(1001), &[])
+            .unwrap();
+        let second = forest
+            .put(first.clone(), TreeKind::Cleanup, &key(1002), &[])
+            .unwrap();
+        assert!(matches!(
+            forest.lookup(&first, TreeKind::Cleanup, &key(1001)),
+            Err(Error::InvalidInput("unknown draft tree node"))
+        ));
+        assert!(matches!(
+            forest.floor(&first, TreeKind::Cleanup, &key(1001)),
+            Err(Error::InvalidInput("unknown draft tree node"))
+        ));
+        assert!(
+            forest
+                .lookup(&second, TreeKind::Cleanup, &key(1002))
+                .unwrap()
+                .is_some()
+        );
+        forest.rewind(mark);
+        for id in 1..=600u64 {
+            assert!(
+                forest
+                    .lookup(&before, TreeKind::Cleanup, &key(id))
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 }

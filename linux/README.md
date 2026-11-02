@@ -187,27 +187,24 @@ runs.
 
 | Metric | FUSE | Kernel |
 |---|---:|---:|
-| sequential_write (MiB/s) | 386 | 1,561 |
-| small_file_create (files/s) | 4,716 | 28,706 |
-| small_file_create_durable (files/s) | 3,351 | 9,385 |
-| tree_create (files/s) | 5,375 | 26,279 |
-| create_10000_batch128_durable (ms) | 2,856 | 1,725 |
-| remove_10000_batch128_durable (ms) | 1,284 | 779 |
-| remove_tree (ms) | 79 | 23 |
-| rw-cold sequential_read (MiB/s) | 478 | 778 |
-| rw-warm sequential_read (MiB/s) | 1,307 | 8,988 |
-| ro-cold sequential_read (MiB/s) | 230 | 425 |
-| rw-stale list_10000_names (ms) | 18.0 | 4.0 |
-| ro-cold list_10000_list-stat (ms) | 140 | 117 |
-| ro-warm list_10000_names (ms) | 2.4 | 4.3 |
-| sequential_write_durable (MiB/s) | 286 | 266 |
+| sequential_write (MiB/s) | 403 | 1,622 |
+| sequential_write_durable (MiB/s) | 293 | 361 |
+| small_file_create (files/s) | 5,015 | 30,622 |
+| small_file_create_durable (files/s) | 3,367 | 7,763 |
+| tree_create (files/s) | 5,418 | 29,190 |
+| create_10000_batch128_durable (ms) | 2,916 | 1,710 |
+| remove_10000_batch128_durable (ms) | 1,173 | 783 |
+| rw-cold sequential_read (MiB/s) | 489 | 791 |
+| rw-warm list_10000_names (ms) | 1.78 | 1.48 |
+| rw-stale list_10000_names (ms) | 22.6 | 2.2 |
+| ro-cold list_10000_interleaved (ms) | 94 | 118 |
 
-Of 55 workload metrics the driver wins 27, ties 5, and loses 23. The
-losses are mostly listings within 5 to 15%. Two are larger. A warm listing
-of names alone takes about twice as long: FUSE serves it from cached
-readdir pages, while the driver walks the catalog again. Durable
-sequential writes trail slightly: the page cache defers writeback, so
-fsync writes what FUSE wrote during `write()`.
+Of 55 workload metrics the driver wins 32, ties 10, and loses 13. The
+losses are mostly cold listings, 5 to 20% slower: priming each entry's
+dentry costs about what FUSE's readdirplus does, and the driver reads the
+catalog from disk where the FUSE daemon reads it ahead at mount. The others
+are fsync phases whose totals the driver wins: `fsync_after_write` writes
+what FUSE wrote during `write()`.
 
 ## Upstreaming
 

@@ -29,8 +29,9 @@ sudo insmod linux/carryfs.ko
 sudo mount -i -t carryfs -o uid=1000,gid=1000 /dev/sdX1 /mnt/usb
 ```
 
-`-i` stops `mount` from running an installed `mount.carryfs` helper, which
-mounts through FUSE. The driver accepts `uid=` and `gid=`, defaulting to the
+An installed `mount.carryfs`, the FUSE adapter's helper, hands the mount to
+this driver when the module is loaded or loadable, dropping the FUSE-only
+options; `CARRYFS_FUSE=1` keeps FUSE. `-i` skips the helper. The driver accepts `uid=` and `gid=`, defaulting to the
 mounting user, as vfat and exfat do; files report mode 644, directories 755.
 `ro` mounts read-only and never writes, not even root mirroring.
 
@@ -166,9 +167,13 @@ allocated but unowned.
   does not know the panic paths of `char::encode_utf8` and
   `slice::sort_unstable`, so the shared code encodes UTF-8 by hand and
   commit uses its own heapsort.
-- **Mount helpers.** `mount -t carryfs` runs `mount.carryfs` if installed,
-  which is the FUSE adapter. Packaging both needs a different type name or
-  helper.
+- **Mount helpers.** `mount -t carryfs` runs `mount.carryfs` if installed.
+  Both adapters share the type name, as ntfs-3g and ntfs3 do not, so the
+  helper decides: it mounts through the driver when `carryfs` is in
+  `/proc/filesystems` after `modprobe`, and through FUSE otherwise.
+- **Direct I/O.** `O_DIRECT` opens are accepted and served by the page
+  cache, and a direct write is written back before it returns. True direct
+  I/O would rewrite a whole 64 KiB checksum unit for a 512-byte write.
 
 ## Differences from the userspace core
 
@@ -222,7 +227,8 @@ what FUSE wrote during `write()`.
 ## fstests results
 
 The `quick` group from fstests at commit 22348afe: of 647 tests, 98 pass,
-539 do not run, and 10 fail. Tests do not run when they need what the
+539 do not run, and 10 fail; with `O_DIRECT` since accepted, generic/091,
+130, 263, and 704 also pass. Tests do not run when they need what the
 format lacks (hard links, extended attributes, reflink, fallocate,
 freezing, quota, owners and modes) or what the host lacks (a `fsgqa`
 user).
@@ -237,7 +243,6 @@ Every failure comes from the format, the host, or a deliberate choice:
 | generic/441 | After a failed write, FORMAT.md keeps the volume faulted until remount, so fsync keeps failing after the device recovers |
 | generic/563 | Needs a device smaller than the format's 256 MiB minimum |
 | generic/634 | The host's `touch` cannot parse a date past 2038 |
-| generic/704 | Needs `O_DIRECT`; a 512-byte direct write would rewrite a whole 64 KiB checksum unit |
 | generic/740 | The userspace `mkfs` helper overwrites other filesystems without `-f` |
 
 fstests found five driver bugs, all fixed: incomplete kept listings
@@ -262,5 +267,5 @@ A submission would be a series that:
    file, and a fstests configuration.
 
 Before that, the driver needs the full `auto` group of fstests, longer
-fuzzing campaigns, `O_DIRECT`, a per-CPU name scratch if non-ASCII lookups
-contend, and a decision on the mount helper name.
+fuzzing campaigns, and a per-CPU name scratch if non-ASCII lookups
+contend.

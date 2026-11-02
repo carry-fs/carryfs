@@ -69,6 +69,15 @@ fn orphan_key(object: u64) -> [u8; 9] {
     key
 }
 
+/// Note a change to `dir`'s entries, under its exclusive inode lock: bump
+/// its version, which invalidates negative dentries and listings being
+/// built, and drop its kept listing.
+fn changed(dir: *mut bindings::inode) {
+    // SAFETY: The caller holds `dir` locked exclusively.
+    unsafe { glue::carryfs_inode_inc_iversion(dir) };
+    crate::dir::forget(dir);
+}
+
 /// Run `f` on the open transaction of a writable volume, opening one, and
 /// committing a large one first. Faults the volume if `f` fails after its
 /// first edit.
@@ -246,8 +255,7 @@ fn create_object(
         touch_parent(sb, state, disk, parent, 1, time)?;
         Ok(object)
     })?;
-    // SAFETY: `dir` is valid; a new entry invalidates negative dentries.
-    unsafe { glue::carryfs_inode_inc_iversion(dir) };
+    changed(dir);
     let inode = inode::get(sb, object)?;
     // SAFETY: Both are referenced; the times changed.
     unsafe { inode::refresh_times(dir) };
@@ -339,6 +347,7 @@ fn remove_entry(
         touch_parent(sb, state, disk, parent, -1, time)?;
         orphan(sb, state, disk, entry.target, time)
     })?;
+    changed(dir);
     // SAFETY: The VFS holds both inodes; the entry is gone.
     unsafe {
         bindings::clear_nlink(victim);
@@ -452,8 +461,10 @@ unsafe fn rename_entry(
         touch_parent(sb, state, disk, from, -1, time)
     })?;
     // SAFETY: As above.
+    changed(old_dir);
+    changed(new_dir);
+    // SAFETY: As above.
     unsafe {
-        glue::carryfs_inode_inc_iversion(new_dir);
         if victim_unlinked && !replaced.is_null() {
             bindings::clear_nlink(replaced);
         }

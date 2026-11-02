@@ -97,6 +97,46 @@ def namespace(volume, count):
         print(f"  namespace phase {phase}: {volume.check()}")
 
 
+def listings(volume):
+    """Listings kept on directory inodes follow every change while mounted,
+    including a change between the calls of one listing."""
+    root = volume.mount()
+    for name in ("a", "b"):
+        (root / name).mkdir()
+    expected = {"a": set(), "b": set()}
+
+    def same():
+        for name, entries in expected.items():
+            listed = sorted(os.listdir(root / name))
+            assert listed == sorted(entries), (name, len(listed), len(entries))
+
+    for i in range(300):
+        (root / "a" / f"f{i}").touch()
+        expected["a"].add(f"f{i}")
+    same()
+    same()
+    (root / "a" / "new").touch()
+    expected["a"].add("new")
+    same()
+    os.unlink(root / "a" / "f7")
+    expected["a"].discard("f7")
+    same()
+    os.rename(root / "a" / "f8", root / "b" / "moved")
+    expected["a"].discard("f8")
+    expected["b"].add("moved")
+    same()
+    # Change the directory part-way through one listing.
+    with os.scandir(root / "a") as entries:
+        next(entries)
+        (root / "a" / "during").touch()
+        expected["a"].add("during")
+        list(entries)
+    same()
+    same()
+    volume.unmount()
+    print(f"  listings: {volume.check()}")
+
+
 def data(volume, work):
     """Writes, overwrites, appends, sparse growth, and truncation, compared
     with the same changes made to a local copy."""
@@ -187,6 +227,8 @@ def main():
         work = Path(directory)
         print("namespace")
         namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
+        print("listings")
+        listings(Volume(args.cli, work, "listings", 512))
         print("data")
         data(Volume(args.cli, work, "data", 512), work)
         print("reclaim")

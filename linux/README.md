@@ -41,10 +41,16 @@ cargo build --release -p carryfs-core
 sudo make -C linux test
 ```
 
-`tests/check.py` drives the module through namespace changes, data writes,
-truncation, reclamation, and crash-orphan recovery, and judges each phase
-with the userspace `carryfs check` and `carryfs scrub`, comparing file
-contents after remount.
+`tests/check.py` drives the module through namespace changes, listings
+while mounted, data writes, truncation, reclamation, and crash-orphan
+recovery, and judges each phase with the userspace `carryfs check` and
+`carryfs scrub`, comparing file contents after remount.
+
+`tests/fuzz.py` mounts corrupted copies of a populated image, read-only or
+read-write, walks and reads them, and fails on any kernel BUG, oops, or
+warning. It changes random fields of metadata pages and recomputes their
+checksums, so the corruption reaches the record checks. 460 cases over two
+seeds passed: 361 mounted, the rest were refused.
 
 ## Design
 
@@ -135,8 +141,12 @@ allocated but unowned.
   ext4 does.
 - **Listing then stat.** FUSE's readdirplus instantiates every entry during
   a listing. Without that, a native `ls -l` lost to FUSE, so listings prime
-  the dcache as NFS and CIFS do, once per directory until its inode is
-  evicted.
+  the dcache as NFS and CIFS do.
+- **Repeated listings.** FUSE keeps readdir output in the page cache. A
+  directory listed whole keeps its entries on its inode, up to 2 MiB of
+  names, until it changes or the inode is evicted; inode reclaim bounds the
+  memory. Changes hold the directory's inode lock exclusively and listings
+  hold it shared, so changes drop the copy without reference counting.
 - **Rust in the kernel.** A Rust panic is a kernel BUG and overflow checks
   are on, so on-disk data is read with checked accessors only. Modules build
   as edition 2021, so shared code avoids let chains. objtool in Linux 7.0

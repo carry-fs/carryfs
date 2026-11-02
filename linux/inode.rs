@@ -180,6 +180,9 @@ pub(crate) unsafe extern "C" fn evict_inode(inode: *mut bindings::inode) {
     // SAFETY: The VFS passes an inode it is evicting.
     unsafe {
         bindings::truncate_inode_pages_final(&mut (*inode).i_data);
+        if (*inode).i_mode as u32 & bindings::S_IFMT == bindings::S_IFDIR {
+            dir::forget(inode);
+        }
         let sb = (*inode).i_sb;
         if glue::carryfs_inode_nlink(inode) == 0 && volume::of(sb).writable {
             if let Err(error) = namei::remove_object(sb, (*inode).i_ino as u64) {

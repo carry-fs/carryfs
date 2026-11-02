@@ -56,8 +56,11 @@ void carryfs_qstr_set_hash(struct qstr *name, u32 hash);
 bool carryfs_dir_emit(struct dir_context *ctx, const char *name, int len, u64 ino, unsigned int type);
 void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 ino,
 			  umode_t type);
-bool carryfs_dir_primed(struct inode *dir);
-void carryfs_set_dir_primed(struct inode *dir);
+void *carryfs_dir_cache(struct inode *dir);
+bool carryfs_dir_cache_publish(struct inode *dir, void *listing);
+void *carryfs_dir_cache_take(struct inode *dir);
+u64 carryfs_inode_query_iversion(struct inode *inode);
+bool carryfs_inode_eq_iversion(struct inode *inode, u64 version);
 struct dentry *carryfs_file_dentry(struct file *file);
 void carryfs_inode_inc_iversion(struct inode *dir);
 void carryfs_set_dentry_version(struct dentry *dentry, struct inode *dir);

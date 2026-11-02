@@ -85,8 +85,11 @@ unsafe extern "C" {
         ino: u64,
         kind: u16,
     );
-    pub(crate) fn carryfs_dir_primed(dir: *mut inode) -> bool;
-    pub(crate) fn carryfs_set_dir_primed(dir: *mut inode);
+    pub(crate) fn carryfs_dir_cache(dir: *mut inode) -> *mut c_void;
+    pub(crate) fn carryfs_dir_cache_publish(dir: *mut inode, listing: *mut c_void) -> bool;
+    pub(crate) fn carryfs_dir_cache_take(dir: *mut inode) -> *mut c_void;
+    pub(crate) fn carryfs_inode_query_iversion(inode: *mut inode) -> u64;
+    pub(crate) fn carryfs_inode_eq_iversion(inode: *mut inode, version: u64) -> bool;
     pub(crate) fn carryfs_file_dentry(file: *mut file) -> *mut dentry;
     pub(crate) fn carryfs_inode_inc_iversion(dir: *mut inode);
     pub(crate) fn carryfs_set_dentry_version(dentry: *mut dentry, dir: *mut inode);

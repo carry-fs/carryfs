@@ -449,17 +449,33 @@ out:
 }
 
 /*
- * A directory inode's i_private marks a listing that primed every entry;
- * readers race only to set it.
+ * A directory inode's i_private holds its kept listing (dir.rs). Listings
+ * publish it under the shared inode lock; changes take it under the
+ * exclusive one.
  */
-bool carryfs_dir_primed(struct inode *dir)
+void *carryfs_dir_cache(struct inode *dir)
 {
 	return READ_ONCE(dir->i_private);
 }
 
-void carryfs_set_dir_primed(struct inode *dir)
+bool carryfs_dir_cache_publish(struct inode *dir, void *listing)
 {
-	WRITE_ONCE(dir->i_private, (void *)1);
+	return cmpxchg(&dir->i_private, NULL, listing) == NULL;
+}
+
+void *carryfs_dir_cache_take(struct inode *dir)
+{
+	return xchg(&dir->i_private, NULL);
+}
+
+u64 carryfs_inode_query_iversion(struct inode *inode)
+{
+	return inode_query_iversion(inode);
+}
+
+bool carryfs_inode_eq_iversion(struct inode *inode, u64 version)
+{
+	return inode_eq_iversion(inode, version);
 }
 
 void carryfs_inode_inc_iversion(struct inode *dir)

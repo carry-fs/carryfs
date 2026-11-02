@@ -8,7 +8,9 @@ fstests=$(realpath "$1")
 shift
 here=$(dirname "$(realpath "$0")")
 export CARRYFS_BIN=$(realpath "$here/../../../target/release")
-work=$(mktemp -d /tmp/carryfs-fstests.XXXXXX)
+# Images live on disk: /tmp is often a small tmpfs, and a full backing
+# file fails the loop device's writes.
+work=$(mktemp -d "${CARRYFS_FSTESTS_DIR:-/var/tmp}/carryfs-fstests.XXXXXX")
 truncate -s 2G "$work/test.img" "$work/scratch.img"
 export TEST_DEV=$(losetup -f --show "$work/test.img")
 export SCRATCH_DEV=$(losetup -f --show "$work/scratch.img")

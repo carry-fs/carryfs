@@ -368,6 +368,8 @@ pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
         fsync: Some(crate::write::fsync),
         mmap_prepare: Some(bindings::generic_file_mmap_prepare),
         splice_read: Some(bindings::filemap_splice_read),
+        // copy_file_range and splice write through the page cache.
+        splice_write: Some(bindings::iter_file_splice_write),
         // SAFETY: All-zero entries are absent operations.
         ..unsafe { core::mem::zeroed() }
     });

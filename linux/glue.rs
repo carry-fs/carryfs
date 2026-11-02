@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+
+//! The C helpers in `glue.c`.
+
+use core::ffi::c_void;
+use kernel::bindings::{dentry, dir_context, file, folio, inode, page, qstr, readahead_control};
+use kernel::bindings::super_block;
+use kernel::ffi::c_int;
+
+/// A `struct buffer_head`, which the Rust bindings leave out.
+#[repr(C)]
+pub(crate) struct BufferHead {
+    _opaque: [u8; 0],
+}
+
+// The kernel's own binding declarations allow this too: bindgen leaves some
+// fields of these structs out, but only pointers to them cross this boundary.
+#[allow(improper_ctypes)]
+unsafe extern "C" {
+    pub(crate) fn carryfs_register() -> c_int;
+    pub(crate) fn carryfs_unregister();
+
+    pub(crate) fn carryfs_bdev_bytes(sb: *mut super_block) -> u64;
+    pub(crate) fn carryfs_bdev_logical_block_size(sb: *mut super_block) -> u32;
+    pub(crate) fn carryfs_bdev_physical_block_size(sb: *mut super_block) -> u32;
+    pub(crate) fn carryfs_set_uuid(sb: *mut super_block, uuid: *const u8);
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn carryfs_statfs_fill(
+        buf: *mut kernel::bindings::kstatfs,
+        kind: u64,
+        block_size: u64,
+        blocks: u64,
+        free: u64,
+        available: u64,
+        name_len: u64,
+        fsid_low: u32,
+        fsid_high: u32,
+    );
+
+    pub(crate) fn carryfs_bread(sb: *mut super_block, block: u64) -> *mut BufferHead;
+    pub(crate) fn carryfs_brelse(bh: *mut BufferHead);
+    pub(crate) fn carryfs_bh_data(bh: *mut BufferHead) -> *const u8;
+    pub(crate) fn carryfs_bh_verified(bh: *mut BufferHead) -> bool;
+    pub(crate) fn carryfs_bh_set_verified(bh: *mut BufferHead);
+
+    pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;
+    pub(crate) fn carryfs_inode_set_ops(
+        inode: *mut inode,
+        iop: *const kernel::bindings::inode_operations,
+        fop: *const kernel::bindings::file_operations,
+        aops: *const kernel::bindings::address_space_operations,
+    );
+    pub(crate) fn carryfs_inode_set_link(inode: *mut inode, link: *mut u8);
+    pub(crate) fn carryfs_inode_link(inode: *mut inode) -> *mut u8;
+    pub(crate) fn carryfs_i_size_write(inode: *mut inode, size: i64);
+    pub(crate) fn carryfs_dentry_name(dentry: *const dentry) -> *const qstr;
+    pub(crate) fn carryfs_qstr_name(name: *const qstr) -> *const u8;
+    pub(crate) fn carryfs_qstr_len(name: *const qstr) -> u32;
+    pub(crate) fn carryfs_qstr_set_hash(name: *mut qstr, hash: u32);
+    pub(crate) fn carryfs_dir_emit(
+        ctx: *mut dir_context,
+        name: *const u8,
+        len: c_int,
+        ino: u64,
+        kind: u32,
+    ) -> bool;
+    pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
+
+    pub(crate) fn carryfs_bio_alloc_read(
+        sb: *mut super_block,
+        sector: u64,
+        pages: u32,
+    ) -> *mut kernel::bindings::bio;
+    pub(crate) fn carryfs_folio_inode(folio: *mut folio) -> *mut inode;
+    pub(crate) fn carryfs_readahead_inode(rac: *mut readahead_control) -> *mut inode;
+    pub(crate) fn carryfs_readahead_index(rac: *mut readahead_control) -> u64;
+    pub(crate) fn carryfs_readahead_count(rac: *mut readahead_control) -> u64;
+    pub(crate) fn carryfs_readahead_folio(rac: *mut readahead_control) -> *mut folio;
+    pub(crate) fn carryfs_folio_pos(folio: *mut folio) -> i64;
+    pub(crate) fn carryfs_kmap_local_folio(folio: *mut folio, offset: usize) -> *mut c_void;
+    pub(crate) fn carryfs_kunmap_local(addr: *mut c_void);
+    pub(crate) fn carryfs_page_address(page: *mut page) -> *mut c_void;
+}
+
+/// A name the VFS passed in, as bytes.
+///
+/// # Safety
+///
+/// `name` must point to a valid `qstr` whose bytes outlive the returned slice.
+pub(crate) unsafe fn qstr_bytes<'a>(name: *const qstr) -> &'a [u8] {
+    // SAFETY: The caller guarantees `name` is valid; a qstr's `name` points
+    // to `len` readable bytes.
+    unsafe {
+        core::slice::from_raw_parts(carryfs_qstr_name(name), carryfs_qstr_len(name) as usize)
+    }
+}

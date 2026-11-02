@@ -266,22 +266,55 @@ static ZEROS: [u8; UNIT_BYTES] = [0; UNIT_BYTES];
 /// CRC32C of one backed data unit. `valid` holds its valid bytes; the rest of
 /// the 64 KiB unit contributes zeros, as FORMAT.md section 5 specifies.
 pub fn data_unit_crc(uuid: &[u8; 16], object: u64, unit: u64, valid: &[u8]) -> Result<u32> {
-    let valid_len = u32::try_from(valid.len())
-        .ok()
-        .filter(|len| (1..=UNIT_BYTES as u32).contains(len))
-        .ok_or(Error::InvalidInput("data unit valid length"))?;
-    let mut crc = extend(0xFFFF_FFFF, b"CFSXDATA");
-    for field in [
-        &uuid[..],
-        &object.to_le_bytes(),
-        &unit.to_le_bytes(),
-        &valid_len.to_le_bytes(),
-        valid,
-    ] {
-        crc = extend(crc, field);
+    let mut crc = DataUnitCrc::new(uuid, object, unit, valid.len())?;
+    crc.update(valid);
+    crc.finish()
+}
+
+/// `data_unit_crc` over valid bytes supplied in pieces, such as the pages of
+/// a unit that are not contiguous in memory.
+pub struct DataUnitCrc {
+    crc: u32,
+    valid: usize,
+    seen: usize,
+}
+
+impl DataUnitCrc {
+    /// Start the checksum of `unit` of `object` holding `valid` valid bytes.
+    pub fn new(uuid: &[u8; 16], object: u64, unit: u64, valid: usize) -> Result<Self> {
+        let valid_len = u32::try_from(valid)
+            .ok()
+            .filter(|len| (1..=UNIT_BYTES as u32).contains(len))
+            .ok_or(Error::InvalidInput("data unit valid length"))?;
+        let mut crc = extend(0xFFFF_FFFF, b"CFSXDATA");
+        for field in [
+            &uuid[..],
+            &object.to_le_bytes(),
+            &unit.to_le_bytes(),
+            &valid_len.to_le_bytes(),
+        ] {
+            crc = extend(crc, field);
+        }
+        Ok(Self {
+            crc,
+            valid,
+            seen: 0,
+        })
     }
-    crc = extend_zeros(crc, UNIT_BYTES - valid.len());
-    Ok(crc ^ 0xFFFF_FFFF)
+
+    /// Add the next valid bytes.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.crc = extend(self.crc, bytes);
+        self.seen = self.seen.saturating_add(bytes.len());
+    }
+
+    /// The checksum, once exactly the valid bytes were added.
+    pub fn finish(self) -> Result<u32> {
+        if self.seen != self.valid {
+            return Err(Error::InvalidInput("data unit valid length"));
+        }
+        Ok(extend_zeros(self.crc, UNIT_BYTES - self.valid) ^ 0xFFFF_FFFF)
+    }
 }
 
 #[cfg(feature = "std")]

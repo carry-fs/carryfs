@@ -1369,6 +1369,69 @@ pub fn decode_page<'a>(
     })
 }
 
+/// The view `decode_page` returned for this page earlier, rechecking only
+/// its identity: the caller caches which pages passed `decode_page`.
+pub fn verified_page_view<'a>(
+    bytes: &'a [u8],
+    expected: TreeRef,
+    uuid: &[u8; 16],
+    kind: TreeKind,
+    parent_generation: u64,
+    expected_level: Option<u8>,
+) -> Result<PageView<'a>> {
+    let level = *bytes.get(14).ok_or(Error::Corrupt("page length"))?;
+    let generation = read_u64_le(bytes, 24, "page generation")?;
+    if read_u64_le(bytes, 16, "page self block")? != expected.block
+        || generation != expected.generation
+        || generation > parent_generation
+        || bytes.get(13) != Some(&tree_kind_value(kind))
+        || expected_level.is_some_and(|expected| expected != level)
+        || bytes.get(40..56) != Some(&uuid[..])
+    {
+        return Err(Error::Corrupt("page identity or generation"));
+    }
+    let count = usize::from(read_u16_le(bytes, 32, "page entry count")?);
+    let payload_bytes = usize::from(read_u16_le(bytes, 34, "page payload bytes")?);
+    let payload = bytes
+        .get(PAGE_PAYLOAD_OFFSET..PAGE_PAYLOAD_OFFSET + payload_bytes)
+        .ok_or(Error::Corrupt("page payload length"))?;
+    Ok(PageView {
+        level,
+        data_blocks: read_u64_le(bytes, 56, "page data-block total")?,
+        count,
+        payload,
+    })
+}
+
+/// The selected current root from the decoded A and B roots (FORMAT.md
+/// section 3, "Selection and reopen"): the highest valid generation, where
+/// valid roots must agree on identity and equal generations on content.
+pub fn select_root<'a>(a: Option<&'a Root>, b: Option<&'a Root>) -> Result<&'a Root> {
+    match (a, b) {
+        (None, None) => Err(Error::Corrupt("neither current root is valid")),
+        (Some(root), None) | (None, Some(root)) => Ok(root),
+        (Some(a), Some(b)) => {
+            if a.uuid != b.uuid {
+                return Err(Error::Corrupt("root UUIDs conflict"));
+            }
+            if a.generation == b.generation && a != b {
+                return Err(Error::Corrupt("same-generation roots conflict"));
+            }
+            Ok(if a.generation >= b.generation { a } else { b })
+        }
+    }
+}
+
+/// A decoded root, `None` for a checksum-invalid or corrupt one, or the
+/// error that must fail the open, such as an unsupported format.
+pub fn supported_root(root: Result<Root>) -> Result<Option<Root>> {
+    match root {
+        Ok(root) => Ok(Some(root)),
+        Err(Error::Corrupt(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Validate `records` for one page and return the payload length and the
 /// leaf data-block total, writing them into `page` when there is one.
 fn encode_records(

@@ -183,13 +183,11 @@ fn normalize_nfc(input: &[u32], output: &mut CodePoints<'_>) -> Result<()> {
     for read in 0..ordered.len() {
         let code_point = ordered[read];
         let class = combining_class(code_point);
-        let combined = starter.and_then(|index| compose(ordered[index], code_point));
-        if let Some(combined) = combined
-            && (last_class == 0 || last_class < class)
-        {
-            let Some(starter_index) = starter else {
-                return Err(Error::Corrupt("invalid normalization state"));
-            };
+        // Edition 2021, as the kernel builds it, has no let chains.
+        let combined = starter
+            .filter(|_| last_class == 0 || last_class < class)
+            .and_then(|index| Some((index, compose(ordered[index], code_point)?)));
+        if let Some((starter_index, combined)) = combined {
             ordered[starter_index] = combined;
             continue;
         }
@@ -230,11 +228,33 @@ fn encode_code_points(code_points: &[u32], output: &mut [u8]) -> Result<usize> {
                 "normalized disk name contains invalid Unicode",
             ));
         };
-        let Some(destination) = output.get_mut(len..len + character.len_utf8()) else {
+        let width = character.len_utf8();
+        let Some(destination) = output.get_mut(len..len + width) else {
             return Err(Error::Corrupt("normalized disk name is too long"));
         };
-        character.encode_utf8(destination);
-        len += character.len_utf8();
+        // By hand rather than `char::encode_utf8`, whose panic path the
+        // kernel's objtool does not recognize.
+        let c = code_point;
+        match destination {
+            [a] => *a = c as u8,
+            [a, b] => {
+                *a = 0xC0 | (c >> 6) as u8;
+                *b = 0x80 | (c & 0x3F) as u8;
+            }
+            [a, b, d] => {
+                *a = 0xE0 | (c >> 12) as u8;
+                *b = 0x80 | (c >> 6 & 0x3F) as u8;
+                *d = 0x80 | (c & 0x3F) as u8;
+            }
+            [a, b, d, e] => {
+                *a = 0xF0 | (c >> 18) as u8;
+                *b = 0x80 | (c >> 12 & 0x3F) as u8;
+                *d = 0x80 | (c >> 6 & 0x3F) as u8;
+                *e = 0x80 | (c & 0x3F) as u8;
+            }
+            _ => return Err(Error::Corrupt("invalid UTF-8 width")),
+        }
+        len += width;
     }
     Ok(len)
 }
@@ -270,10 +290,19 @@ const FORBIDDEN: Error =
 /// filename-profile checks in FORMAT.md. ASCII names, the common case, touch
 /// only the comparison-key buffer of `scratch`.
 pub fn parse<'a>(input: &'a str, scratch: &'a mut Scratch) -> Result<ParsedName<'a>> {
-    // NFC leaves ASCII unchanged and the pinned case folding maps only
-    // A-Z within it, so an ASCII name needs no code-point pipeline.
+    if input.is_ascii() {
+        parse_ascii(input, &mut scratch.folded)
+    } else {
+        parse_unicode(input, scratch)
+    }
+}
+
+/// `parse` for an ASCII `input`, writing its comparison key to `folded`.
+/// NFC leaves ASCII unchanged and the pinned case folding maps only A-Z
+/// within it, so an ASCII name needs no code-point pipeline.
+pub fn parse_ascii<'a>(input: &'a str, folded: &'a mut [u8]) -> Result<ParsedName<'a>> {
     if !input.is_ascii() {
-        return parse_unicode(input, scratch);
+        return Err(Error::InvalidInput("name is not ASCII"));
     }
     if input
         .bytes()
@@ -287,7 +316,9 @@ pub fn parse<'a>(input: &'a str, scratch: &'a mut Scratch) -> Result<ParsedName<
     if input.is_empty() || validate_disk_name_characters(input.as_bytes()).is_err() {
         return Err(FORBIDDEN);
     }
-    let folded = &mut scratch.folded[..input.len()];
+    let folded = folded
+        .get_mut(..input.len())
+        .ok_or(Error::InvalidInput("comparison-key buffer is too small"))?;
     folded.copy_from_slice(input.as_bytes());
     folded.make_ascii_lowercase();
     Ok(ParsedName {

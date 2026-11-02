@@ -133,9 +133,7 @@ pub(crate) fn read_record(
     let key = tree::prefix(object, tree::INODE);
     let mut record = KVec::new();
     Tree::catalog(sb, state)
-        .get(&key, |value| {
-            Ok(record.extend_from_slice(value, GFP_KERNEL)?)
-        })?
+        .get(&key, |value| tree::append(&mut record, value))?
         .ok_or(ENOENT)?;
     Ok(record)
 }

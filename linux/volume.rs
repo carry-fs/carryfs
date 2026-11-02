@@ -79,6 +79,9 @@ pub(crate) struct Volume {
     pub(crate) writable: bool,
     #[pin]
     state: Mutex<State>,
+    /// Held through each `writepages` call; see there.
+    #[pin]
+    pub(crate) writeback: Mutex<()>,
 }
 
 impl Volume {
@@ -239,6 +242,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
             uid: bindings::kuid_t { val: uid },
             gid: bindings::kgid_t { val: gid },
             writable,
+            writeback <- new_mutex!(()),
             state <- new_mutex!(State {
                 root,
                 txn: None,

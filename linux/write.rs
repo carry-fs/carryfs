@@ -543,6 +543,15 @@ pub(crate) unsafe extern "C" fn writepages(
     let _nofs = crate::volume::NoFs::new();
     // SAFETY: The VFS passes a mapping of a referenced regular file.
     let inode = unsafe { Inode::from_raw(glue::carryfs_mapping_host(mapping)) };
+    // A unit's write locks its clean folios while the dirty ones it took
+    // are under writeback. A second writeback of the same file, which
+    // fsync and the flusher can start together, may hold one of those
+    // locks while waiting for that writeback in WB_SYNC_ALL mode: a
+    // deadlock (fstests generic/127). One writeback at a time cannot.
+    // serializes writeback of all files on the volume; per-inode
+    // locks, or unit-sized folios as LBS XFS uses, if parallel writeback
+    // matters.
+    let _writeback = inode.super_block().volume().writeback.lock();
     let mut writer = Writer::new(inode);
     let mut error: c_int = 0;
     let mut folio = core::ptr::null_mut();

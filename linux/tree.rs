@@ -6,12 +6,14 @@
 //! its records validated once, the first time it is read into the cache; a
 //! buffer-head flag remembers that, and later uses recheck only its identity.
 
+use core::cmp::Ordering;
+
 use kernel::bindings::super_block;
 use kernel::prelude::*;
 
 use crate::corrupt;
 use crate::glue::{self, BufferHead};
-use crate::ondisk::format::{self, BLOCK_BYTES, PageView, TreeKind, TreeRef};
+use crate::ondisk::format::{self, BLOCK_BYTES, PageView, Records, TreeKind, TreeRef};
 use crate::volume::Volume;
 
 /// Catalog record kinds (FORMAT.md section 5).
@@ -45,10 +47,38 @@ pub(crate) fn le_u64(value: &[u8], offset: usize) -> u64 {
         .map_or(0, u64::from_le_bytes)
 }
 
+/// Leaves read ahead when a search reaches one that is not cached: 64 KiB,
+/// as ext4 reads ahead inode-table blocks. Listings and stats in name order
+/// walk neighboring leaves.
+const LEAF_READAHEAD: usize = 16;
+
+/// Key order. Catalog keys start with a big-endian object ID, and most keys
+/// on a page differ there, so comparing it as an integer first spares most
+/// comparisons a `memcmp` call.
+fn compare(a: &[u8], b: &[u8]) -> Ordering {
+    match (a.split_first_chunk::<8>(), b.split_first_chunk::<8>()) {
+        (Some((x, a)), Some((y, b))) => u64::from_be_bytes(*x)
+            .cmp(&u64::from_be_bytes(*y))
+            .then_with(|| a.cmp(b)),
+        _ => a.cmp(b),
+    }
+}
+
+/// Records a page search bisects; catalog pages hold at most 148. Pages of
+/// more, such as cleanup leaves of orphan markers, are searched linearly.
+const SEARCH_RECORDS: usize = 160;
+
 /// A metadata block held in the buffer cache.
 pub(crate) struct Block(*mut BufferHead);
 
 impl Block {
+    /// The block if the buffer cache already holds it uptodate.
+    fn cached(sb: *mut super_block, block: u64) -> Option<Self> {
+        // SAFETY: `sb` is a mounted super block.
+        let bh = unsafe { glue::carryfs_bread_cached(sb, block) };
+        (!bh.is_null()).then_some(Self(bh))
+    }
+
     pub(crate) fn read(sb: *mut super_block, block: u64) -> Result<Self> {
         // SAFETY: `sb` is a mounted super block whose block size is
         // `BLOCK_BYTES`; out-of-range blocks fail the read.
@@ -122,8 +152,19 @@ impl<'a> Tree<'a> {
         }
     }
 
-    fn load(&self, at: Position) -> Result<Block> {
-        let block = Block::read(self.sb, at.reference.block)?;
+    /// Read the page at `at`, verifying it unless the buffer cache holds it
+    /// verified. `siblings` are the parent's records from this page on;
+    /// when this is an uncached leaf, the leaves after it are read ahead.
+    fn load(&self, at: Position, siblings: Option<Records<'_>>) -> Result<Block> {
+        let block = match Block::cached(self.sb, at.reference.block) {
+            Some(block) => block,
+            None => {
+                if let Some(siblings) = siblings.filter(|_| at.level == Some(0)) {
+                    self.read_ahead(siblings);
+                }
+                Block::read(self.sb, at.reference.block)?
+            }
+        };
         if !block.verified() {
             format::decode_page(
                 block.data(),
@@ -164,9 +205,22 @@ impl<'a> Tree<'a> {
         }
     }
 
+    /// Start reading the leaves the first `LEAF_READAHEAD` of `siblings`
+    /// refer to, in one batch; cached ones are skipped.
+    fn read_ahead(&self, siblings: Records<'_>) {
+        let mut blocks = [0u64; LEAF_READAHEAD];
+        let mut count = 0;
+        for (slot, (_, value)) in blocks.iter_mut().zip(siblings) {
+            *slot = le_u64(value, 0);
+            count += 1;
+        }
+        // SAFETY: `sb` is mounted; `blocks` holds `count` block numbers.
+        unsafe { glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), count as u32) };
+    }
+
     /// Check the tree's root page, as opening a volume does.
     pub(crate) fn check_root(&self) -> Result {
-        self.load(self.root_position()).map(drop)
+        self.load(self.root_position(), None).map(drop)
     }
 
     /// Calls `f` with the last record whose key is at most `key`, if any.
@@ -175,19 +229,30 @@ impl<'a> Tree<'a> {
         key: &[u8],
         f: impl FnOnce(&[u8], &[u8]) -> Result<T>,
     ) -> Result<Option<T>> {
+        let mut offsets = [0; SEARCH_RECORDS];
         let mut at = self.root_position();
+        let mut block = self.load(at, None)?;
         loop {
-            let block = self.load(at)?;
             let view = self.view(&block, at)?;
             // Internal keys are subtree minimums, so the last child whose
             // minimum is at most `key` holds the answer.
-            let Some((found, value)) = view.records().take_while(|(k, _)| *k <= key).last() else {
+            // Bisect leaves, whose keys often share their owner; scan
+            // internal pages, where the owner alone usually decides.
+            let scratch: &mut [u16] = if view.level == 0 { &mut offsets } else { &mut [] };
+            let Some((_, from)) = view.floor_record(key, compare, scratch) else {
+                return Ok(None);
+            };
+            let Some((found, value)) = from.clone().next() else {
                 return Ok(None);
             };
             if view.level == 0 {
                 return f(found, value).map(Some);
             }
-            at = Self::child(at, view.level, value);
+            let child = Self::child(at, view.level, value);
+            // Hold the parent until the child is in hand: its records name
+            // the leaves to read ahead.
+            let next = self.load(child, Some(from))?;
+            (block, at) = (next, child);
         }
     }
 
@@ -222,11 +287,21 @@ impl<'a> Tree<'a> {
         start: Option<&[u8]>,
         f: &mut dyn FnMut(&[u8], &[u8]) -> Result<bool>,
     ) -> Result<bool> {
-        let block = self.load(at)?;
+        self.scan_page(at, None, start, f)
+    }
+
+    fn scan_page(
+        &self,
+        at: Position,
+        siblings: Option<Records<'_>>,
+        start: Option<&[u8]>,
+        f: &mut dyn FnMut(&[u8], &[u8]) -> Result<bool>,
+    ) -> Result<bool> {
+        let block = self.load(at, siblings)?;
         let view = self.view(&block, at)?;
         if view.level == 0 {
             for (key, value) in view.records() {
-                if start.is_some_and(|start| key < start) {
+                if start.is_some_and(|start| compare(key, start) == Ordering::Less) {
                     continue;
                 }
                 if !f(key, value)? {
@@ -236,14 +311,21 @@ impl<'a> Tree<'a> {
             return Ok(true);
         }
         let first = start.map_or(0, |start| {
-            view.records()
-                .take_while(|(key, _)| *key <= start)
-                .count()
-                .saturating_sub(1)
+            view.floor_record(start, compare, &mut [])
+                .map_or(0, |(index, _)| index)
         });
-        for (index, (_, value)) in view.records().enumerate().skip(first) {
+        let mut records = view.records();
+        for index in 0.. {
+            let from = records.clone();
+            let Some((_, value)) = records.next() else {
+                break;
+            };
+            if index < first {
+                continue;
+            }
             let child = Self::child(at, view.level, value);
-            if !self.scan_from(child, if index == first { start } else { None }, f)? {
+            let start = if index == first { start } else { None };
+            if !self.scan_page(child, Some(from), start, f)? {
                 return Ok(false);
             }
         }

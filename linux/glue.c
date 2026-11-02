@@ -15,6 +15,7 @@
 #include <linux/fs_parser.h>
 #include <linux/highmem.h>
 #include <linux/module.h>
+#include <linux/namei.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
@@ -173,6 +174,30 @@ void carryfs_brelse(struct buffer_head *bh)
 	brelse(bh);
 }
 
+/* @block if the buffer cache holds it uptodate, else NULL. */
+struct buffer_head *carryfs_bread_cached(struct super_block *sb, u64 block)
+{
+	struct buffer_head *bh = sb_find_get_block(sb, block);
+
+	if (bh && !buffer_uptodate(bh)) {
+		brelse(bh);
+		return NULL;
+	}
+	return bh;
+}
+
+/* Start reading those of @count blocks that are not cached, in one batch. */
+void carryfs_readahead_blocks(struct super_block *sb, const u64 *blocks, unsigned int count)
+{
+	struct blk_plug plug;
+	unsigned int i;
+
+	blk_start_plug(&plug);
+	for (i = 0; i < count; i++)
+		sb_breadahead(sb, blocks[i]);
+	blk_finish_plug(&plug);
+}
+
 const u8 *carryfs_bh_data(struct buffer_head *bh)
 {
 	return bh->b_data;
@@ -248,6 +273,63 @@ bool carryfs_dir_emit(struct dir_context *ctx, const char *name, int len, u64 in
 		      unsigned int type)
 {
 	return dir_emit(ctx, name, len, ino, type);
+}
+
+/*
+ * Instantiate a dentry for an entry readdir just returned, as NFS and CIFS
+ * do for readdirplus, so stats after a listing find it in the dcache.
+ * Entries already cached are left alone; failures only skip the priming.
+ */
+void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 ino,
+			  umode_t type)
+{
+	struct qstr qname = QSTR_INIT(name, len);
+	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
+	struct dentry *dentry, *alias;
+	struct inode *inode;
+
+	/* Hashes with the filesystem's d_hash, then looks up. */
+	dentry = try_lookup_noperm(&qname, parent);
+	if (dentry) {
+		if (!IS_ERR(dentry))
+			dput(dentry);
+		return;
+	}
+	dentry = d_alloc_parallel(parent, &qname, &wq);
+	if (IS_ERR(dentry))
+		return;
+	if (!d_in_lookup(dentry))
+		goto out;
+	inode = carryfs_iget(parent->d_sb, ino, type);
+	if (IS_ERR(inode)) {
+		d_lookup_done(dentry);
+		goto out;
+	}
+	alias = d_splice_alias(inode, dentry);
+	d_lookup_done(dentry);
+	if (alias && !IS_ERR(alias))
+		dput(alias);
+out:
+	dput(dentry);
+}
+
+/*
+ * A directory inode's i_private marks a listing that primed every entry;
+ * readers race only to set it.
+ */
+bool carryfs_dir_primed(struct inode *dir)
+{
+	return READ_ONCE(dir->i_private);
+}
+
+void carryfs_set_dir_primed(struct inode *dir)
+{
+	WRITE_ONCE(dir->i_private, (void *)1);
+}
+
+struct dentry *carryfs_file_dentry(struct file *file)
+{
+	return file->f_path.dentry;
 }
 
 bool carryfs_dir_emit_dots(struct file *file, struct dir_context *ctx)

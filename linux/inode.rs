@@ -183,22 +183,46 @@ unsafe fn lookup_inode(
     let Some((target, kind)) = entry else {
         return Ok(ptr::null_mut());
     };
-    let inode = get(sb, target)?;
-    let expected = match kind {
+    get_typed(sb, target, kind_mode(kind))
+}
+
+/// The file-type mode bits of a directory-entry type.
+pub(crate) fn kind_mode(kind: u8) -> u32 {
+    match kind {
         FILE => bindings::S_IFREG,
         DIRECTORY => bindings::S_IFDIR,
         _ => bindings::S_IFLNK,
-    };
+    }
+}
+
+/// `get`, failing as corruption unless the inode has file type `mode`, as
+/// the directory entry naming it records.
+fn get_typed(sb: *mut bindings::super_block, object: u64, mode: u32) -> Result<*mut bindings::inode> {
+    let inode = get(sb, object)?;
     // SAFETY: `get` returned a referenced inode.
-    if unsafe { (*inode).i_mode } as u32 & bindings::S_IFMT != expected {
+    if unsafe { (*inode).i_mode } as u32 & bindings::S_IFMT != mode {
         // SAFETY: Drop the reference `get` took.
         unsafe { bindings::iput(inode) };
         return Err(corrupt(
-            volume.root.catalog.block,
+            volume::of(sb).root.catalog.block,
             Encoding::Corrupt("directory entry type differs from its inode"),
         ));
     }
     Ok(inode)
+}
+
+/// `get_typed` for glue.c, which primes dentries from readdir: a referenced
+/// inode or an `ERR_PTR`.
+#[no_mangle]
+unsafe extern "C" fn carryfs_iget(
+    sb: *mut bindings::super_block,
+    object: u64,
+    mode: bindings::umode_t,
+) -> *mut bindings::inode {
+    match get_typed(sb, object, u32::from(mode)) {
+        Ok(inode) => inode,
+        Err(error) => error.to_ptr(),
+    }
 }
 
 pub(crate) static DIRECTORY_INODE_OPERATIONS: Ops<bindings::inode_operations> =

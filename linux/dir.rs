@@ -6,6 +6,11 @@
 //! only an ordinal. Each open directory keeps the key of the last entry it
 //! returned; reading on from that position resumes after the key, and any
 //! other position, after a seek, counts entries from the start.
+//!
+//! Listing also instantiates each entry's dentry, as NFS and CIFS do for
+//! readdirplus, because a listing is usually followed by a stat of each
+//! entry. A directory listed whole that way is marked primed until its
+//! inode is evicted, and later listings skip the work.
 
 use core::ffi::c_void;
 
@@ -17,13 +22,15 @@ use crate::glue;
 use crate::inode::Ops;
 use crate::ondisk::name::validate_disk_name_characters;
 use crate::tree::{self, Tree, le_u64};
-use crate::{corrupt, volume};
+use crate::{corrupt, inode, volume};
 
-/// Where an open directory stopped: the position after its last entry, and
-/// that entry's key.
+/// Where an open directory stopped: the position after its last entry,
+/// that entry's key, and whether this pass began at the first entry and
+/// primed every entry since.
 struct Cursor {
     pos: i64,
     key: KVec<u8>,
+    priming_whole: bool,
 }
 
 unsafe extern "C" fn iterate(file: *mut bindings::file, ctx: *mut bindings::dir_context) -> c_int {
@@ -53,16 +60,23 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
     // SAFETY: As above.
     let pos = unsafe { (*ctx).pos };
     let prefix = tree::prefix(dir, tree::ENTRY);
-    let (start, resume, mut skip): (&[u8], bool, i64) = match cursor.as_deref() {
-        Some(cursor) if cursor.pos == pos => (&cursor.key, true, 0),
-        _ => (&prefix, false, pos - 2),
+    // SAFETY: An open file pins its dentry.
+    let parent = unsafe { glue::carryfs_file_dentry(file) };
+    // SAFETY: The open file holds its inode.
+    let prime = !unsafe { glue::carryfs_dir_primed(inode) };
+    let (start, resume, mut skip, whole): (&[u8], bool, i64, bool) = match cursor.as_deref() {
+        Some(cursor) if cursor.pos == pos => (&cursor.key, true, 0, cursor.priming_whole),
+        _ => (&prefix, false, pos - 2, pos == 2),
     };
+    let whole = whole && prime;
+    let mut ended = false;
     let mut last = KVec::new();
     last.extend_from_slice(start, GFP_KERNEL)?;
     let mut emitted = 0;
     let volume = volume::of(sb);
     Tree::catalog(sb, volume).scan(start, &mut |key, value| {
         if !key.starts_with(&prefix) {
+            ended = true;
             return Ok(false);
         }
         if resume && key == start {
@@ -75,24 +89,39 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         let name = value.get(12..).unwrap_or_default();
         validate_disk_name_characters(name)
             .map_err(|error| corrupt(volume.root.catalog.block, error))?;
-        let kind = match value.get(8) {
-            Some(1) => bindings::DT_REG,
-            Some(2) => bindings::DT_DIR,
+        let kind = value.get(8).copied().unwrap_or(0);
+        let target = le_u64(value, 0);
+        let dt = match kind {
+            1 => bindings::DT_REG,
+            2 => bindings::DT_DIR,
             _ => bindings::DT_LNK,
         };
         // SAFETY: `ctx` is valid; the name is at most 255 bytes.
-        if !unsafe {
-            glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, le_u64(value, 0), kind)
-        } {
+        if !unsafe { glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, target, dt) } {
             return Ok(false);
         }
-        // SAFETY: As above.
-        unsafe { (*ctx).pos += 1 };
+        // SAFETY: `ctx` is valid, and the open directory pins its dentry.
+        unsafe {
+            (*ctx).pos += 1;
+            if prime {
+                glue::carryfs_prime_dentry(
+                    parent,
+                    name.as_ptr(),
+                    name.len() as c_int,
+                    target,
+                    inode::kind_mode(kind) as u16,
+                );
+            }
+        }
         last.clear();
         last.extend_from_slice(key, GFP_KERNEL)?;
         emitted += 1;
         Ok(true)
     })?;
+    if ended && whole {
+        // SAFETY: As above.
+        unsafe { glue::carryfs_set_dir_primed(inode) };
+    }
     if emitted == 0 {
         return Ok(());
     }
@@ -102,9 +131,17 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         Some(cursor) => {
             cursor.pos = pos;
             cursor.key = last;
+            cursor.priming_whole = whole;
         }
         None => {
-            let cursor = KBox::new(Cursor { pos, key: last }, GFP_KERNEL)?;
+            let cursor = KBox::new(
+                Cursor {
+                    pos,
+                    key: last,
+                    priming_whole: whole,
+                },
+                GFP_KERNEL,
+            )?;
             // SAFETY: `release` frees it with the file.
             unsafe { (*file).private_data = KBox::into_raw(cursor) as *mut c_void };
         }

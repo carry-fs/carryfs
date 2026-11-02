@@ -39,6 +39,8 @@ unsafe extern "C" {
 
     pub(crate) fn carryfs_bread(sb: *mut super_block, block: u64) -> *mut BufferHead;
     pub(crate) fn carryfs_brelse(bh: *mut BufferHead);
+    pub(crate) fn carryfs_bread_cached(sb: *mut super_block, block: u64) -> *mut BufferHead;
+    pub(crate) fn carryfs_readahead_blocks(sb: *mut super_block, blocks: *const u64, count: u32);
     pub(crate) fn carryfs_bh_data(bh: *mut BufferHead) -> *const u8;
     pub(crate) fn carryfs_bh_verified(bh: *mut BufferHead) -> bool;
     pub(crate) fn carryfs_bh_set_verified(bh: *mut BufferHead);
@@ -64,6 +66,16 @@ unsafe extern "C" {
         ino: u64,
         kind: u32,
     ) -> bool;
+    pub(crate) fn carryfs_prime_dentry(
+        parent: *mut dentry,
+        name: *const u8,
+        len: c_int,
+        ino: u64,
+        kind: u16,
+    );
+    pub(crate) fn carryfs_dir_primed(dir: *mut inode) -> bool;
+    pub(crate) fn carryfs_set_dir_primed(dir: *mut inode);
+    pub(crate) fn carryfs_file_dentry(file: *mut file) -> *mut dentry;
     pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
 
     pub(crate) fn carryfs_bio_alloc_read(

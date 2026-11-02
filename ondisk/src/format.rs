@@ -168,6 +168,60 @@ impl<'a> PageView<'a> {
     }
 }
 
+impl<'a> PageView<'a> {
+    /// The index of the last record whose key is at most `key` in `order`,
+    /// and the records from it on; `None` when every key is greater.
+    ///
+    /// `offsets` is scratch for the record offsets of a binary search; a
+    /// page with more records than it holds is searched linearly.
+    pub fn floor_record(
+        &self,
+        key: &[u8],
+        order: impl Fn(&[u8], &[u8]) -> core::cmp::Ordering,
+        offsets: &mut [u16],
+    ) -> Option<(usize, Records<'a>)> {
+        let greater = |record: &[u8]| {
+            split_record(record)
+                .is_none_or(|(found, _, _)| order(found, key) == core::cmp::Ordering::Greater)
+        };
+        let from = |offset: usize, index: usize| Records {
+            payload: self.payload.get(offset..).unwrap_or_default(),
+            remaining: self.count - index,
+        };
+        let Some(offsets) = offsets.get_mut(..self.count) else {
+            // Linear: the last record before the first greater key.
+            let mut records = self.records();
+            let mut found = None;
+            for index in 0..self.count {
+                if greater(records.payload) {
+                    break;
+                }
+                found = Some((index, records.clone()));
+                records.next();
+            }
+            return found;
+        };
+        let mut position = 0;
+        for slot in offsets.iter_mut() {
+            *slot = position as u16;
+            let (key, value, _) = split_record(self.payload.get(position..)?)?;
+            position += 4 + key.len() + value.len();
+        }
+        // The first record whose key is greater, by bisection.
+        let (mut low, mut high) = (0, self.count);
+        while low < high {
+            let middle = (low + high) / 2;
+            if greater(self.payload.get(usize::from(offsets[middle])..)?) {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        let index = low.checked_sub(1)?;
+        Some((index, from(usize::from(offsets[index]), index)))
+    }
+}
+
 /// Iterator over the records of a validated page.
 #[derive(Clone)]
 pub struct Records<'a> {
@@ -1612,4 +1666,40 @@ pub fn encode_node(
     let crc = crc32c(page);
     put_u32_le(page, 64, crc);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Binary and linear floor searches agree on every key, present or not.
+    #[test]
+    fn floor_record_matches_a_linear_search() {
+        let keys: [[u8; 8]; 40] =
+            core::array::from_fn(|index| ((index as u64 + 1) * 10).to_be_bytes());
+        // Records of eight-byte keys and empty values.
+        let mut payload = [0u8; 40 * 12];
+        for (index, key) in keys.iter().enumerate() {
+            payload[index * 12..index * 12 + 2].copy_from_slice(&8u16.to_le_bytes());
+            payload[index * 12 + 4..index * 12 + 12].copy_from_slice(key);
+        }
+        let view = PageView {
+            level: 0,
+            data_blocks: 0,
+            count: 40,
+            payload: &payload,
+        };
+        for probe in 0..420u64 {
+            let probe = probe.to_be_bytes();
+            let expected = keys.iter().rposition(|key| key <= &probe);
+            for scratch in [&mut [0u16; 64][..], &mut [0u16; 8][..]] {
+                let found = view.floor_record(&probe, <[u8]>::cmp, scratch);
+                assert_eq!(found.as_ref().map(|(index, _)| *index), expected);
+                if let Some((index, mut from)) = found {
+                    assert_eq!(from.len(), 40 - index);
+                    assert_eq!(from.next().map(|(key, _)| key), Some(&keys[index][..]));
+                }
+            }
+        }
+    }
 }

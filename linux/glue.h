@@ -16,6 +16,7 @@ struct readahead_control;
 /* Implemented in Rust. */
 int carryfs_fill_super(struct super_block *sb, u32 uid, u32 gid, int silent);
 void carryfs_free_volume(void *volume);
+struct inode *carryfs_iget(struct super_block *sb, u64 ino, umode_t type);
 
 /* Implemented in glue.c. */
 int carryfs_register(void);
@@ -27,6 +28,8 @@ void carryfs_set_uuid(struct super_block *sb, const u8 *uuid);
 void carryfs_statfs_fill(struct kstatfs *buf, u64 type, u64 bsize, u64 blocks, u64 bfree, u64 bavail, u64 namelen, u32 fsid_low, u32 fsid_high);
 struct buffer_head *carryfs_bread(struct super_block *sb, u64 block);
 void carryfs_brelse(struct buffer_head *bh);
+struct buffer_head *carryfs_bread_cached(struct super_block *sb, u64 block);
+void carryfs_readahead_blocks(struct super_block *sb, const u64 *blocks, unsigned int count);
 const u8 *carryfs_bh_data(struct buffer_head *bh);
 bool carryfs_bh_verified(struct buffer_head *bh);
 void carryfs_bh_set_verified(struct buffer_head *bh);
@@ -40,6 +43,11 @@ const unsigned char *carryfs_qstr_name(const struct qstr *name);
 u32 carryfs_qstr_len(const struct qstr *name);
 void carryfs_qstr_set_hash(struct qstr *name, u32 hash);
 bool carryfs_dir_emit(struct dir_context *ctx, const char *name, int len, u64 ino, unsigned int type);
+void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 ino,
+			  umode_t type);
+bool carryfs_dir_primed(struct inode *dir);
+void carryfs_set_dir_primed(struct inode *dir);
+struct dentry *carryfs_file_dentry(struct file *file);
 bool carryfs_dir_emit_dots(struct file *file, struct dir_context *ctx);
 struct bio *carryfs_bio_alloc_read(struct super_block *sb, u64 sector, unsigned int pages);
 struct inode *carryfs_folio_inode(struct folio *folio);

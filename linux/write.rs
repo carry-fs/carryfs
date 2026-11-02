@@ -204,7 +204,10 @@ impl Writer {
             if state.free_blocks() < needed + HEADROOM {
                 return Err(ENOSPC);
             }
-            // Allocate and write every unit's blocks, then wait once.
+            // Allocate and write every unit's blocks, then wait once. The
+            // plug lets the block layer merge adjacent units' writes.
+            // SAFETY: Finished below, on this task, before any return.
+            let plug = unsafe { glue::carryfs_plug_start() };
             let mut bio: *mut bindings::bio = core::ptr::null_mut();
             for (position, unit) in units.iter().enumerate() {
                 let blocks = unit_blocks(size, unit.index);
@@ -215,7 +218,21 @@ impl Writer {
                 }
                 let mut done = 0;
                 while done < blocks {
-                    let (first, count) = txn(state).allocate_data(disk, blocks - done)?;
+                    let (first, count) = match txn(state).allocate_data(disk, blocks - done) {
+                        Ok(run) => run,
+                        Err(error) => {
+                            // SAFETY: Started above; submits what was queued.
+                            unsafe { glue::carryfs_plug_finish(plug) };
+                            if !bio.is_null() {
+                                // SAFETY: The chain's last bio, not yet submitted.
+                                unsafe {
+                                    bindings::submit_bio_wait(bio);
+                                    bindings::bio_put(bio);
+                                }
+                            }
+                            return Err(error);
+                        }
+                    };
                     runs.push((position, first, count), GFP_KERNEL)?;
                     // SAFETY: `sb` holds its block device.
                     unsafe { glue::carryfs_clean_aliases(sb, first, count) };
@@ -228,6 +245,8 @@ impl Writer {
                     done += count;
                 }
             }
+            // SAFETY: Started above.
+            unsafe { glue::carryfs_plug_finish(plug) };
             if !bio.is_null() {
                 // SAFETY: `bio` is the last of the chain, not yet submitted.
                 let status = unsafe {

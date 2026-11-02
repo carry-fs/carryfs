@@ -543,6 +543,24 @@ void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count)
 	clean_bdev_aliases(sb->s_bdev, block, count);
 }
 
+/* A block plug for a batch of writes; NULL when out of memory. */
+void *carryfs_plug_start(void)
+{
+	struct blk_plug *plug = kmalloc(sizeof(*plug), GFP_NOFS);
+
+	if (plug)
+		blk_start_plug(plug);
+	return plug;
+}
+
+void carryfs_plug_finish(void *plug)
+{
+	if (plug) {
+		blk_finish_plug(plug);
+		kfree(plug);
+	}
+}
+
 /* Page cache. */
 
 /* The locked folio a buffered write fills, or an ERR_PTR. */

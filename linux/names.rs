@@ -12,7 +12,7 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
-use crate::glue::{self, qstr_bytes};
+use crate::glue::qstr_bytes;
 use crate::inode::Ops;
 use crate::ondisk::name::{self, Scratch, MAX_FOLDED_BYTES, MAX_STORED_BYTES};
 use crate::tree;
@@ -133,7 +133,7 @@ unsafe extern "C" fn d_hash(dentry: *const bindings::dentry, name: *mut bindings
         })
     };
     // SAFETY: `d_hash` may set the hash of the name it was given.
-    unsafe { glue::carryfs_qstr_set_hash(name, value) };
+    unsafe { (*name).__bindgen_anon_1.__bindgen_anon_1.hash = value };
     0
 }
 

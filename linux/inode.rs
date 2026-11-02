@@ -118,7 +118,12 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
     // `decode_page` validated the record: its type, length, flags, and
     // timestamp ranges.
     let kind = record.first().copied().unwrap_or(0);
-    let (mode, iop, fop, aops): (u32, _, _, _) = match kind {
+    let (mode, iop, fop, aops): (
+        u32,
+        *const bindings::inode_operations,
+        *const bindings::file_operations,
+        *const bindings::address_space_operations,
+    ) = match kind {
         FILE => (
             bindings::S_IFREG | 0o644,
             &FILE_INODE_OPERATIONS.0 as *const _,
@@ -148,7 +153,13 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
         glue::carryfs_i_size_write(inode, le_u64(&record, 16) as i64);
         (*inode).i_blocks = le_u64(&record, namei::ALLOCATED).saturating_mul(8) as _;
         set_inode_times(inode, &record);
-        glue::carryfs_inode_set_ops(inode, iop, fop, aops);
+        (*inode).i_op = iop;
+        if !fop.is_null() {
+            (*inode).__bindgen_anon_3.i_fop = fop;
+        }
+        if !aops.is_null() {
+            (*(*inode).i_mapping).a_ops = aops;
+        }
     }
     if kind == SYMLINK {
         let target = record.get(128..).unwrap_or_default();
@@ -157,7 +168,7 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
         link.push(0, GFP_KERNEL)?;
         let (link, _, _) = link.into_raw_parts();
         // SAFETY: `free_inode` frees the NUL-terminated target.
-        unsafe { glue::carryfs_inode_set_link(inode, link) };
+        unsafe { (*inode).__bindgen_anon_5.i_link = link.cast() };
     }
     Ok(())
 }
@@ -167,7 +178,7 @@ pub(crate) unsafe extern "C" fn free_inode(inode: *mut bindings::inode) {
     // SAFETY: The VFS passes an inode of this filesystem with no users left.
     unsafe {
         if (*inode).i_mode as u32 & bindings::S_IFMT == bindings::S_IFLNK {
-            bindings::kfree(glue::carryfs_inode_link(inode) as *const c_void);
+            bindings::kfree((*inode).__bindgen_anon_5.i_link as *const c_void);
         }
         bindings::free_inode_nonrcu(inode);
     }
@@ -254,7 +265,7 @@ pub(crate) unsafe extern "C" fn lookup(
             if inode.is_null() {
                 // SAFETY: As above; negative dentries remember the directory
                 // version they saw.
-                unsafe { glue::carryfs_set_dentry_version(dentry, dir) };
+                unsafe { (*dentry).d_time = glue::carryfs_inode_query_iversion(dir) as _ };
             }
             // SAFETY: `inode` is referenced or null; `d_splice_alias`
             // consumes it.

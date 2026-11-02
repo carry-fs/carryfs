@@ -58,26 +58,7 @@ unsafe extern "C" {
     pub(crate) fn carryfs_nofs_save() -> u32;
     pub(crate) fn carryfs_nofs_restore(flags: u32);
     pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;
-    pub(crate) fn carryfs_inode_set_ops(
-        inode: *mut inode,
-        iop: *const kernel::bindings::inode_operations,
-        fop: *const kernel::bindings::file_operations,
-        aops: *const kernel::bindings::address_space_operations,
-    );
-    pub(crate) fn carryfs_inode_set_link(inode: *mut inode, link: *mut u8);
-    pub(crate) fn carryfs_inode_link(inode: *mut inode) -> *mut u8;
     pub(crate) fn carryfs_i_size_write(inode: *mut inode, size: i64);
-    pub(crate) fn carryfs_dentry_name(dentry: *const dentry) -> *const qstr;
-    pub(crate) fn carryfs_qstr_name(name: *const qstr) -> *const u8;
-    pub(crate) fn carryfs_qstr_len(name: *const qstr) -> u32;
-    pub(crate) fn carryfs_qstr_set_hash(name: *mut qstr, hash: u32);
-    pub(crate) fn carryfs_dir_emit(
-        ctx: *mut dir_context,
-        name: *const u8,
-        len: c_int,
-        ino: u64,
-        kind: u32,
-    ) -> bool;
     pub(crate) fn carryfs_prime_dentry(
         parent: *mut dentry,
         name: *const u8,
@@ -85,20 +66,14 @@ unsafe extern "C" {
         ino: u64,
         kind: u16,
     );
-    pub(crate) fn carryfs_dir_cache(dir: *mut inode) -> *mut c_void;
-    pub(crate) fn carryfs_dir_cache_publish(dir: *mut inode, listing: *mut c_void) -> bool;
-    pub(crate) fn carryfs_dir_cache_take(dir: *mut inode) -> *mut c_void;
     pub(crate) fn carryfs_inode_query_iversion(inode: *mut inode) -> u64;
     pub(crate) fn carryfs_inode_eq_iversion(inode: *mut inode, version: u64) -> bool;
-    pub(crate) fn carryfs_file_dentry(file: *mut file) -> *mut dentry;
     pub(crate) fn carryfs_inode_inc_iversion(dir: *mut inode);
-    pub(crate) fn carryfs_set_dentry_version(dentry: *mut dentry, dir: *mut inode);
     pub(crate) fn carryfs_revalidate_negative(
         dir: *mut inode,
         dentry: *mut dentry,
         flags: u32,
     ) -> c_int;
-    pub(crate) fn carryfs_inode_nlink(inode: *mut inode) -> u32;
     pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
 
     pub(crate) fn carryfs_bio_alloc_read(
@@ -172,5 +147,10 @@ unsafe extern "C" {
 pub(crate) unsafe fn qstr_bytes<'a>(name: *const qstr) -> &'a [u8] {
     // SAFETY: The caller guarantees `name` is valid; a qstr's `name` points
     // to `len` readable bytes.
-    unsafe { core::slice::from_raw_parts(carryfs_qstr_name(name), carryfs_qstr_len(name) as usize) }
+    unsafe {
+        core::slice::from_raw_parts(
+            (*name).name,
+            (*name).__bindgen_anon_1.__bindgen_anon_1.len as usize,
+        )
+    }
 }

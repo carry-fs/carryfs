@@ -363,53 +363,6 @@ void carryfs_i_size_write(struct inode *inode, loff_t size)
 	i_size_write(inode, size);
 }
 
-void carryfs_inode_set_ops(struct inode *inode, const struct inode_operations *iop,
-			   const struct file_operations *fop,
-			   const struct address_space_operations *aops)
-{
-	inode->i_op = iop;
-	if (fop)
-		inode->i_fop = fop;
-	if (aops)
-		inode->i_mapping->a_ops = aops;
-}
-
-void carryfs_inode_set_link(struct inode *inode, char *link)
-{
-	inode->i_link = link;
-}
-
-char *carryfs_inode_link(struct inode *inode)
-{
-	return inode->i_link;
-}
-
-const struct qstr *carryfs_dentry_name(const struct dentry *dentry)
-{
-	return &dentry->d_name;
-}
-
-const unsigned char *carryfs_qstr_name(const struct qstr *name)
-{
-	return name->name;
-}
-
-u32 carryfs_qstr_len(const struct qstr *name)
-{
-	return name->len;
-}
-
-void carryfs_qstr_set_hash(struct qstr *name, u32 hash)
-{
-	name->hash = hash;
-}
-
-bool carryfs_dir_emit(struct dir_context *ctx, const char *name, int len, u64 ino,
-		      unsigned int type)
-{
-	return dir_emit(ctx, name, len, ino, type);
-}
-
 /*
  * Instantiate a dentry for an entry readdir just returned, as NFS and CIFS
  * do for readdirplus, so stats after a listing find it in the dcache.
@@ -448,26 +401,6 @@ out:
 	dput(dentry);
 }
 
-/*
- * A directory inode's i_private holds its kept listing (dir.rs). Listings
- * publish it under the shared inode lock; changes take it under the
- * exclusive one.
- */
-void *carryfs_dir_cache(struct inode *dir)
-{
-	return READ_ONCE(dir->i_private);
-}
-
-bool carryfs_dir_cache_publish(struct inode *dir, void *listing)
-{
-	return cmpxchg(&dir->i_private, NULL, listing) == NULL;
-}
-
-void *carryfs_dir_cache_take(struct inode *dir)
-{
-	return xchg(&dir->i_private, NULL);
-}
-
 u64 carryfs_inode_query_iversion(struct inode *inode)
 {
 	return inode_query_iversion(inode);
@@ -481,12 +414,6 @@ bool carryfs_inode_eq_iversion(struct inode *inode, u64 version)
 void carryfs_inode_inc_iversion(struct inode *dir)
 {
 	inode_inc_iversion(dir);
-}
-
-/* Remember the directory version a negative lookup saw, as exfat does. */
-void carryfs_set_dentry_version(struct dentry *dentry, struct inode *dir)
-{
-	dentry->d_time = inode_query_iversion(dir);
 }
 
 /*
@@ -504,17 +431,7 @@ int carryfs_revalidate_negative(struct inode *dir, struct dentry *dentry, unsign
 	return inode_eq_iversion(dir, dentry->d_time);
 }
 
-unsigned int carryfs_inode_nlink(struct inode *inode)
-{
-	return inode->i_nlink;
-}
-
-struct dentry *carryfs_file_dentry(struct file *file)
-{
-	return file->f_path.dentry;
-}
-
-bool carryfs_dir_emit_dots(struct file *file, struct dir_context *ctx)
+  bool carryfs_dir_emit_dots(struct file *file, struct dir_context *ctx)
 {
 	return dir_emit_dots(file, ctx);
 }

@@ -126,7 +126,7 @@ unsafe extern "C" fn iterate(file: *mut bindings::file, ctx: *mut bindings::dir_
         (
             dir,
             DirContext::from_raw(ctx),
-            glue::carryfs_file_dentry(file),
+            (*file).__bindgen_anon_1.f_path.dentry,
             kept,
             cursor,
         )

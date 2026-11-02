@@ -12,6 +12,7 @@
 use core::ffi::c_void;
 
 use kernel::bindings;
+use kernel::sync::atomic::{Acquire, Atomic, Full};
 use kernel::ffi::c_int;
 use kernel::types::Opaque;
 
@@ -117,8 +118,11 @@ impl Inode {
 
     /// Whether the inode was unlinked.
     pub(crate) fn unlinked(&self) -> bool {
-        // SAFETY: Reading the link count is always valid.
-        unsafe { glue::carryfs_inode_nlink(self.as_ptr()) == 0 }
+        // SAFETY: The inode is referenced; the count is read once, as
+        // `inode->i_nlink` is in C.
+        unsafe {
+            core::ptr::read_volatile(&raw const (*self.as_ptr()).__bindgen_anon_1.i_nlink) == 0
+        }
     }
 
     /// Mark the inode unlinked; the caller holds it locked.
@@ -144,20 +148,29 @@ impl Inode {
         unsafe { glue::carryfs_inode_eq_iversion(self.as_ptr(), version) }
     }
 
-    /// The private pointer a directory keeps its listing in (dir.rs).
-    pub(crate) fn listing(&self) -> *mut c_void {
-        // SAFETY: The inode is referenced; the field is read atomically.
-        unsafe { glue::carryfs_dir_cache(self.as_ptr()) }
+    /// `i_private`, where a directory keeps its listing (dir.rs), as an
+    /// address: the kernel's atomics have no pointer type in Linux 7.0.
+    /// This driver uses the field only atomically.
+    fn private(&self) -> &Atomic<usize> {
+        // SAFETY: The inode is referenced, so the field outlives the borrow,
+        // every access to it goes through this view, and a pointer has the
+        // size and alignment of `usize`.
+        unsafe { Atomic::from_ptr((&raw mut (*self.as_ptr()).i_private).cast()) }
     }
 
+    pub(crate) fn listing(&self) -> *mut c_void {
+        core::ptr::with_exposed_provenance_mut(self.private().load(Acquire))
+    }
+
+    /// Set the listing unless one is set; whether it was.
     pub(crate) fn publish_listing(&self, listing: *mut c_void) -> bool {
-        // SAFETY: As above; the field is swapped atomically.
-        unsafe { glue::carryfs_dir_cache_publish(self.as_ptr(), listing) }
+        self.private()
+            .cmpxchg(0, listing.expose_provenance(), Full)
+            .is_ok()
     }
 
     pub(crate) fn take_listing(&self) -> *mut c_void {
-        // SAFETY: As above.
-        unsafe { glue::carryfs_dir_cache_take(self.as_ptr()) }
+        core::ptr::with_exposed_provenance_mut(self.private().xchg(0, Full))
     }
 }
 
@@ -185,7 +198,7 @@ impl Dentry {
 
     pub(crate) fn name(&self) -> &[u8] {
         // SAFETY: The type invariant keeps the name stable while borrowed.
-        unsafe { glue::qstr_bytes(glue::carryfs_dentry_name(self.as_ptr())) }
+        unsafe { glue::qstr_bytes(&raw const (*self.as_ptr()).__bindgen_anon_1.d_name) }
     }
 
     /// The dentry's inode, if positive.
@@ -282,19 +295,24 @@ impl DirContext {
             2 => bindings::DT_DIR,
             _ => bindings::DT_LNK,
         };
-        // SAFETY: Only this iteration uses its context; names are at most
-        // 255 bytes.
+        let context = self.0.get();
+        // SAFETY: Only this iteration uses its context, whose actor the VFS
+        // set; names are at most 255 bytes. This is `dir_emit`.
         unsafe {
-            if !glue::carryfs_dir_emit(
-                self.0.get(),
-                name.as_ptr(),
+            let Some(actor) = (*context).actor else {
+                return false;
+            };
+            if !actor(
+                context,
+                name.as_ptr().cast(),
                 name.len() as c_int,
+                (*context).pos,
                 ino,
                 file_type,
             ) {
                 return false;
             }
-            (*self.0.get()).pos += 1;
+            (*context).pos += 1;
         }
         true
     }

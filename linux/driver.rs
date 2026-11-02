@@ -30,6 +30,7 @@ mod namei;
 mod space;
 mod tree;
 mod volume;
+mod write;
 
 module! {
     type: CarryFs,

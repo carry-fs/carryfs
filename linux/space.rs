@@ -16,6 +16,8 @@ use crate::ondisk::format::{ALLOCATION_GROUP_BLOCKS, TreeKind};
 use crate::tree::{Link, Tree};
 
 const BITMAP: usize = 2048;
+/// Retired blocks one commit reclaims at most: 256 MiB.
+const RECLAIM_BLOCKS: u64 = 65_536;
 
 /// One allocation group a transaction touched.
 pub(crate) struct Group {
@@ -185,6 +187,55 @@ impl Txn {
             }
         }
         Ok(())
+    }
+
+    /// Reclaim retired data from generations both roots already hold,
+    /// removing the records and clearing the blocks' bits; whether a full
+    /// batch was taken, so that more may remain.
+    ///
+    /// FORMAT.md section 6 sets an initial batch of 64 records and 1,024
+    /// blocks. Bitmaps live in memory here, so a batch takes 64 records of
+    /// up to `RECLAIM_BLOCKS`: rewrites retire faster than 1,024 blocks a
+    /// commit would return.
+    pub(crate) fn reclaim(&mut self, disk: &Disk, committed_cleanup: crate::ondisk::format::TreeRef) -> Result<bool> {
+        let mut records: KVec<([u8; 17], u64, u64)> = KVec::new();
+        let mut blocks = 0;
+        let tree = Tree {
+            sb: disk.sb,
+            uuid: disk.uuid,
+            blocks: disk.blocks,
+            kind: TreeKind::Cleanup,
+            root: Link::Disk(committed_cleanup),
+            generation: disk.generation,
+            drafts: &[],
+        };
+        tree.scan(&[1], &mut |key, value| {
+            if key.first() != Some(&1) || key.len() != 17 || records.len() == 64 {
+                return Ok(false);
+            }
+            let generation = crate::tree::be_u64(key, 1);
+            let count = value
+                .get(..4)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map_or(0, |bytes| u64::from(u32::from_le_bytes(bytes)));
+            if generation > disk.generation || blocks + count > RECLAIM_BLOCKS {
+                return Ok(false);
+            }
+            let mut copy = [0u8; 17];
+            copy.copy_from_slice(key);
+            records.push((copy, crate::tree::be_u64(key, 9), count), GFP_KERNEL)?;
+            blocks += count;
+            Ok(true)
+        })?;
+        for (key, first, count) in records.iter() {
+            self.delete(disk, TreeKind::Cleanup, key)?;
+            for block in *first..*first + *count {
+                let group = self.group(disk, block / ALLOCATION_GROUP_BLOCKS)?;
+                set_bit(&mut self.groups[group].current, block, false);
+            }
+            self.reclaimed += count;
+        }
+        Ok(records.len() == 64)
     }
 
     /// Free blocks once this transaction commits, counting its live drafts.

@@ -97,6 +97,8 @@ written by the driver.
 `glue.c` holds no filesystem logic. It wraps the `fs_context` mount API,
 buffer heads, static inline functions, and libfs's unexported
 `simple_write_end`: what in-tree Rust VFS abstractions would provide.
+Plain struct fields and function pointers, such as `i_link`, `d_name`, and
+the `dir_context` actor, are reached from Rust through the bindings.
 
 `vfs.rs` stands in for those abstractions on the Rust side. Each type is
 `#[repr(transparent)]` over `Opaque<T>`, as `kernel::fs::File` is, and

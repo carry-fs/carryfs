@@ -70,6 +70,20 @@ impl Error {
     }
 }
 
+impl From<carryfs_ondisk::error::Error> for Error {
+    fn from(error: carryfs_ondisk::error::Error) -> Self {
+        use carryfs_ondisk::error::Error as Encoding;
+        match error {
+            Encoding::InvalidGeometry => Self::InvalidGeometry,
+            Encoding::InvalidInput(reason) => Self::InvalidInput(reason),
+            Encoding::Corrupt(reason) => Self::Corrupt(reason),
+            Encoding::UnsupportedFormat => Self::UnsupportedFormat,
+            Encoding::InvalidName(reason) => Self::InvalidName(reason),
+            Encoding::TooLong(reason) => Self::TooLong(reason),
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

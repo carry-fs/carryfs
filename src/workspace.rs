@@ -11,13 +11,7 @@ pub(crate) const INITIAL: std::ops::Range<u64> = 8192..16_384;
 const LEAF_RUNS: usize = 250;
 pub(crate) const MAX_BANK_PAGES: usize = 1 + CAPACITY.div_ceil(LEAF_RUNS);
 
-pub(crate) fn is_bank_root(block: u64, blocks: u64) -> bool {
-    blocks >= 1024 && (block == 32 || block == blocks - 96)
-}
-
-pub(crate) fn is_bank_block(block: u64, blocks: u64) -> bool {
-    blocks >= 1024 && ((32..96).contains(&block) || (blocks - 96..blocks - 32).contains(&block))
-}
+pub(crate) use carryfs_ondisk::format::{is_bank_block, is_bank_root};
 
 pub(crate) fn next_reference(root: &Root) -> Result<TreeRef> {
     Ok(TreeRef {

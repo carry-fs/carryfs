@@ -1,0 +1,20 @@
+[package]
+name = "carryfs-ondisk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0 OR GPL-2.0-only"
+description = "CarryFS on-disk encodings shared by the userspace core and the Linux kernel module"
+publish = false
+
+[features]
+# Hardware CRC selection through std CPU-feature detection.
+std = []
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+# The Linux kernel build passes `--cfg MODULE`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(MODULE)"] }
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

@@ -110,21 +110,27 @@ fn with_key<T>(name: &[u8], scratch: &mut Scratch, f: impl FnOnce(&[u8]) -> T) -
     }
 }
 
+/// A dcache hash of a comparison key: FNV-1a seeded with the parent. Any
+/// hash works if equal keys hash equally; this one streams, so an ASCII
+/// name hashes without a lowercase copy.
+fn hash(parent: *const bindings::dentry, key: impl Iterator<Item = u8>) -> u32 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64 ^ parent as usize as u64;
+    for byte in key {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    (hash ^ hash >> 32) as u32
+}
+
 unsafe extern "C" fn d_hash(dentry: *const bindings::dentry, name: *mut bindings::qstr) -> c_int {
     // SAFETY: The VFS passes a valid name for the duration of the call.
     let bytes = unsafe { qstr_bytes(name) };
-    // SAFETY: `full_name_hash` reads `len` bytes; the salt is the parent.
-    let hash = |key: &[u8]| unsafe {
-        bindings::full_name_hash(dentry.cast(), key.as_ptr().cast(), key.len() as u32)
-    };
     let value = if bytes.is_ascii() && bytes.len() <= MAX_STORED_BYTES {
-        let mut lower = [0; MAX_STORED_BYTES];
-        let lower = &mut lower[..bytes.len()];
-        lower.copy_from_slice(bytes);
-        lower.make_ascii_lowercase();
-        hash(lower)
+        // An ASCII name's comparison key is its lowercase form.
+        hash(dentry, bytes.iter().map(u8::to_ascii_lowercase))
     } else {
-        with_key(bytes, &mut FOLD.lock().scratch, hash)
+        with_key(bytes, &mut FOLD.lock().scratch, |key| {
+            hash(dentry, key.iter().copied())
+        })
     };
     // SAFETY: `d_hash` may set the hash of the name it was given.
     unsafe { glue::carryfs_qstr_set_hash(name, value) };

@@ -300,6 +300,41 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
 	return error;
 }
 
+/*
+ * Write back and wait for every inode of @sb with dirty pages, walking the
+ * inode list as drop_pagecache_sb() does; sync_inodes_sb() would need
+ * s_umount. Returns the first error.
+ */
+int carryfs_write_dirty_inodes(struct super_block *sb)
+{
+	struct inode *inode, *toput = NULL;
+	int error = 0;
+
+	spin_lock(&sb->s_inode_list_lock);
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+		spin_lock(&inode->i_lock);
+		if ((inode_state_read(inode) & (I_FREEING | I_WILL_FREE | I_NEW)) ||
+		    !mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY)) {
+			spin_unlock(&inode->i_lock);
+			continue;
+		}
+		__iget(inode);
+		spin_unlock(&inode->i_lock);
+		spin_unlock(&sb->s_inode_list_lock);
+
+		if (!error)
+			error = filemap_write_and_wait(inode->i_mapping);
+		iput(toput);
+		toput = inode;
+
+		cond_resched();
+		spin_lock(&sb->s_inode_list_lock);
+	}
+	spin_unlock(&sb->s_inode_list_lock);
+	iput(toput);
+	return error;
+}
+
 /* A durable cache flush: earlier writes reach media before later ones. */
 int carryfs_flush(struct super_block *sb)
 {

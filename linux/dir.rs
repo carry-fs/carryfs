@@ -28,10 +28,12 @@ use crate::{corrupt, inode, volume};
 /// directory page).
 const BATCH: usize = 64;
 
-/// An entry read for emitting.
-struct Entry {
-    key: KVec<u8>,
-    name: KVec<u8>,
+/// An entry read for emitting: its key and name, consecutive in the
+/// batch's byte buffer from `at`.
+struct Item {
+    at: usize,
+    key: usize,
+    name: usize,
     target: u64,
     kind: u8,
 }
@@ -89,8 +91,12 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
     let volume = volume::of(sb);
     // Entries are read under the volume lock in batches, then emitted and
     // primed without it: priming fills inodes, which takes the lock.
+    // One buffer for the batch's keys and names, reused across batches.
+    let mut bytes: KVec<u8> = KVec::new();
+    let mut items: KVec<Item> = KVec::with_capacity(BATCH, GFP_KERNEL)?;
     'listing: loop {
-        let mut batch: KVec<Entry> = KVec::new();
+        bytes.clear();
+        items.clear();
         {
             let state = volume.lock();
             let catalog = state.root.catalog.block;
@@ -108,26 +114,31 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
                 }
                 let name = value.get(12..).unwrap_or_default();
                 validate_disk_name_characters(name).map_err(|error| corrupt(catalog, error))?;
-                let mut entry = Entry {
-                    key: KVec::new(),
-                    name: KVec::new(),
-                    target: le_u64(value, 0),
-                    kind: value.get(8).copied().unwrap_or(0),
-                };
-                entry.key.extend_from_slice(key, GFP_KERNEL)?;
-                entry.name.extend_from_slice(name, GFP_KERNEL)?;
-                batch.push(entry, GFP_KERNEL)?;
-                Ok(batch.len() < BATCH)
+                let at = bytes.len();
+                bytes.extend_from_slice(key, GFP_KERNEL)?;
+                bytes.extend_from_slice(name, GFP_KERNEL)?;
+                items.push(
+                    Item {
+                        at,
+                        key: key.len(),
+                        name: name.len(),
+                        target: le_u64(value, 0),
+                        kind: value.get(8).copied().unwrap_or(0),
+                    },
+                    GFP_KERNEL,
+                )?;
+                Ok(items.len() < BATCH)
             })?;
         }
-        let full = batch.len() == BATCH;
-        for entry in batch {
+        let full = items.len() == BATCH;
+        for entry in items.iter() {
+            let key = &bytes[entry.at..entry.at + entry.key];
+            let name = &bytes[entry.at + entry.key..entry.at + entry.key + entry.name];
             let dt = match entry.kind {
                 1 => bindings::DT_REG,
                 2 => bindings::DT_DIR,
                 _ => bindings::DT_LNK,
             };
-            let name = &entry.name;
             // SAFETY: `ctx` is valid; the name is at most 255 bytes.
             if !unsafe {
                 glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, entry.target, dt)
@@ -147,7 +158,8 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
                     );
                 }
             }
-            last = entry.key;
+            last.clear();
+            last.extend_from_slice(key, GFP_KERNEL)?;
             emitted += 1;
         }
         if ended || !full {

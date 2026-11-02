@@ -29,8 +29,9 @@ use crate::tree::{self, be_u64, le_u64, Tree};
 use crate::volume::{self, State};
 use crate::{commit, errno};
 
-/// Units one hold of the volume lock writes: 1 MiB.
-const BATCH: usize = 16;
+/// Units one hold of the volume lock writes: 4 MiB, enough to keep a
+/// device busy between waits.
+const BATCH: usize = 64;
 const SECTORS_PER_BLOCK: u64 = (BLOCK_BYTES / 512) as u64;
 /// Free blocks a buffered write must leave, beyond what it allocates.
 const HEADROOM: u64 = crate::ondisk::format::MAINTENANCE_RESERVE + 8_192;
@@ -393,6 +394,7 @@ fn remove_extents(
             &tree::numbered_key(object, tree::EXTENT, logical),
         )?;
         txn(state).retire(
+            disk,
             physical + (overlap_start - logical),
             overlap_end - overlap_start,
         )?;
@@ -759,7 +761,20 @@ pub(crate) unsafe extern "C" fn fsync(
     }
     // SAFETY: As above.
     let sb = unsafe { (*(*file).f_inode).i_sb };
-    match commit::commit(sb, &mut volume::of(sb).lock()) {
+    let volume = volume::of(sb);
+    if !volume.writable || volume.lock().txn.is_none() {
+        return 0;
+    }
+    // A commit publishes the whole volume, so write back every dirty file
+    // first: the fsyncs that follow, as after copying many files, then find
+    // nothing left to commit. The FUSE adapter publishes all pending changes
+    // on fsync too.
+    // SAFETY: `sb` is the super block of an open file.
+    let status = unsafe { glue::carryfs_write_dirty_inodes(sb) };
+    if status != 0 {
+        return status;
+    }
+    match commit::commit(sb, &mut volume.lock()) {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }

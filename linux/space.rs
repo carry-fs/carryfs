@@ -152,16 +152,25 @@ impl Txn {
         Ok(cursor)
     }
 
-    /// Record data blocks this transaction's writes superseded; they stay
-    /// allocated until a later transaction reclaims them.
-    pub(crate) fn retire(&mut self, first: u64, count: u64) -> Result {
-        if let Some((start, length)) = self.retired.last_mut() {
-            if *start + *length == first && *length + count <= u64::from(u32::MAX) {
-                *length += count;
-                return Ok(());
+    /// Release data blocks this transaction's writes superseded. Blocks the
+    /// committed state owns stay allocated until a later transaction
+    /// reclaims them; blocks this transaction allocated, which no committed
+    /// root refers to, are free again at once.
+    pub(crate) fn retire(&mut self, disk: &Disk, first: u64, count: u64) -> Result {
+        for block in first..first + count {
+            let group = self.group(disk, block / ALLOCATION_GROUP_BLOCKS)?;
+            if !bit(&self.groups[group].committed, block) {
+                set_bit(&mut self.groups[group].current, block, false);
+                self.data_allocated = self.data_allocated.saturating_sub(1);
+                continue;
+            }
+            match self.retired.last_mut() {
+                Some((start, length)) if *start + *length == block && *length < u64::from(u32::MAX) => {
+                    *length += 1
+                }
+                _ => self.retired.push((block, 1), GFP_KERNEL)?,
             }
         }
-        self.retired.push((first, count), GFP_KERNEL)?;
         Ok(())
     }
 

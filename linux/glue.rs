@@ -52,6 +52,7 @@ unsafe extern "C" {
         count: u32,
     ) -> c_int;
     pub(crate) fn carryfs_flush(sb: *mut super_block) -> c_int;
+    pub(crate) fn carryfs_write_dirty_inodes(sb: *mut super_block) -> c_int;
     pub(crate) fn carryfs_timer_start(sb: *mut super_block) -> *mut c_void;
     pub(crate) fn carryfs_timer_stop(timer: *mut c_void);
     pub(crate) fn carryfs_nofs_save() -> u32;

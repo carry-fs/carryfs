@@ -493,7 +493,7 @@ pub(crate) fn remove_object(sb: *mut bindings::super_block, object: u64) -> Resu
                 txn(state).delete(disk, TreeKind::Catalog, key)?;
             }
             for (first, count) in extents.iter() {
-                txn(state).retire(*first, *count)?;
+                txn(state).retire(disk, *first, *count)?;
             }
             if done {
                 txn(state).delete(disk, TreeKind::Catalog, &tree::prefix(object, tree::INODE))?;

@@ -170,7 +170,25 @@ All of these produce images the userspace checker accepts.
 
 ## Benchmarks
 
-See [Results](#results).
+`benchmarks/run.py` runs the full suite with `--systems carryfs carryfs-kernel`.
+Medians of three rounds on 1 GiB loop images (KVM guest, Linux 7.0),
+measured before the fsync and listing fixes below:
+
+| Metric | FUSE | Kernel |
+|---|---:|---:|
+| sequential_write (MiB/s) | 391 | 1,323 |
+| small_file_create (files/s) | 5,597 | 21,914 |
+| tree_create (files/s) | 4,943 | 25,956 |
+| create_10000_batch128_durable (ms) | 2,986 | 901 |
+| rw-cold sequential_read (MiB/s) | 531 | 730 |
+| rw-warm sequential_read (MiB/s) | 1,734 | 9,631 |
+| mount_rw-stream (s) | 0.078 | 0.004 |
+
+That run lost `fsync_after_small_files` (2,802 ms against 93 ms) and warm
+listings. fsync now writes back every dirty file before committing, and
+listings batch entries in one buffer: a spot check then measured 55 ms for
+the 1,000 fsyncs and 3.4 ms for a warm 10,000-name listing (FUSE 1.8 ms).
+Rerun the suite to confirm before quoting these.
 
 ## Upstreaming
 

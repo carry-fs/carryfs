@@ -476,12 +476,11 @@ void carryfs_set_dentry_version(struct dentry *dentry, struct inode *dir)
 /*
  * Positive dentries stay valid. A negative one stays valid while its
  * directory is unchanged, so a later case-insensitive create is seen, and
- * never for creation, so the new name keeps the caller's spelling.
+ * never for creation, so the new name keeps the caller's spelling. Nothing
+ * here sleeps, so RCU path walks keep their fast path.
  */
 int carryfs_revalidate_negative(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
-	if (flags & LOOKUP_RCU)
-		return -ECHILD;
 	if (d_really_is_positive(dentry))
 		return 1;
 	if (flags & (LOOKUP_CREATE | LOOKUP_RENAME_TARGET))

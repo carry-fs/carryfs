@@ -115,8 +115,8 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
                 let name = value.get(12..).unwrap_or_default();
                 validate_disk_name_characters(name).map_err(|error| corrupt(catalog, error))?;
                 let at = bytes.len();
-                bytes.extend_from_slice(key, GFP_KERNEL)?;
-                bytes.extend_from_slice(name, GFP_KERNEL)?;
+                tree::append(&mut bytes, key)?;
+                tree::append(&mut bytes, name)?;
                 items.push(
                     Item {
                         at,
@@ -131,8 +131,9 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
             })?;
         }
         let full = items.len() == BATCH;
+        let mut emitted_in_batch: usize = 0;
+        let mut stopped = false;
         for entry in items.iter() {
-            let key = &bytes[entry.at..entry.at + entry.key];
             let name = &bytes[entry.at + entry.key..entry.at + entry.key + entry.name];
             let dt = match entry.kind {
                 1 => bindings::DT_REG,
@@ -143,7 +144,8 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
             if !unsafe {
                 glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, entry.target, dt)
             } {
-                break 'listing;
+                stopped = true;
+                break;
             }
             // SAFETY: `ctx` is valid, and the open directory pins its dentry.
             unsafe {
@@ -158,9 +160,19 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
                     );
                 }
             }
-            last.clear();
-            last.extend_from_slice(key, GFP_KERNEL)?;
+            emitted_in_batch += 1;
             emitted += 1;
+        }
+        // The last emitted entry's key, copied once per batch for resuming.
+        if let Some(entry) = emitted_in_batch
+            .checked_sub(1)
+            .and_then(|index| items.get(index))
+        {
+            last.clear();
+            tree::append(&mut last, &bytes[entry.at..entry.at + entry.key])?;
+        }
+        if stopped {
+            break 'listing;
         }
         if ended || !full {
             break;

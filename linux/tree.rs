@@ -55,6 +55,24 @@ pub(crate) fn be_u64(key: &[u8], offset: usize) -> u64 {
         .map_or(0, u64::from_be_bytes)
 }
 
+/// Append `bytes` to `vec` in one copy: the kernel's `extend_from_slice`
+/// clones element by element.
+pub(crate) fn append(vec: &mut KVec<u8>, bytes: &[u8]) -> Result {
+    vec.reserve(bytes.len(), GFP_KERNEL)?;
+    let spare = vec.spare_capacity_mut();
+    // SAFETY: `reserve` made room for `bytes.len()` more bytes, and
+    // `MaybeUninit<u8>` has the layout of `u8`; the copy initializes them.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            spare.as_mut_ptr().cast::<u8>(),
+            bytes.len(),
+        );
+        vec.inc_len(bytes.len());
+    }
+    Ok(())
+}
+
 /// Key order. Catalog keys start with a big-endian object ID, and most keys
 /// on a page differ there, so comparing it as an integer first spares most
 /// comparisons a `memcmp` call.

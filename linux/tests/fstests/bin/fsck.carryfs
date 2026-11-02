@@ -1,0 +1,4 @@
+#!/bin/sh
+# fsck(8) helper for fstests: the userspace structural check; never repairs.
+device=$(for arg in "$@"; do last=$arg; done; echo "$last")
+exec "$CARRYFS_BIN/carryfs" check --bytes "$(blockdev --getsize64 "$device")" "$device"

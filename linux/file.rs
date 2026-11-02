@@ -18,8 +18,8 @@ use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::error::Error as Encoding;
 use crate::ondisk::format::{checksum_slot, BLOCK_BYTES};
 use crate::tree::{self, le_u64, Tree};
-use crate::volume::{self, Volume};
-use crate::{corrupt, errno};
+use crate::volume::{self, State, Volume};
+use crate::{corrupt, errno, namei};
 
 pub(crate) const UNIT_BLOCKS: u64 = (UNIT_BYTES / BLOCK_BYTES) as u64;
 const SECTORS_PER_BLOCK: u64 = (BLOCK_BYTES / 512) as u64;
@@ -69,7 +69,8 @@ impl Unit {
     }
 }
 
-/// The file being read: its object and size.
+/// The file being read: its object, and its size in the page cache, which
+/// bounds readahead.
 struct Source<'a> {
     sb: *mut bindings::super_block,
     volume: &'a Volume,
@@ -83,7 +84,8 @@ impl Source<'_> {
     /// `inode` must be a referenced regular-file inode of this filesystem.
     unsafe fn new(inode: *mut bindings::inode) -> Self {
         // SAFETY: The caller guarantees the inode is valid; a read-only
-        // inode's size never changes.
+        // inode's size never changes; a writable one's only bounds
+        // readahead here.
         unsafe {
             let sb = (*inode).i_sb;
             Self {
@@ -96,22 +98,19 @@ impl Source<'_> {
     }
 
     /// The stored checksum of `unit`, or `None` for a hole.
-    fn checksum(&self, unit: u64) -> Result<Option<u32>> {
+    fn checksum(&self, state: &State, unit: u64) -> Result<Option<u32>> {
         let key = tree::numbered_key(self.object, tree::CHECKSUMS, unit / 256);
         let slot = (unit % 256) as usize;
-        let state = self.volume.lock();
-        Ok(Tree::catalog(self.sb, &state)
+        Ok(Tree::catalog(self.sb, state)
             .get(&key, |group| checksum_slot(group, slot).map_err(errno))?
             .flatten())
     }
 
     /// The physical block of logical `block` and how many blocks after it
     /// stay contiguous in its extent.
-    fn map(&self, block: u64) -> Result<(u64, u64)> {
+    fn map(&self, state: &State, block: u64) -> Result<(u64, u64)> {
         let key = tree::numbered_key(self.object, tree::EXTENT, block);
-        let state = self.volume.lock();
-        let catalog = state.root.catalog.block;
-        let found = Tree::catalog(self.sb, &state).floor(&key, |found, value| {
+        let found = Tree::catalog(self.sb, state).floor(&key, |found, value| {
             let owner = found.get(..9) == Some(&tree::prefix(self.object, tree::EXTENT)[..]);
             let start = found
                 .get(9..17)
@@ -123,22 +122,31 @@ impl Source<'_> {
         })?;
         found.flatten().ok_or_else(|| {
             corrupt(
-                catalog,
+                state.root.catalog.block,
                 Encoding::Corrupt("backed checksum unit has unmapped blocks"),
             )
         })
     }
 
     /// Read and verify `unit`.
+    ///
+    /// The unit's size, checksum, and extents come from one hold of the
+    /// volume lock, and its valid length from the stored size: the page
+    /// cache may already hold a larger one. A writable mount keeps the lock
+    /// through the I/O, so that no writeback, truncation, or reclamation
+    /// reuses the blocks mid-read; read-only mounts reuse none.
     fn read(&self, unit: u64) -> Result<Unit> {
+        let state = self.volume.lock();
+        let size = le_u64(&namei::read_record(self.sb, &state, self.object)?, 16);
         let start = unit * UNIT_BYTES as u64;
-        let valid = self.size.saturating_sub(start).min(UNIT_BYTES as u64) as usize;
+        let valid = size.saturating_sub(start).min(UNIT_BYTES as u64) as usize;
         let mut pages = KVec::new();
-        let Some(expected) = (if valid == 0 {
+        let expected = if valid == 0 {
             None
         } else {
-            self.checksum(unit)?
-        }) else {
+            self.checksum(&state, unit)?
+        };
+        let Some(expected) = expected else {
             return Ok(Unit {
                 index: unit,
                 pages,
@@ -150,9 +158,24 @@ impl Source<'_> {
         for _ in 0..blocks {
             pages.push(Page::alloc_page(GFP_KERNEL)?, GFP_KERNEL)?;
         }
-        self.read_blocks(unit * UNIT_BLOCKS, &pages)?;
+        let mut runs: KVec<(u64, usize)> = KVec::new();
+        let mut done = 0;
+        while done < blocks {
+            let (physical, run) = self.map(&state, unit * UNIT_BLOCKS + done as u64)?;
+            let run = (run as usize).min(blocks - done);
+            runs.push((physical, run), GFP_KERNEL)?;
+            done += run;
+        }
+        let uuid = state.root.uuid;
+        let held = if self.volume.writable {
+            Some(state)
+        } else {
+            drop(state);
+            None
+        };
+        self.read_blocks(&runs, &pages)?;
+        drop(held);
 
-        let uuid = self.volume.lock().root.uuid;
         let mut crc = DataUnitCrc::new(&uuid, self.object, unit, valid).map_err(errno)?;
         for (index, page) in pages.iter().enumerate() {
             let len = (valid - index * BLOCK_BYTES).min(BLOCK_BYTES);
@@ -179,14 +202,12 @@ impl Source<'_> {
         })
     }
 
-    /// Read logical blocks from `first` into `pages`, one bio per
-    /// contiguous run, chained so that one wait covers them all.
-    fn read_blocks(&self, first: u64, pages: &[Page]) -> Result {
+    /// Read `runs` of physical blocks into `pages`, one bio per run,
+    /// chained so that one wait covers them all.
+    fn read_blocks(&self, runs: &[(u64, usize)], pages: &[Page]) -> Result {
         let mut bio: *mut bindings::bio = core::ptr::null_mut();
         let mut done = 0;
-        while done < pages.len() {
-            let (physical, run) = self.map(first + done as u64)?;
-            let run = (run as usize).min(pages.len() - done);
+        for (physical, run) in runs.iter().copied() {
             // SAFETY: `sb` holds its block device; GFP_NOIO bio allocation
             // does not fail.
             let next = unsafe {
@@ -331,6 +352,8 @@ pub(crate) static ADDRESS_SPACE_OPERATIONS: Ops<bindings::address_space_operatio
         readahead: Some(readahead),
         writepages: Some(crate::write::writepages),
         dirty_folio: Some(bindings::filemap_dirty_folio),
+        // Folios carry no private data, so memory compaction may move them.
+        migrate_folio: Some(bindings::filemap_migrate_folio),
         write_begin: Some(crate::write::write_begin),
         write_end: Some(crate::write::write_end),
         // SAFETY: All-zero entries are absent operations.

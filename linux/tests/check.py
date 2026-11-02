@@ -133,6 +133,17 @@ def listings(volume):
         list(entries)
     same()
     same()
+    # A directory spread over committed and draft pages, listed through
+    # small getdents buffers: a pass may reach its end mid-batch.
+    names = [f"{a}{b}{c}{d}{e}{f}" for a in "abcd" for b in "abcd" for c in "abcd"
+             for d in "abcd" for e in "abcd" for f in "abcd"]
+    (root / "c").mkdir()
+    for index, name in enumerate(names):
+        (root / "c" / name).touch()
+        if index == 500:
+            os.sync()
+    for _ in range(3):
+        assert sorted(os.listdir(root / "c")) == names
     volume.unmount()
     print(f"  listings: {volume.check()}")
 

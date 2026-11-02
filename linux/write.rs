@@ -97,24 +97,45 @@ impl Writer {
         }
     }
 
+    /// The pending unit `index`, added in order if new.
     fn pending(&mut self, index: u64) -> Result<&mut Pending> {
-        if self.units.last().is_none_or(|unit| unit.index != index) {
-            let mut pages = KVec::with_capacity(UNIT_BLOCKS as usize, GFP_KERNEL)?;
-            for _ in 0..UNIT_BLOCKS {
-                pages.push(Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?, GFP_KERNEL)?;
-            }
-            self.units.push(
-                Pending {
+        let position = self.units.iter().position(|unit| unit.index >= index);
+        let position = match position {
+            Some(position) if self.units[position].index == index => position,
+            position => {
+                let mut pages = KVec::with_capacity(UNIT_BLOCKS as usize, GFP_KERNEL)?;
+                for _ in 0..UNIT_BLOCKS {
+                    pages.push(Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?, GFP_KERNEL)?;
+                }
+                let unit = Pending {
                     index,
                     pages,
                     present: 0,
                     folios: KVec::new(),
-                },
-                GFP_KERNEL,
-            )?;
+                };
+                let position = position.unwrap_or(self.units.len());
+                self.units.reserve(1, GFP_KERNEL)?;
+                self.units.insert_within_capacity(position, unit)?;
+                position
+            }
+        };
+        Ok(&mut self.units[position])
+    }
+
+    /// Add the stored partial tail unit when the file grew past it: its
+    /// valid length, and so its checksum and block count, change with the
+    /// size (FORMAT.md section 5, "Growing a file").
+    fn add_tail(&mut self) -> Result {
+        let stored = {
+            let state = volume::of(self.sb).lock();
+            record_size(&read_record(self.sb, &state, self.object)?)
+        };
+        // SAFETY: The inode is referenced.
+        let size = unsafe { glue::carryfs_i_size_read(self.inode) } as u64;
+        if size > stored && stored % UNIT_BYTES as u64 != 0 {
+            self.pending(stored / UNIT_BYTES as u64)?;
         }
-        let last = self.units.len() - 1;
-        Ok(&mut self.units[last])
+        Ok(())
     }
 
     /// Take a dirty folio from writeback: copy it, start its writeback, and
@@ -174,7 +195,17 @@ impl Writer {
         if self.units.is_empty() {
             return Ok(());
         }
-        let result = self.fill().and_then(|()| self.publish());
+        // A size change between reading the tail and publishing retries.
+        let mut result = Err(EAGAIN);
+        for _ in 0..3 {
+            result = self
+                .add_tail()
+                .and_then(|()| self.fill())
+                .and_then(|()| self.publish());
+            if result != Err(EAGAIN) {
+                break;
+            }
+        }
         for unit in self.units.iter() {
             for folio in unit.folios.iter() {
                 // SAFETY: `add_folio` started this folio's writeback.
@@ -196,6 +227,16 @@ impl Writer {
             // SAFETY: The inode is referenced.
             let size = unsafe { glue::carryfs_i_size_read(inode) } as u64;
             let mut record = read_record(sb, state, object)?;
+            let stored = record_size(&record);
+            if size > stored
+                && stored % UNIT_BYTES as u64 != 0
+                && !units
+                    .iter()
+                    .any(|unit| unit.index == stored / UNIT_BYTES as u64)
+            {
+                // The tail moved since `add_tail`; retry before any edit.
+                return Err(EAGAIN);
+            }
             let mut runs: KVec<(usize, u64, u64)> = KVec::new();
             let mut needed = 0u64;
             for unit in units.iter() {

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Skip /sbin/mount.carryfs, the FUSE adapter's helper, so carryfs mounts use
+# the kernel driver.
+exec /usr/bin/mount -i "$@"

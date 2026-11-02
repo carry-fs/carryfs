@@ -186,6 +186,8 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         _ => (&prefix, false, pos - 2),
     };
     let mut ended = false;
+    // Set when the caller's buffer filled before a batch was emitted whole.
+    let mut stopped = false;
     let mut resume = resume;
     let mut last = KVec::new();
     last.extend_from_slice(start, GFP_KERNEL)?;
@@ -234,7 +236,6 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         }
         let full = items.len() == BATCH;
         let mut emitted_in_batch: usize = 0;
-        let mut stopped = false;
         for entry in items.iter() {
             let name = &bytes[entry.at + entry.key..entry.at + entry.key + entry.name];
             let dt = file_type(entry.kind);
@@ -280,8 +281,10 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         }
         resume = true;
     }
-    if ended {
-        // Keep the listing unless the directory changed while it was built.
+    if ended && !stopped {
+        // Keep the listing once every entry is in it, unless the directory
+        // changed while it was built. A pass can reach the end of the
+        // directory in a batch the caller's buffer could not take whole.
         if let Some((listing, version)) = building.take() {
             // SAFETY: The open file holds its inode.
             if unsafe { glue::carryfs_inode_eq_iversion(inode, version) } {

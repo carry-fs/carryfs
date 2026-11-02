@@ -1,0 +1,6 @@
+#!/bin/sh
+# mkfs(8) helper for fstests: clear any earlier format, then format.
+
+device=$(for arg in "$@"; do last=$arg; done; echo "$last")
+"$CARRYFS_BIN/carryfs-fuse" mkfs --wipe "$device" >/dev/null 2>&1 || true
+exec "$CARRYFS_BIN/carryfs-fuse" mkfs "$device"

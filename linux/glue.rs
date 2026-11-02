@@ -45,6 +45,13 @@ unsafe extern "C" {
     pub(crate) fn carryfs_bh_verified(bh: *mut BufferHead) -> bool;
     pub(crate) fn carryfs_bh_set_verified(bh: *mut BufferHead);
 
+    pub(crate) fn carryfs_write_blocks(
+        sb: *mut super_block,
+        blocks: *const u64,
+        pages: *const *const u8,
+        count: u32,
+    ) -> c_int;
+    pub(crate) fn carryfs_flush(sb: *mut super_block) -> c_int;
     pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;
     pub(crate) fn carryfs_inode_set_ops(
         inode: *mut inode,
@@ -76,6 +83,10 @@ unsafe extern "C" {
     pub(crate) fn carryfs_dir_primed(dir: *mut inode) -> bool;
     pub(crate) fn carryfs_set_dir_primed(dir: *mut inode);
     pub(crate) fn carryfs_file_dentry(file: *mut file) -> *mut dentry;
+    pub(crate) fn carryfs_inode_inc_iversion(dir: *mut inode);
+    pub(crate) fn carryfs_set_dentry_version(dentry: *mut dentry, dir: *mut inode);
+    pub(crate) fn carryfs_revalidate_negative(dir: *mut inode, dentry: *mut dentry, flags: u32) -> c_int;
+    pub(crate) fn carryfs_inode_nlink(inode: *mut inode) -> u32;
     pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
 
     pub(crate) fn carryfs_bio_alloc_read(

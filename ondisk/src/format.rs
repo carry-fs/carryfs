@@ -1457,6 +1457,52 @@ pub fn verified_page_view<'a>(
     })
 }
 
+/// A view of a page this writer is still building: only its level, record
+/// count, and payload length are read, and nothing is checked beyond bounds.
+pub fn draft_page_view(bytes: &[u8]) -> Result<PageView<'_>> {
+    let count = usize::from(read_u16_le(bytes, 32, "draft entry count")?);
+    let payload_bytes = usize::from(read_u16_le(bytes, 34, "draft payload bytes")?);
+    Ok(PageView {
+        level: *bytes.get(14).ok_or(Error::Corrupt("draft length"))?,
+        data_blocks: 0,
+        count,
+        payload: bytes
+            .get(PAGE_PAYLOAD_OFFSET..PAGE_PAYLOAD_OFFSET + payload_bytes)
+            .ok_or(Error::Corrupt("draft payload length"))?,
+    })
+}
+
+/// Fill a sealed page's header and checksum: its identity, kind, level,
+/// subtree total, and UUID. Records must already be in place.
+pub fn seal_page(
+    page: &mut [u8; BLOCK_BYTES],
+    reference: TreeRef,
+    uuid: &[u8; 16],
+    kind: TreeKind,
+    data_blocks: u64,
+) {
+    page[0..8].copy_from_slice(PAGE_MAGIC);
+    put_u16_le(page, 8, REVISION);
+    put_u16_le(page, 10, 0);
+    page[12] = if page[14] == 0 { 1 } else { 2 };
+    page[13] = tree_kind_value(kind);
+    page[15] = 0;
+    put_u64_le(page, 16, reference.block);
+    put_u64_le(page, 24, reference.generation);
+    page[36..40].fill(0);
+    page[40..56].copy_from_slice(uuid);
+    put_u64_le(page, 56, data_blocks);
+    page[68..80].fill(0);
+    put_u32_le(page, 64, 0);
+    let crc = crc32c(page);
+    put_u32_le(page, 64, crc);
+}
+
+/// Bytes of payload a page can hold.
+pub const PAGE_CAPACITY: usize = PAGE_PAYLOAD_BYTES;
+/// Offset of the payload in a page.
+pub const PAYLOAD_OFFSET: usize = PAGE_PAYLOAD_OFFSET;
+
 /// The selected current root from the decoded A and B roots (FORMAT.md
 /// section 3, "Selection and reopen"): the highest valid generation, where
 /// valid roots must agree on identity and equal generations on content.

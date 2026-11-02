@@ -14,6 +14,7 @@
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
 #include <linux/highmem.h>
+#include <linux/iversion.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
@@ -66,8 +67,9 @@ static int carryfs_get_tree(struct fs_context *fc)
 
 static int carryfs_reconfigure(struct fs_context *fc)
 {
-	/* This revision mounts read-only only. */
-	fc->sb_flags |= SB_RDONLY;
+	/* Switching between read-only and read-write needs a remount. */
+	if ((fc->sb_flags ^ fc->root->d_sb->s_flags) & SB_RDONLY)
+		return -EBUSY;
 	return 0;
 }
 
@@ -216,6 +218,51 @@ void carryfs_bh_set_verified(struct buffer_head *bh)
 	set_bit(BH_Carryfs_Verified, &bh->b_state);
 }
 
+/*
+ * Write @count pages, @pages[i] to block @blocks[i], through the buffer
+ * cache, and wait for them. The written buffers stay cached and verified:
+ * the caller validated each page. Returns 0 or -EIO.
+ */
+int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *const *pages,
+			 unsigned int count)
+{
+	struct blk_plug plug;
+	unsigned int i;
+	int error = 0;
+
+	blk_start_plug(&plug);
+	for (i = 0; i < count; i++) {
+		struct buffer_head *bh = sb_getblk(sb, blocks[i]);
+
+		lock_buffer(bh);
+		memcpy(bh->b_data, pages[i], sb->s_blocksize);
+		set_buffer_uptodate(bh);
+		set_bit(BH_Carryfs_Verified, &bh->b_state);
+		mark_buffer_dirty(bh);
+		unlock_buffer(bh);
+		write_dirty_buffer(bh, REQ_SYNC);
+		brelse(bh);
+	}
+	blk_finish_plug(&plug);
+	for (i = 0; i < count; i++) {
+		struct buffer_head *bh = sb_find_get_block(sb, blocks[i]);
+
+		if (!bh)
+			continue;
+		wait_on_buffer(bh);
+		if (buffer_write_io_error(bh) || !buffer_uptodate(bh))
+			error = -EIO;
+		brelse(bh);
+	}
+	return error;
+}
+
+/* A durable cache flush: earlier writes reach media before later ones. */
+int carryfs_flush(struct super_block *sb)
+{
+	return blkdev_issue_flush(sb->s_bdev);
+}
+
 /* Inodes, dentries, and directory iteration. */
 
 bool carryfs_inode_is_new(struct inode *inode)
@@ -325,6 +372,38 @@ bool carryfs_dir_primed(struct inode *dir)
 void carryfs_set_dir_primed(struct inode *dir)
 {
 	WRITE_ONCE(dir->i_private, (void *)1);
+}
+
+void carryfs_inode_inc_iversion(struct inode *dir)
+{
+	inode_inc_iversion(dir);
+}
+
+/* Remember the directory version a negative lookup saw, as exfat does. */
+void carryfs_set_dentry_version(struct dentry *dentry, struct inode *dir)
+{
+	dentry->d_time = inode_query_iversion(dir);
+}
+
+/*
+ * Positive dentries stay valid. A negative one stays valid while its
+ * directory is unchanged, so a later case-insensitive create is seen, and
+ * never for creation, so the new name keeps the caller's spelling.
+ */
+int carryfs_revalidate_negative(struct inode *dir, struct dentry *dentry, unsigned int flags)
+{
+	if (flags & LOOKUP_RCU)
+		return -ECHILD;
+	if (d_really_is_positive(dentry))
+		return 1;
+	if (flags & (LOOKUP_CREATE | LOOKUP_RENAME_TARGET))
+		return 0;
+	return inode_eq_iversion(dir, dentry->d_time);
+}
+
+unsigned int carryfs_inode_nlink(struct inode *inode)
+{
+	return inode->i_nlink;
 }
 
 struct dentry *carryfs_file_dentry(struct file *file)

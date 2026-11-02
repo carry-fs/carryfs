@@ -33,6 +33,9 @@ void carryfs_readahead_blocks(struct super_block *sb, const u64 *blocks, unsigne
 const u8 *carryfs_bh_data(struct buffer_head *bh);
 bool carryfs_bh_verified(struct buffer_head *bh);
 void carryfs_bh_set_verified(struct buffer_head *bh);
+int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *const *pages,
+			 unsigned int count);
+int carryfs_flush(struct super_block *sb);
 bool carryfs_inode_is_new(struct inode *inode);
 void carryfs_i_size_write(struct inode *inode, loff_t size);
 void carryfs_inode_set_ops(struct inode *inode, const struct inode_operations *iop, const struct file_operations *fop, const struct address_space_operations *aops);
@@ -48,6 +51,10 @@ void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 
 bool carryfs_dir_primed(struct inode *dir);
 void carryfs_set_dir_primed(struct inode *dir);
 struct dentry *carryfs_file_dentry(struct file *file);
+void carryfs_inode_inc_iversion(struct inode *dir);
+void carryfs_set_dentry_version(struct dentry *dentry, struct inode *dir);
+int carryfs_revalidate_negative(struct inode *dir, struct dentry *dentry, unsigned int flags);
+unsigned int carryfs_inode_nlink(struct inode *inode);
 bool carryfs_dir_emit_dots(struct file *file, struct dir_context *ctx);
 struct bio *carryfs_bio_alloc_read(struct super_block *sb, u64 sector, unsigned int pages);
 struct inode *carryfs_folio_inode(struct folio *folio);

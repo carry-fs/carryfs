@@ -561,6 +561,11 @@ void carryfs_plug_finish(void *plug)
 	}
 }
 
+void carryfs_file_allow_direct(struct file *file)
+{
+	file->f_mode |= FMODE_CAN_ODIRECT;
+}
+
 /* Page cache. */
 
 /* The locked folio a buffered write fills, or an ERR_PTR. */

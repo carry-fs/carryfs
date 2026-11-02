@@ -334,11 +334,58 @@ pub(crate) static ADDRESS_SPACE_OPERATIONS: Ops<bindings::address_space_operatio
         ..unsafe { core::mem::zeroed() }
     });
 
+/// Open a regular file, accepting `O_DIRECT`: `read_iter` and `write_iter`
+/// serve direct I/O through the page cache, since a direct write smaller
+/// than a 64 KiB checksum unit would rewrite the unit anyway.
+unsafe extern "C" fn open(inode: *mut bindings::inode, file: *mut bindings::file) -> c_int {
+    // SAFETY: The VFS passes the inode and the file it is opening.
+    unsafe {
+        glue::carryfs_file_allow_direct(file);
+        bindings::generic_file_open(inode, file)
+    }
+}
+
+unsafe extern "C" fn read_iter(iocb: *mut bindings::kiocb, to: *mut bindings::iov_iter) -> isize {
+    // SAFETY: The VFS passes a request on an open file; a direct read is
+    // served from the page cache, which is coherent with it.
+    unsafe {
+        (*iocb).ki_flags &= !(bindings::IOCB_DIRECT as c_int);
+        bindings::generic_file_read_iter(iocb, to)
+    }
+}
+
+unsafe extern "C" fn write_iter(iocb: *mut bindings::kiocb, from: *mut bindings::iov_iter) -> isize {
+    // SAFETY: The VFS passes a request on an open file of this filesystem.
+    unsafe {
+        let direct = (*iocb).ki_flags & bindings::IOCB_DIRECT as c_int != 0;
+        (*iocb).ki_flags &= !(bindings::IOCB_DIRECT as c_int);
+        let start = (*iocb).ki_pos;
+        let written = bindings::generic_file_write_iter(iocb, from);
+        if direct && written > 0 {
+            // A direct write is on the device when it returns, and leaves
+            // no cached copy behind.
+            let mapping = (*(*(*iocb).ki_filp).f_inode).i_mapping;
+            let end = start + written as i64 - 1;
+            let status = bindings::filemap_write_and_wait_range(mapping, start, end);
+            if status != 0 {
+                return status as isize;
+            }
+            bindings::invalidate_mapping_pages(
+                mapping,
+                (start / BLOCK_BYTES as i64) as _,
+                (end / BLOCK_BYTES as i64) as _,
+            );
+        }
+        written
+    }
+}
+
 pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
     Ops(bindings::file_operations {
         llseek: Some(bindings::generic_file_llseek),
-        read_iter: Some(bindings::generic_file_read_iter),
-        write_iter: Some(bindings::generic_file_write_iter),
+        open: Some(open),
+        read_iter: Some(read_iter),
+        write_iter: Some(write_iter),
         fsync: Some(crate::write::fsync),
         mmap_prepare: Some(bindings::generic_file_mmap_prepare),
         splice_read: Some(bindings::filemap_splice_read),

@@ -112,6 +112,7 @@ unsafe extern "C" {
         sector: u64,
         pages: u32,
     ) -> *mut kernel::bindings::bio;
+    pub(crate) fn carryfs_file_allow_direct(file: *mut kernel::bindings::file);
     pub(crate) fn carryfs_plug_start() -> *mut c_void;
     pub(crate) fn carryfs_plug_finish(plug: *mut c_void);
     pub(crate) fn carryfs_clean_aliases(sb: *mut super_block, block: u64, count: u64);

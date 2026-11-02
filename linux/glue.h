@@ -73,6 +73,7 @@ struct inode *carryfs_readahead_inode(struct readahead_control *rac);
 u64 carryfs_readahead_index(struct readahead_control *rac);
 u64 carryfs_readahead_count(struct readahead_control *rac);
 struct bio *carryfs_bio_alloc_write(struct super_block *sb, u64 sector, unsigned int pages);
+void carryfs_file_allow_direct(struct file *file);
 void *carryfs_plug_start(void);
 void carryfs_plug_finish(void *plug);
 void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count);

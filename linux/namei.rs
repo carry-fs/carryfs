@@ -13,9 +13,10 @@ use kernel::prelude::*;
 
 use crate::commit::{self, COMMIT_DRAFTS};
 use crate::edit::{Disk, Txn};
-use crate::glue::{self, qstr_bytes};
+use crate::glue;
 use crate::ondisk::format::{TreeKind, MAINTENANCE_RESERVE, MAX_ID};
 use crate::tree::{self, le_u64, Tree};
+use crate::vfs::{Dentry, Inode};
 use crate::volume::{self, State};
 use crate::{errno, inode, names};
 
@@ -72,9 +73,8 @@ fn orphan_key(object: u64) -> [u8; 9] {
 /// Note a change to `dir`'s entries, under its exclusive inode lock: bump
 /// its version, which invalidates negative dentries and listings being
 /// built, and drop its kept listing.
-fn changed(dir: *mut bindings::inode) {
-    // SAFETY: The caller holds `dir` locked exclusively.
-    unsafe { glue::carryfs_inode_inc_iversion(dir) };
+fn changed(dir: &Inode) {
+    dir.bump_version();
     crate::dir::forget(dir);
 }
 
@@ -208,22 +208,19 @@ fn orphan(
 }
 
 /// The dentry's name parsed: stored spelling and comparison key.
-fn parse_name(dentry: *mut bindings::dentry) -> Result<(KVec<u8>, KVec<u8>)> {
-    // SAFETY: The VFS passes a referenced dentry.
-    let name = unsafe { qstr_bytes(glue::carryfs_dentry_name(dentry)) };
-    names::parse(name).map_err(errno)
+fn parse_name(dentry: &Dentry) -> Result<(KVec<u8>, KVec<u8>)> {
+    names::parse(dentry.name()).map_err(errno)
 }
 
 /// Create an object of `kind` named by `dentry` in `dir`; its new inode.
 fn create_object(
-    dir: *mut bindings::inode,
-    dentry: *mut bindings::dentry,
+    dir: &Inode,
+    dentry: &Dentry,
     kind: u8,
     target: &[u8],
 ) -> Result<*mut bindings::inode> {
     let (stored, folded) = parse_name(dentry)?;
-    // SAFETY: The VFS holds `dir` locked.
-    let (sb, parent) = unsafe { ((*dir).i_sb, (*dir).i_ino as u64) };
+    let (sb, parent) = (dir.super_block().as_ptr(), dir.object());
     let mut key = KVec::with_capacity(9 + folded.len(), GFP_KERNEL)?;
     key.extend_from_slice(&tree::prefix(parent, tree::ENTRY), GFP_KERNEL)?;
     key.extend_from_slice(&folded, GFP_KERNEL)?;
@@ -257,8 +254,7 @@ fn create_object(
     })?;
     changed(dir);
     let inode = inode::get(sb, object)?;
-    // SAFETY: Both are referenced; the times changed.
-    unsafe { inode::refresh_times(dir) };
+    inode::refresh_times(dir);
     Ok(inode)
 }
 
@@ -269,7 +265,9 @@ unsafe extern "C" fn create(
     _mode: bindings::umode_t,
     _excl: bool,
 ) -> c_int {
-    match create_object(dir, dentry, FILE, &[]) {
+    // SAFETY: The VFS holds `dir` locked and `dentry` referenced.
+    let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
+    match create_object(dir_ref, dentry_ref, FILE, &[]) {
         // SAFETY: `d_instantiate` takes the new inode's reference.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -285,7 +283,9 @@ unsafe extern "C" fn mkdir(
     dentry: *mut bindings::dentry,
     _mode: bindings::umode_t,
 ) -> *mut bindings::dentry {
-    match create_object(dir, dentry, DIRECTORY, &[]) {
+    // SAFETY: As in `create`.
+    let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
+    match create_object(dir_ref, dentry_ref, DIRECTORY, &[]) {
         // SAFETY: As in `create`.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -309,7 +309,9 @@ unsafe extern "C" fn symlink(
     ) {
         return errno(error).to_errno();
     }
-    match create_object(dir, dentry, SYMLINK, target) {
+    // SAFETY: As in `create`.
+    let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
+    match create_object(dir_ref, dentry_ref, SYMLINK, target) {
         // SAFETY: As in `create`.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -321,14 +323,9 @@ unsafe extern "C" fn symlink(
 
 /// Remove the entry `dentry` names in `dir`, which must name a directory
 /// exactly when `directory` is set.
-fn remove_entry(
-    dir: *mut bindings::inode,
-    dentry: *mut bindings::dentry,
-    directory: bool,
-) -> Result {
+fn remove_entry(dir: &Inode, dentry: &Dentry, directory: bool) -> Result {
     let (_, folded) = parse_name(dentry)?;
-    // SAFETY: The VFS holds `dir` and the dentry's inode locked.
-    let (sb, parent, victim) = unsafe { ((*dir).i_sb, (*dir).i_ino as u64, (*dentry).d_inode) };
+    let (sb, parent) = (dir.super_block().as_ptr(), dir.object());
     let mut key = KVec::with_capacity(9 + folded.len(), GFP_KERNEL)?;
     key.extend_from_slice(&tree::prefix(parent, tree::ENTRY), GFP_KERNEL)?;
     key.extend_from_slice(&folded, GFP_KERNEL)?;
@@ -348,15 +345,16 @@ fn remove_entry(
         orphan(sb, state, disk, entry.target, time)
     })?;
     changed(dir);
-    // SAFETY: The VFS holds both inodes; the entry is gone.
-    unsafe {
-        bindings::clear_nlink(victim);
-        inode::refresh_times(dir);
+    if let Some(victim) = dentry.inode() {
+        victim.clear_nlink();
     }
+    inode::refresh_times(dir);
     Ok(())
 }
 
 unsafe extern "C" fn unlink(dir: *mut bindings::inode, dentry: *mut bindings::dentry) -> c_int {
+    // SAFETY: The VFS holds `dir` and the dentry's inode locked.
+    let (dir, dentry) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
     match remove_entry(dir, dentry, false) {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
@@ -364,6 +362,8 @@ unsafe extern "C" fn unlink(dir: *mut bindings::inode, dentry: *mut bindings::de
 }
 
 unsafe extern "C" fn rmdir(dir: *mut bindings::inode, dentry: *mut bindings::dentry) -> c_int {
+    // SAFETY: As in `unlink`.
+    let (dir, dentry) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
     match remove_entry(dir, dentry, true) {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
@@ -384,34 +384,37 @@ unsafe extern "C" fn rename(
     if flags & !RENAME_NOREPLACE != 0 {
         return EINVAL.to_errno();
     }
-    // SAFETY: The VFS holds both directories and both dentries.
-    match unsafe { rename_entry(old_dir, old_dentry, new_dir, new_dentry, flags) } {
+    // SAFETY: The VFS holds both directories and both dentries locked.
+    let operands = unsafe {
+        (
+            Inode::from_raw(old_dir),
+            Dentry::from_raw(old_dentry),
+            Inode::from_raw(new_dir),
+            Dentry::from_raw(new_dentry),
+        )
+    };
+    match rename_entry(operands.0, operands.1, operands.2, operands.3, flags) {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }
 }
 
-/// # Safety
-///
-/// The arguments must be the VFS's locked rename operands.
-unsafe fn rename_entry(
-    old_dir: *mut bindings::inode,
-    old_dentry: *mut bindings::dentry,
-    new_dir: *mut bindings::inode,
-    new_dentry: *mut bindings::dentry,
+/// Rename `old_dentry` in `old_dir` to `new_dentry` in `new_dir`, all
+/// locked by the VFS.
+fn rename_entry(
+    old_dir: &Inode,
+    old_dentry: &Dentry,
+    new_dir: &Inode,
+    new_dentry: &Dentry,
     flags: u32,
 ) -> Result {
     let (_, old_folded) = parse_name(old_dentry)?;
     let (stored, new_folded) = parse_name(new_dentry)?;
-    // SAFETY: The caller guarantees these are valid and locked.
-    let (sb, from, to, replaced) = unsafe {
-        (
-            (*old_dir).i_sb,
-            (*old_dir).i_ino as u64,
-            (*new_dir).i_ino as u64,
-            (*new_dentry).d_inode,
-        )
-    };
+    let (sb, from, to) = (
+        old_dir.super_block().as_ptr(),
+        old_dir.object(),
+        new_dir.object(),
+    );
     let mut old_key = KVec::new();
     old_key.extend_from_slice(&tree::prefix(from, tree::ENTRY), GFP_KERNEL)?;
     old_key.extend_from_slice(&old_folded, GFP_KERNEL)?;
@@ -460,17 +463,15 @@ unsafe fn rename_entry(
         }
         touch_parent(sb, state, disk, from, -1, time)
     })?;
-    // SAFETY: As above.
     changed(old_dir);
     changed(new_dir);
-    // SAFETY: As above.
-    unsafe {
-        if victim_unlinked && !replaced.is_null() {
-            bindings::clear_nlink(replaced);
+    if victim_unlinked {
+        if let Some(replaced) = new_dentry.inode() {
+            replaced.clear_nlink();
         }
-        inode::refresh_times(old_dir);
-        inode::refresh_times(new_dir);
     }
+    inode::refresh_times(old_dir);
+    inode::refresh_times(new_dir);
     Ok(())
 }
 

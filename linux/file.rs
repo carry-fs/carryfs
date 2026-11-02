@@ -18,6 +18,7 @@ use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::error::Error as Encoding;
 use crate::ondisk::format::{checksum_slot, BLOCK_BYTES};
 use crate::tree::{self, le_u64, Tree};
+use crate::vfs::{Folio, Inode};
 use crate::volume::{self, State, Volume};
 use crate::{corrupt, errno, namei};
 
@@ -52,20 +53,8 @@ impl Unit {
 
     /// Copy page `block` of this unit into `folio`, zero past the valid
     /// bytes; a hole reads as zeros.
-    fn copy_to(&self, block: usize, folio: *mut bindings::folio) {
-        let start = block * BLOCK_BYTES;
-        let len = self.valid.saturating_sub(start).min(BLOCK_BYTES);
-        // SAFETY: A locked order-0 folio maps one page; the bounce page holds
-        // `BLOCK_BYTES` bytes.
-        unsafe {
-            let destination = glue::carryfs_kmap_local_folio(folio, 0).cast::<u8>();
-            if let Some(page) = self.pages.get(block).filter(|_| len > 0) {
-                let source = glue::carryfs_page_address(page.as_ptr()).cast::<u8>();
-                core::ptr::copy_nonoverlapping(source, destination, len);
-            }
-            core::ptr::write_bytes(destination.add(len), 0, BLOCK_BYTES - len);
-            glue::carryfs_kunmap_local(destination.cast());
-        }
+    fn copy_to(&self, block: usize, folio: &Folio) {
+        folio.with_bytes(|destination| self.copy_into(block, destination));
     }
 }
 
@@ -78,22 +67,14 @@ struct Source<'a> {
     size: u64,
 }
 
-impl Source<'_> {
-    /// # Safety
-    ///
-    /// `inode` must be a referenced regular-file inode of this filesystem.
-    unsafe fn new(inode: *mut bindings::inode) -> Self {
-        // SAFETY: The caller guarantees the inode is valid; a read-only
-        // inode's size never changes; a writable one's only bounds
-        // readahead here.
-        unsafe {
-            let sb = (*inode).i_sb;
-            Self {
-                sb,
-                volume: volume::of(sb),
-                object: (*inode).i_ino as u64,
-                size: (*inode).i_size as u64,
-            }
+impl<'a> Source<'a> {
+    fn new(inode: &'a Inode) -> Self {
+        let sb = inode.super_block();
+        Self {
+            sb: sb.as_ptr(),
+            volume: sb.volume(),
+            object: inode.object(),
+            size: inode.size(),
         }
     }
 
@@ -246,15 +227,9 @@ impl Source<'_> {
     }
 }
 
-/// The page index of a locked folio.
-fn folio_block(folio: *mut bindings::folio) -> u64 {
-    // SAFETY: The caller passes a locked page-cache folio.
-    unsafe { glue::carryfs_folio_pos(folio) as u64 / BLOCK_BYTES as u64 }
-}
-
 /// Fill `folio` from `unit`, reading it first unless it is the one given.
-fn fill(source: &Source<'_>, unit: &mut Option<Unit>, folio: *mut bindings::folio) -> Result {
-    let block = folio_block(folio);
+fn fill(source: &Source<'_>, unit: &mut Option<Unit>, folio: &Folio) -> Result {
+    let block = folio.pos() / BLOCK_BYTES as u64;
     let index = block / UNIT_BLOCKS;
     if unit.as_ref().is_none_or(|unit| unit.index != index) {
         *unit = None;
@@ -268,10 +243,9 @@ fn fill(source: &Source<'_>, unit: &mut Option<Unit>, folio: *mut bindings::foli
 
 unsafe extern "C" fn read_folio(_file: *mut bindings::file, folio: *mut bindings::folio) -> c_int {
     // SAFETY: The VFS passes a locked folio of a mapping of this filesystem.
-    let source = unsafe { Source::new(glue::carryfs_folio_inode(folio)) };
-    let result = fill(&source, &mut None, folio);
-    // SAFETY: Unlocks the folio, marking it uptodate on success.
-    unsafe { bindings::folio_end_read(folio, result.is_ok()) };
+    let folio = unsafe { Folio::from_raw(folio) };
+    let result = fill(&Source::new(folio.inode()), &mut None, folio);
+    folio.end_read(result.is_ok());
     match result {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
@@ -280,8 +254,9 @@ unsafe extern "C" fn read_folio(_file: *mut bindings::file, folio: *mut bindings
 
 unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
     // SAFETY: The VFS passes a readahead request on a mapping of this
-    // filesystem.
-    let source = unsafe { Source::new(glue::carryfs_readahead_inode(rac)) };
+    // filesystem, whose host stays referenced while it has pages.
+    let inode = unsafe { Inode::from_raw(glue::carryfs_readahead_inode(rac)) };
+    let source = Source::new(inode);
     // Widen the window to whole units, so no unit is read twice.
     // SAFETY: As above.
     let (start, len) = unsafe {
@@ -314,11 +289,12 @@ unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
         if folio.is_null() {
             break;
         }
+        // SAFETY: Readahead folios are locked page-cache folios.
+        let folio = unsafe { Folio::from_raw(folio) };
         // After a failure, leave the rest to `read_folio`, which reports it.
         let ok = !failed && fill(&source, &mut unit, folio).is_ok();
         failed |= !ok;
-        // SAFETY: Unlocks the folio, marking it uptodate on success.
-        unsafe { bindings::folio_end_read(folio, ok) };
+        folio.end_read(ok);
     }
 }
 
@@ -340,10 +316,8 @@ pub(crate) fn read_unit(
 
 /// Fill a locked, not uptodate folio of `inode` from disk, for a partial
 /// write into it.
-pub(crate) fn fill_folio(inode: *mut bindings::inode, folio: *mut bindings::folio) -> Result {
-    // SAFETY: The VFS holds the inode and the folio.
-    let source = unsafe { Source::new(inode) };
-    fill(&source, &mut None, folio)
+pub(crate) fn fill_folio(inode: &Inode, folio: &Folio) -> Result {
+    fill(&Source::new(inode), &mut None, folio)
 }
 
 pub(crate) static ADDRESS_SPACE_OPERATIONS: Ops<bindings::address_space_operations> =

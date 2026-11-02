@@ -29,6 +29,7 @@ mod namei;
 mod names;
 mod space;
 mod tree;
+mod vfs;
 mod volume;
 mod write;
 

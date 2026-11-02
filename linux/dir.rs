@@ -17,8 +17,6 @@
 //! and drop the copy; listings hold it shared, so none is using it then.
 //! The inode version catches changes between the calls of one pass.
 
-use core::ffi::c_void;
-
 use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
@@ -27,7 +25,8 @@ use crate::glue;
 use crate::inode::Ops;
 use crate::ondisk::name::validate_disk_name_characters;
 use crate::tree::{self, le_u64, Tree};
-use crate::{corrupt, inode, volume};
+use crate::vfs::{DirContext, Inode};
+use crate::{corrupt, inode};
 
 /// Entries read per hold of the volume lock (FORMAT.md section 6's
 /// directory page).
@@ -82,21 +81,22 @@ impl Listing {
 }
 
 /// Drop `dir`'s kept listing. Callers hold its inode lock exclusively, or
-/// are evicting it.
-pub(crate) fn forget(dir: *mut bindings::inode) {
-    // SAFETY: The caller holds `dir`, and no listing is using the copy.
-    let listing = unsafe { glue::carryfs_dir_cache_take(dir) } as *mut Listing;
+/// are evicting it, so no listing is reading the copy.
+pub(crate) fn forget(dir: &Inode) {
+    let listing = dir.take_listing() as *mut Listing;
     if !listing.is_null() {
-        // SAFETY: `iterate_entries` published it with `KBox::into_raw`.
+        // SAFETY: `keep` published it with `KBox::into_raw`, and taking it
+        // made this the only owner.
         drop(unsafe { KBox::from_raw(listing) });
     }
 }
 
-fn file_type(kind: u8) -> u32 {
-    match kind {
-        1 => bindings::DT_REG,
-        2 => bindings::DT_DIR,
-        _ => bindings::DT_LNK,
+/// Keep `listing` on `dir` unless another pass kept one first.
+fn keep(dir: &Inode, listing: KBox<Listing>) {
+    let listing = KBox::into_raw(listing);
+    if !dir.publish_listing(listing.cast()) {
+        // SAFETY: Made just above and not published.
+        drop(unsafe { KBox::from_raw(listing) });
     }
 }
 
@@ -110,59 +110,79 @@ struct Cursor {
 }
 
 unsafe extern "C" fn iterate(file: *mut bindings::file, ctx: *mut bindings::dir_context) -> c_int {
-    // SAFETY: The VFS passes an open directory and its context, and holds
-    // the position lock, so this call alone uses the cursor.
-    match unsafe { iterate_entries(file, ctx) } {
+    // SAFETY: The VFS passes an open directory of this filesystem and its
+    // context. It holds the directory's inode lock shared and the file's
+    // position lock, so this call alone uses the context and the cursor,
+    // and no change can drop the kept listing while it is read. The open
+    // file pins its inode and dentry.
+    let (dir, context, parent, kept, mut cursor) = unsafe {
+        if !glue::carryfs_dir_emit_dots(file, ctx) {
+            return 0;
+        }
+        let dir = Inode::from_raw((*file).f_inode);
+        let kept = (dir.listing() as *const Listing).as_ref();
+        let cursor = (*file).private_data as *mut Cursor;
+        let cursor = (!cursor.is_null()).then(|| KBox::from_raw(cursor));
+        (
+            dir,
+            DirContext::from_raw(ctx),
+            glue::carryfs_file_dentry(file),
+            kept,
+            cursor,
+        )
+    };
+    let prime = |name: &[u8], target: u64, kind: u8| {
+        // SAFETY: The open directory pins its dentry; names are at most
+        // 255 bytes.
+        unsafe {
+            glue::carryfs_prime_dentry(
+                parent,
+                name.as_ptr(),
+                name.len() as c_int,
+                target,
+                inode::kind_mode(kind) as u16,
+            )
+        }
+    };
+    let result = match kept {
+        Some(listing) => {
+            emit_kept(listing, context);
+            Ok(())
+        }
+        None => list(dir, context, &mut cursor, &prime),
+    };
+    // SAFETY: As above; `release` frees the cursor with the file.
+    unsafe {
+        (*file).private_data = cursor.map_or(core::ptr::null_mut(), |cursor| {
+            KBox::into_raw(cursor).cast()
+        })
+    };
+    match result {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }
 }
 
-/// # Safety
-///
-/// `file` must be an open directory of this filesystem, used by no other
-/// iteration, and `ctx` its context.
-unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_context) -> Result {
-    // SAFETY: The caller guarantees both are valid.
-    if !unsafe { glue::carryfs_dir_emit_dots(file, ctx) } {
-        return Ok(());
-    }
-    // SAFETY: As above.
-    let (inode, cursor) = unsafe { ((*file).f_inode, &mut (*file).private_data) };
-    // SAFETY: The VFS holds the directory's inode lock shared, so no change
-    // can drop the kept listing while it is read.
-    if let Some(listing) = unsafe { (glue::carryfs_dir_cache(inode) as *const Listing).as_ref() } {
-        // SAFETY: `ctx` is valid.
-        let first = usize::try_from(unsafe { (*ctx).pos } - 2).unwrap_or(usize::MAX);
-        for entry in listing.entries.iter().skip(first) {
-            let name = &listing.names[entry.at as usize..entry.at as usize + entry.len as usize];
-            // SAFETY: `ctx` is valid; the name is at most 255 bytes.
-            if !unsafe {
-                glue::carryfs_dir_emit(
-                    ctx,
-                    name.as_ptr(),
-                    name.len() as c_int,
-                    entry.target,
-                    file_type(entry.kind),
-                )
-            } {
-                break;
-            }
-            // SAFETY: As above.
-            unsafe { (*ctx).pos += 1 };
+/// Emit a kept listing from the context's position.
+fn emit_kept(listing: &Listing, context: &DirContext) {
+    let first = usize::try_from(context.pos() - 2).unwrap_or(usize::MAX);
+    for entry in listing.entries.iter().skip(first) {
+        let name = &listing.names[entry.at as usize..entry.at as usize + entry.len as usize];
+        if !context.emit(name, entry.target, entry.kind) {
+            break;
         }
-        return Ok(());
     }
-    // SAFETY: An open file holds its inode.
-    let (sb, dir) = unsafe { ((*inode).i_sb, (*inode).i_ino as u64) };
-    // SAFETY: `private_data` is null or a `Cursor` this file owns.
-    let cursor = unsafe { (*cursor as *mut Cursor).as_mut() };
-    // SAFETY: As above.
-    let pos = unsafe { (*ctx).pos };
-    let prefix = tree::prefix(dir, tree::ENTRY);
-    // SAFETY: An open file pins its dentry.
-    let parent = unsafe { glue::carryfs_file_dentry(file) };
-    let mut cursor = cursor;
+}
+
+/// List `dir` from the catalog, from the context's position.
+fn list(
+    dir: &Inode,
+    context: &DirContext,
+    cursor: &mut Option<KBox<Cursor>>,
+    prime: &dyn Fn(&[u8], u64, u8),
+) -> Result {
+    let pos = context.pos();
+    let prefix = tree::prefix(dir.object(), tree::ENTRY);
     let resuming = cursor.as_deref().is_some_and(|cursor| cursor.pos == pos);
     // A pass from the first entry builds a listing to keep; resuming one
     // continues it.
@@ -176,8 +196,7 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
                 },
                 GFP_KERNEL,
             )?,
-            // SAFETY: The open file holds its inode.
-            unsafe { glue::carryfs_inode_query_iversion(inode) },
+            dir.version(),
         )),
         _ => None,
     };
@@ -190,9 +209,10 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
     let mut stopped = false;
     let mut resume = resume;
     let mut last = KVec::new();
-    last.extend_from_slice(start, GFP_KERNEL)?;
+    tree::append(&mut last, start)?;
     let mut emitted = 0;
-    let volume = volume::of(sb);
+    let sb = dir.super_block();
+    let volume = sb.volume();
     // Entries are read under the volume lock in batches, then emitted and
     // primed without it: priming fills inodes, which takes the lock.
     // One buffer for the batch's keys and names, reused across batches.
@@ -204,7 +224,7 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         {
             let state = volume.lock();
             let catalog = state.root.catalog.block;
-            Tree::catalog(sb, &state).scan(&last, &mut |key, value| {
+            Tree::catalog(sb.as_ptr(), &state).scan(&last, &mut |key, value| {
                 if !key.starts_with(&prefix) {
                     ended = true;
                     return Ok(false);
@@ -238,25 +258,11 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         let mut emitted_in_batch: usize = 0;
         for entry in items.iter() {
             let name = &bytes[entry.at + entry.key..entry.at + entry.key + entry.name];
-            let dt = file_type(entry.kind);
-            // SAFETY: `ctx` is valid; the name is at most 255 bytes.
-            if !unsafe {
-                glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, entry.target, dt)
-            } {
+            if !context.emit(name, entry.target, entry.kind) {
                 stopped = true;
                 break;
             }
-            // SAFETY: `ctx` is valid, and the open directory pins its dentry.
-            unsafe {
-                (*ctx).pos += 1;
-                glue::carryfs_prime_dentry(
-                    parent,
-                    name.as_ptr(),
-                    name.len() as c_int,
-                    entry.target,
-                    inode::kind_mode(entry.kind) as u16,
-                );
-            }
+            prime(name, entry.target, entry.kind);
             if let Some((listing, _)) = &mut building {
                 if !listing.add(name, entry.kind, entry.target)? {
                     building = None;
@@ -286,23 +292,15 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
         // changed while it was built. A pass can reach the end of the
         // directory in a batch the caller's buffer could not take whole.
         if let Some((listing, version)) = building.take() {
-            // SAFETY: The open file holds its inode.
-            if unsafe { glue::carryfs_inode_eq_iversion(inode, version) } {
-                let listing = KBox::into_raw(listing);
-                // SAFETY: Publishing fails only if another pass already
-                // kept one; then this copy is freed here.
-                if !unsafe { glue::carryfs_dir_cache_publish(inode, listing.cast()) } {
-                    // SAFETY: Made just above and not published.
-                    drop(unsafe { KBox::from_raw(listing) });
-                }
+            if dir.version_is(version) {
+                keep(dir, listing);
             }
         }
     }
     if emitted == 0 && building.is_none() {
         return Ok(());
     }
-    // SAFETY: As above.
-    let pos = unsafe { (*ctx).pos };
+    let pos = context.pos();
     match cursor {
         Some(cursor) => {
             cursor.pos = pos;
@@ -310,16 +308,14 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
             cursor.building = building;
         }
         None => {
-            let cursor = KBox::new(
+            *cursor = Some(KBox::new(
                 Cursor {
                     pos,
                     key: last,
                     building,
                 },
                 GFP_KERNEL,
-            )?;
-            // SAFETY: `release` frees it with the file.
-            unsafe { (*file).private_data = KBox::into_raw(cursor) as *mut c_void };
+            )?);
         }
     }
     Ok(())
@@ -329,7 +325,7 @@ unsafe extern "C" fn release(_inode: *mut bindings::inode, file: *mut bindings::
     // SAFETY: The last user of the file is closing it.
     let cursor = unsafe { (*file).private_data } as *mut Cursor;
     if !cursor.is_null() {
-        // SAFETY: `iterate_entries` made it with `KBox::into_raw`.
+        // SAFETY: `iterate` made it with `KBox::into_raw`.
         drop(unsafe { KBox::from_raw(cursor) });
     }
     0

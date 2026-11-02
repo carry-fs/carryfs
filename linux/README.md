@@ -46,6 +46,11 @@ while mounted, data writes, truncation, reclamation, and crash-orphan
 recovery, and judges each phase with the userspace `carryfs check` and
 `carryfs scrub`, comparing file contents after remount.
 
+`tests/fstests/run.sh FSTESTS_DIR [tests]` runs
+[fstests](https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git) against
+the driver on two loop images, with `mkfs`, `fsck`, and `mount` helpers in
+`tests/fstests/bin/`. See [fstests results](#fstests-results).
+
 `tests/fuzz.py` mounts corrupted copies of a populated image, read-only or
 read-write, walks and reads them, and fails on any kernel BUG, oops, or
 warning. It changes random fields of metadata pages and recomputes their
@@ -85,11 +90,19 @@ written by the driver.
 | `file.rs` | Verified reads, unit-aligned readahead |
 | `write.rs` | Buffered writes, unit writeback, truncation, fsync |
 | `names.rs` | Comparison keys, `d_hash`, `d_compare` |
+| `vfs.rs` | Typed views of super blocks, inodes, dentries, folios, and directory contexts |
 | `glue.c`, `glue.h`, `glue.rs` | C helpers for interfaces without Rust bindings |
 
 `glue.c` holds no filesystem logic. It wraps the `fs_context` mount API,
 buffer heads, static inline functions, and libfs's unexported
 `simple_write_end`: what in-tree Rust VFS abstractions would provide.
+
+`vfs.rs` stands in for those abstractions on the Rust side. Each type is
+`#[repr(transparent)]` over `Opaque<T>`, as `kernel::fs::File` is, and
+states once the invariants that make its methods safe. The VFS callbacks
+turn raw pointers into these references at the boundary, so filesystem
+logic in `dir.rs`, `namei.rs`, `file.rs`, and `write.rs` works with
+references; what `unsafe` remains there is block I/O and bounce pages.
 
 ### Reads
 
@@ -206,6 +219,32 @@ catalog from disk where the FUSE daemon reads it ahead at mount. The others
 are fsync phases whose totals the driver wins: `fsync_after_write` writes
 what FUSE wrote during `write()`.
 
+## fstests results
+
+The `quick` group from fstests at commit 22348afe: of 647 tests, 98 pass,
+539 do not run, and 10 fail. Tests do not run when they need what the
+format lacks (hard links, extended attributes, reflink, fallocate,
+freezing, quota, owners and modes) or what the host lacks (a `fsgqa`
+user).
+
+Every failure comes from the format, the host, or a deliberate choice:
+
+| Tests | Cause |
+|---|---|
+| generic/003 | Access times are not stored, and a ctime change through `chmod` is refused |
+| generic/029, generic/030 | The host's `od` prints hexadecimal in upper case |
+| generic/120, generic/452 | Programs run from the volume; the format stores no execute bit |
+| generic/441 | After a failed write, FORMAT.md keeps the volume faulted until remount, so fsync keeps failing after the device recovers |
+| generic/563 | Needs a device smaller than the format's 256 MiB minimum |
+| generic/634 | The host's `touch` cannot parse a date past 2038 |
+| generic/704 | Needs `O_DIRECT`; a 512-byte direct write would rewrite a whole 64 KiB checksum unit |
+| generic/740 | The userspace `mkfs` helper overwrites other filesystems without `-f` |
+
+fstests found five driver bugs, all fixed: incomplete kept listings
+(generic/006), growth past a partial tail unit (generic/014), reads racing
+writeback (generic/013), the missing `splice_write` (generic/075 and 112),
+and the missing `migrate_folio`.
+
 ## Upstreaming
 
 A submission would be a series that:
@@ -214,12 +253,14 @@ A submission would be a series that:
    address-space and file operations, `fs_context`) with their helpers in
    `rust/helpers/`, replacing `glue.c`. They are not in Linux 7.0;
    Wedson Almeida Filho's 2023 "Rust abstractions for VFS" RFC is the
-   precedent.
+   precedent. `vfs.rs` is the start: its types would move into
+   `rust/kernel/fs/`, and operation tables would become `#[vtable]`
+   traits.
 2. Adds `fs/carryfs/` with these sources and `ondisk/` as a shared library
    directory.
 3. Adds `Documentation/filesystems/carryfs.rst` from FORMAT.md and this
    file, and a fstests configuration.
 
-Before that, the driver needs fstests runs, fuzzing of the mount path
-with corrupted images, a per-CPU name scratch if non-ASCII lookups contend,
-and a decision on the mount helper name.
+Before that, the driver needs the full `auto` group of fstests, longer
+fuzzing campaigns, `O_DIRECT`, a per-CPU name scratch if non-ASCII lookups
+contend, and a decision on the mount helper name.

@@ -165,7 +165,9 @@ impl Txn {
                 continue;
             }
             match self.retired.last_mut() {
-                Some((start, length)) if *start + *length == block && *length < u64::from(u32::MAX) => {
+                Some((start, length))
+                    if *start + *length == block && *length < u64::from(u32::MAX) =>
+                {
                     *length += 1
                 }
                 _ => self.retired.push((block, 1), GFP_KERNEL)?,

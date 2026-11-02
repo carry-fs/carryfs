@@ -19,6 +19,7 @@ use crate::ondisk::format::{
     self, Root, TreeKind, TreeRef, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS,
 };
 use crate::tree::{Block, Tree};
+use crate::vfs::SuperBlock;
 use crate::{commit, corrupt, errno, inode, names};
 
 /// `f_type` reported by statfs: ASCII "CFSX".
@@ -308,8 +309,9 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
 
 unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::kstatfs) -> c_int {
     // SAFETY: The VFS passes a live dentry of this filesystem.
+    let sb = unsafe { SuperBlock::from_raw((*dentry).d_sb) };
     let (root, free) = {
-        let state = of(unsafe { (*dentry).d_sb }).lock();
+        let state = sb.volume().lock();
         (state.root, state.free_blocks())
     };
     let fsid = root.uuid;
@@ -355,7 +357,8 @@ unsafe extern "C" fn show_options(
 }
 
 unsafe extern "C" fn sync_fs(sb: *mut bindings::super_block, _wait: c_int) -> c_int {
-    let volume = of(sb);
+    // SAFETY: The VFS passes a mounted super block of this filesystem.
+    let volume = unsafe { SuperBlock::from_raw(sb) }.volume();
     if !volume.writable {
         return 0;
     }

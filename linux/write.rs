@@ -26,6 +26,7 @@ use crate::ondisk::format::{
     checksum_slot, compact_group, set_checksum_slot, TreeKind, BLOCK_BYTES, CHECKSUM_GROUP_BYTES,
 };
 use crate::tree::{self, be_u64, le_u64, Tree};
+use crate::vfs::{Folio, Inode};
 use crate::volume::{self, State};
 use crate::{commit, errno};
 
@@ -49,16 +50,9 @@ fn record_size(record: &[u8]) -> u64 {
     le_u64(record, 16)
 }
 
-/// Copy `len` bytes from a locked folio into `page`.
-fn copy_folio(folio: *mut bindings::folio, page: &Page) {
-    // SAFETY: The caller holds the folio locked or under writeback; an
-    // order-0 folio maps one page, and the destination holds a page.
-    unsafe {
-        let source = glue::carryfs_kmap_local_folio(folio, 0).cast::<u8>();
-        let destination = glue::carryfs_page_address(page.as_ptr()).cast::<u8>();
-        core::ptr::copy_nonoverlapping(source, destination, BLOCK_BYTES);
-        glue::carryfs_kunmap_local(source.cast());
-    }
+/// Copy a folio into a bounce page.
+fn copy_folio(folio: &Folio, page: &Page) {
+    folio.with_bytes(|source| page_bytes(page).copy_from_slice(source));
 }
 
 fn page_bytes(page: &Page) -> &mut [u8] {
@@ -72,28 +66,22 @@ fn page_bytes(page: &Page) -> &mut [u8] {
 }
 
 /// Collects dirty units of one file and writes them in batches.
-struct Writer {
-    inode: *mut bindings::inode,
+struct Writer<'a> {
+    inode: &'a Inode,
     sb: *mut bindings::super_block,
     mapping: *mut bindings::address_space,
     object: u64,
     units: KVec<Pending>,
 }
 
-impl Writer {
-    /// # Safety
-    ///
-    /// `inode` must be a referenced regular-file inode of this filesystem.
-    unsafe fn new(inode: *mut bindings::inode) -> Self {
-        // SAFETY: The caller guarantees the inode is valid.
-        unsafe {
-            Self {
-                inode,
-                sb: (*inode).i_sb,
-                mapping: (*inode).i_mapping,
-                object: (*inode).i_ino as u64,
-                units: KVec::new(),
-            }
+impl<'a> Writer<'a> {
+    fn new(inode: &'a Inode) -> Self {
+        Self {
+            inode,
+            sb: inode.super_block().as_ptr(),
+            mapping: inode.mapping(),
+            object: inode.object(),
+            units: KVec::new(),
         }
     }
 
@@ -130,8 +118,7 @@ impl Writer {
             let state = volume::of(self.sb).lock();
             record_size(&read_record(self.sb, &state, self.object)?)
         };
-        // SAFETY: The inode is referenced.
-        let size = unsafe { glue::carryfs_i_size_read(self.inode) } as u64;
+        let size = self.inode.size();
         if size > stored && stored % UNIT_BYTES as u64 != 0 {
             self.pending(stored / UNIT_BYTES as u64)?;
         }
@@ -140,16 +127,16 @@ impl Writer {
 
     /// Take a dirty folio from writeback: copy it, start its writeback, and
     /// unlock it.
-    fn add_folio(&mut self, folio: *mut bindings::folio) -> Result {
-        // SAFETY: Writeback hands over a locked page-cache folio.
-        let block = unsafe { glue::carryfs_folio_pos(folio) } as u64 / BLOCK_BYTES as u64;
+    fn add_folio(&mut self, folio: &Folio) -> Result {
+        let block = folio.pos() / BLOCK_BYTES as u64;
         let unit = self.pending(block / UNIT_BLOCKS)?;
         let slot = (block % UNIT_BLOCKS) as usize;
         copy_folio(folio, &unit.pages[slot]);
         unit.present |= 1 << slot;
-        unit.folios.push(folio, GFP_KERNEL)?;
-        // SAFETY: As above; writeback ends after the batch is written.
-        unsafe { glue::carryfs_folio_start_writeback(folio) };
+        unit.folios.push(folio.as_ptr(), GFP_KERNEL)?;
+        // SAFETY: Writeback handed the folio over locked; its writeback
+        // ends after the batch is written, in `flush`.
+        unsafe { glue::carryfs_folio_start_writeback(folio.as_ptr()) };
         Ok(())
     }
 
@@ -170,7 +157,8 @@ impl Writer {
                 // SAFETY: The mapping belongs to a referenced inode.
                 let folio = unsafe { glue::carryfs_cached_folio(self.mapping, block) };
                 if !folio.is_null() {
-                    copy_folio(folio, &unit.pages[slot]);
+                    // SAFETY: `carryfs_cached_folio` returned it locked.
+                    copy_folio(unsafe { Folio::from_raw(folio) }, &unit.pages[slot]);
                     // SAFETY: `carryfs_cached_folio` locked and referenced it.
                     unsafe { glue::carryfs_folio_unlock_put(folio) };
                 } else if block * (BLOCK_BYTES as u64) < source_size {
@@ -224,8 +212,7 @@ impl Writer {
         let (sb, object, inode) = (self.sb, self.object, self.inode);
         let units = &self.units;
         mutate(sb, |state, disk| {
-            // SAFETY: The inode is referenced.
-            let size = unsafe { glue::carryfs_i_size_read(inode) } as u64;
+            let size = inode.size();
             let mut record = read_record(sb, state, object)?;
             let stored = record_size(&record);
             if size > stored
@@ -345,19 +332,10 @@ impl Writer {
             }
             set_u64(&mut record, 16, size);
             set_u64(&mut record, ALLOCATED, allocated);
-            // SAFETY: The inode is referenced; writes stamped its times.
-            unsafe {
-                set_time(
-                    &mut record,
-                    56,
-                    ((*inode).i_mtime_sec, (*inode).i_mtime_nsec),
-                );
-                set_time(
-                    &mut record,
-                    72,
-                    ((*inode).i_ctime_sec, (*inode).i_ctime_nsec),
-                );
-            }
+            // Writes stamped the inode's times.
+            let (modified, changed) = inode.times();
+            set_time(&mut record, 56, modified);
+            set_time(&mut record, 72, changed);
             write_record(state, disk, object, &record)
         })
     }
@@ -564,7 +542,8 @@ pub(crate) unsafe extern "C" fn writepages(
     // Reclaim must not re-enter this filesystem from writeback.
     let _nofs = crate::volume::NoFs::new();
     // SAFETY: The VFS passes a mapping of a referenced regular file.
-    let mut writer = unsafe { Writer::new(glue::carryfs_mapping_host(mapping)) };
+    let inode = unsafe { Inode::from_raw(glue::carryfs_mapping_host(mapping)) };
+    let mut writer = Writer::new(inode);
     let mut error: c_int = 0;
     let mut folio = core::ptr::null_mut();
     loop {
@@ -574,15 +553,15 @@ pub(crate) unsafe extern "C" fn writepages(
             break;
         }
         // SAFETY: As above.
-        let block = unsafe { glue::carryfs_folio_pos(folio) } as u64 / BLOCK_BYTES as u64;
-        let unit = block / UNIT_BLOCKS;
+        let locked = unsafe { Folio::from_raw(folio) };
+        let unit = locked.pos() / BLOCK_BYTES as u64 / UNIT_BLOCKS;
         if writer.units.last().is_some_and(|last| last.index != unit) && writer.units.len() == BATCH
         {
             if let Err(failure) = writer.flush() {
                 error = failure.to_errno();
             }
         }
-        if let Err(failure) = writer.add_folio(folio) {
+        if let Err(failure) = writer.add_folio(locked) {
             // SAFETY: The folio is still locked; leave it dirty for later.
             unsafe {
                 glue::carryfs_folio_redirty(wbc, folio);
@@ -632,7 +611,10 @@ pub(crate) unsafe extern "C" fn write_begin(
     // A partial write into a page not in the cache reads its old content.
     // SAFETY: The folio is locked and referenced.
     if !unsafe { glue::carryfs_folio_uptodate(folio) } && len as usize != BLOCK_BYTES {
-        if let Err(error) = crate::file::fill_folio(inode, folio) {
+        // SAFETY: The VFS holds the file's inode and the new folio locked.
+        let filled =
+            unsafe { crate::file::fill_folio(Inode::from_raw(inode), Folio::from_raw(folio)) };
+        if let Err(error) = filled {
             // SAFETY: Release what `carryfs_write_folio` took.
             unsafe { glue::carryfs_folio_unlock_put(folio) };
             return error.to_errno();
@@ -647,10 +629,12 @@ pub(crate) unsafe extern "C" fn write_begin(
 
 /// Change a regular file's size under the inode lock, as truncate and
 /// `setattr` do.
-pub(crate) fn set_size(inode: *mut bindings::inode, size: u64) -> Result {
-    // SAFETY: The VFS holds the inode locked.
-    let (sb, object, mapping) =
-        unsafe { ((*inode).i_sb, (*inode).i_ino as u64, (*inode).i_mapping) };
+pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
+    let (sb, object, mapping) = (
+        inode.super_block().as_ptr(),
+        inode.object(),
+        inode.mapping(),
+    );
     // Write dirty pages first, so the catalog holds all data to keep.
     // SAFETY: As above.
     kernel::error::to_result(unsafe {
@@ -662,7 +646,7 @@ pub(crate) fn set_size(inode: *mut bindings::inode, size: u64) -> Result {
     };
     // SAFETY: As above; drops pages past a smaller size and zeroes the
     // partial last page.
-    unsafe { bindings::truncate_setsize(inode, size as i64) };
+    unsafe { bindings::truncate_setsize(inode.as_ptr(), size as i64) };
     let tail = (size % UNIT_BYTES as u64 != 0).then_some(size / UNIT_BYTES as u64);
     if size < old {
         // Shrink in unit-aligned steps from the end, each a consistent state.
@@ -683,8 +667,7 @@ pub(crate) fn set_size(inode: *mut bindings::inode, size: u64) -> Result {
     let old_tail = (old % UNIT_BYTES as u64 != 0).then_some(old / UNIT_BYTES as u64);
     let rewrite = if size < old { tail } else { old_tail };
     if let Some(unit) = rewrite {
-        // SAFETY: The inode is referenced and locked.
-        let mut writer = unsafe { Writer::new(inode) };
+        let mut writer = Writer::new(inode);
         writer.pending(unit)?;
         return writer.flush();
     }

@@ -6,17 +6,17 @@ use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
 
+use core::ops::{Deref, DerefMut};
 use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
-use core::ops::{Deref, DerefMut};
 
-use kernel::sync::{Mutex, MutexGuard, new_mutex};
+use kernel::sync::{new_mutex, Mutex, MutexGuard};
 
 use crate::edit::Txn;
 use crate::glue;
 use crate::ondisk::format::{
-    self, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS, Root, TreeKind, TreeRef,
+    self, Root, TreeKind, TreeRef, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS,
 };
 use crate::tree::{Block, Tree};
 use crate::{commit, corrupt, errno, inode, names};
@@ -64,9 +64,9 @@ impl State {
 
     /// Free blocks, counting the open transaction's changes.
     pub(crate) fn free_blocks(&self) -> u64 {
-        self.txn
-            .as_ref()
-            .map_or(self.root.free_blocks, |txn| txn.free_blocks(self.root.free_blocks))
+        self.txn.as_ref().map_or(self.root.free_blocks, |txn| {
+            txn.free_blocks(self.root.free_blocks)
+        })
     }
 }
 
@@ -291,7 +291,10 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
     if unsafe { (*root_inode).i_mode } as u32 & bindings::S_IFMT != bindings::S_IFDIR {
         // SAFETY: Drop the reference `get` took.
         unsafe { bindings::iput(root_inode) };
-        return Err(corrupt(root.catalog.block, crate::ondisk::error::Error::Corrupt("root is not a directory")));
+        return Err(corrupt(
+            root.catalog.block,
+            crate::ondisk::error::Error::Corrupt("root is not a directory"),
+        ));
     }
     // SAFETY: `d_make_root` consumes the inode reference, even on failure.
     let dentry = unsafe { bindings::d_make_root(root_inode) };
@@ -311,7 +314,12 @@ unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::k
     };
     let fsid = root.uuid;
     let word = |offset: usize| {
-        u32::from_le_bytes([fsid[offset], fsid[offset + 1], fsid[offset + 2], fsid[offset + 3]])
+        u32::from_le_bytes([
+            fsid[offset],
+            fsid[offset + 1],
+            fsid[offset + 2],
+            fsid[offset + 3],
+        ])
     };
     // SAFETY: `buf` is the caller's statfs buffer.
     unsafe {
@@ -330,7 +338,10 @@ unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::k
     0
 }
 
-unsafe extern "C" fn show_options(seq: *mut bindings::seq_file, root: *mut bindings::dentry) -> c_int {
+unsafe extern "C" fn show_options(
+    seq: *mut bindings::seq_file,
+    root: *mut bindings::dentry,
+) -> c_int {
     // SAFETY: The VFS passes the mount's root dentry.
     let volume = of(unsafe { (*root).d_sb });
     // SAFETY: Translating IDs into the initial namespace is always valid, and

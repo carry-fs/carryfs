@@ -17,9 +17,9 @@ use kernel::bindings::super_block;
 use kernel::prelude::*;
 
 use crate::corrupt;
-use crate::ondisk::format::{self, BLOCK_BYTES, PAGE_CAPACITY, PAYLOAD_OFFSET, TreeKind, TreeRef};
+use crate::ondisk::format::{self, TreeKind, TreeRef, BLOCK_BYTES, PAGE_CAPACITY, PAYLOAD_OFFSET};
 use crate::space::Group;
-use crate::tree::{Block, Draft, Link, compare, le_u64};
+use crate::tree::{compare, le_u64, Block, Draft, Link};
 
 /// Most bytes one record takes on a page, header included.
 const MAX_RECORD: usize = 3_072;
@@ -81,7 +81,8 @@ impl Slot {
 fn slot(page: &[u8; BLOCK_BYTES], index: usize) -> Slot {
     let mut offset = 0;
     for _ in 0..index {
-        offset += 4 + get_u16(page, PAYLOAD_OFFSET + offset) + get_u16(page, PAYLOAD_OFFSET + offset + 2);
+        offset +=
+            4 + get_u16(page, PAYLOAD_OFFSET + offset) + get_u16(page, PAYLOAD_OFFSET + offset + 2);
     }
     Slot {
         offset,
@@ -286,7 +287,11 @@ impl Txn {
             }
             // The last child whose minimum is at most `key`, or the first.
             let (index, equal) = search(page, key);
-            let index = if equal { index } else { index.saturating_sub(1) };
+            let index = if equal {
+                index
+            } else {
+                index.saturating_sub(1)
+            };
             let child_level = level(page) - 1;
             let link = Link::of(slot(page, index).value(page));
             let child = self.own(disk, kind, link, Some(child_level))?;
@@ -445,12 +450,26 @@ impl Txn {
             self.minimum_changed(disk, kind, path, depth)?;
         }
         let parent = path[depth - 1];
-        self.place(disk, kind, path, depth - 1, parent.index + 1, &right_key, &right_value)
+        self.place(
+            disk,
+            kind,
+            path,
+            depth - 1,
+            parent.index + 1,
+            &right_key,
+            &right_value,
+        )
     }
 
     /// The data-block total of a page this writer just packed: leaves sum
     /// their extents; internal pages sum their children's totals.
-    fn page_total(&self, disk: &Disk, kind: TreeKind, page: &[u8; BLOCK_BYTES], page_level: u8) -> Result<u64> {
+    fn page_total(
+        &self,
+        disk: &Disk,
+        kind: TreeKind,
+        page: &[u8; BLOCK_BYTES],
+        page_level: u8,
+    ) -> Result<u64> {
         if kind != TreeKind::Catalog {
             return Ok(0);
         }
@@ -477,7 +496,13 @@ impl Txn {
 
     /// The first key of the page at `depth` changed: update its parent's
     /// record for it, and on up while that is the parent's first record.
-    fn minimum_changed(&mut self, disk: &Disk, kind: TreeKind, path: &[Step], depth: usize) -> Result {
+    fn minimum_changed(
+        &mut self,
+        disk: &Disk,
+        kind: TreeKind,
+        path: &[Step],
+        depth: usize,
+    ) -> Result {
         if depth == 0 {
             return Ok(());
         }
@@ -507,7 +532,14 @@ impl Txn {
 
     /// Restore the tree's shape after removing the record at `index` of the
     /// page at `depth`.
-    fn after_removal(&mut self, disk: &Disk, kind: TreeKind, path: &[Step], depth: usize, index: usize) -> Result {
+    fn after_removal(
+        &mut self,
+        disk: &Disk,
+        kind: TreeKind,
+        path: &[Step],
+        depth: usize,
+        index: usize,
+    ) -> Result {
         let id = path[depth].id;
         let records = count(&self.drafts[id].page);
         if depth == 0 {
@@ -542,7 +574,11 @@ impl Txn {
         let id = path[depth].id;
         let parent = path[depth - 1];
         let siblings = count(&self.drafts[parent.id].page);
-        let sibling_index = if parent.index > 0 { parent.index - 1 } else { parent.index + 1 };
+        let sibling_index = if parent.index > 0 {
+            parent.index - 1
+        } else {
+            parent.index + 1
+        };
         if sibling_index >= siblings {
             return Ok(());
         }
@@ -608,7 +644,13 @@ impl Txn {
         let mut right_path = KVec::new();
         right_path.extend_from_slice(&path[..depth], GFP_KERNEL)?;
         right_path[depth - 1].index = right_index;
-        right_path.push(Step { id: right, index: 0 }, GFP_KERNEL)?;
+        right_path.push(
+            Step {
+                id: right,
+                index: 0,
+            },
+            GFP_KERNEL,
+        )?;
         self.minimum_changed(disk, kind, &right_path, depth)?;
         Ok(())
     }

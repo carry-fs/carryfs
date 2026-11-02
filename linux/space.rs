@@ -12,7 +12,7 @@ use kernel::prelude::*;
 
 use crate::commit::implicit_bitmap;
 use crate::edit::{Disk, Txn};
-use crate::ondisk::format::{ALLOCATION_GROUP_BLOCKS, TreeKind};
+use crate::ondisk::format::{TreeKind, ALLOCATION_GROUP_BLOCKS};
 use crate::tree::{Link, Tree};
 
 const BITMAP: usize = 2048;
@@ -183,7 +183,12 @@ impl Txn {
         core::mem::swap(&mut groups, &mut self.groups);
         for group in groups.iter() {
             if group.current[..] != group.committed[..] {
-                self.put(disk, TreeKind::Allocation, &group.index.to_be_bytes(), &group.current[..])?;
+                self.put(
+                    disk,
+                    TreeKind::Allocation,
+                    &group.index.to_be_bytes(),
+                    &group.current[..],
+                )?;
             }
         }
         Ok(())
@@ -197,7 +202,11 @@ impl Txn {
     /// blocks. Bitmaps live in memory here, so a batch takes 64 records of
     /// up to `RECLAIM_BLOCKS`: rewrites retire faster than 1,024 blocks a
     /// commit would return.
-    pub(crate) fn reclaim(&mut self, disk: &Disk, committed_cleanup: crate::ondisk::format::TreeRef) -> Result<bool> {
+    pub(crate) fn reclaim(
+        &mut self,
+        disk: &Disk,
+        committed_cleanup: crate::ondisk::format::TreeRef,
+    ) -> Result<bool> {
         let mut records: KVec<([u8; 17], u64, u64)> = KVec::new();
         let mut blocks = 0;
         let tree = Tree {

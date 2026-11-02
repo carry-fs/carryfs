@@ -3,8 +3,8 @@
 //! The C helpers in `glue.c`.
 
 use core::ffi::c_void;
-use kernel::bindings::{dentry, dir_context, file, folio, inode, page, qstr, readahead_control};
 use kernel::bindings::super_block;
+use kernel::bindings::{dentry, dir_context, file, folio, inode, page, qstr, readahead_control};
 use kernel::ffi::c_int;
 
 /// A `struct buffer_head`, which the Rust bindings leave out.
@@ -89,7 +89,11 @@ unsafe extern "C" {
     pub(crate) fn carryfs_file_dentry(file: *mut file) -> *mut dentry;
     pub(crate) fn carryfs_inode_inc_iversion(dir: *mut inode);
     pub(crate) fn carryfs_set_dentry_version(dentry: *mut dentry, dir: *mut inode);
-    pub(crate) fn carryfs_revalidate_negative(dir: *mut inode, dentry: *mut dentry, flags: u32) -> c_int;
+    pub(crate) fn carryfs_revalidate_negative(
+        dir: *mut inode,
+        dentry: *mut dentry,
+        flags: u32,
+    ) -> c_int;
     pub(crate) fn carryfs_inode_nlink(inode: *mut inode) -> u32;
     pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
 
@@ -126,10 +130,17 @@ unsafe extern "C" {
     ) -> *mut folio;
     pub(crate) fn carryfs_folio_unlock_put(folio: *mut folio);
     pub(crate) fn carryfs_folio_start_writeback(folio: *mut folio);
-    pub(crate) fn carryfs_folio_redirty(wbc: *mut kernel::bindings::writeback_control, folio: *mut folio);
-    pub(crate) fn carryfs_mapping_error(mapping: *mut kernel::bindings::address_space, error: c_int);
+    pub(crate) fn carryfs_folio_redirty(
+        wbc: *mut kernel::bindings::writeback_control,
+        folio: *mut folio,
+    );
+    pub(crate) fn carryfs_mapping_error(
+        mapping: *mut kernel::bindings::address_space,
+        error: c_int,
+    );
     pub(crate) fn carryfs_i_size_read(inode: *mut inode) -> i64;
-    pub(crate) fn carryfs_mapping_host(mapping: *mut kernel::bindings::address_space) -> *mut inode;
+    pub(crate) fn carryfs_mapping_host(mapping: *mut kernel::bindings::address_space)
+        -> *mut inode;
     pub(crate) fn carryfs_writeback_iter(
         mapping: *mut kernel::bindings::address_space,
         wbc: *mut kernel::bindings::writeback_control,
@@ -154,7 +165,5 @@ unsafe extern "C" {
 pub(crate) unsafe fn qstr_bytes<'a>(name: *const qstr) -> &'a [u8] {
     // SAFETY: The caller guarantees `name` is valid; a qstr's `name` points
     // to `len` readable bytes.
-    unsafe {
-        core::slice::from_raw_parts(carryfs_qstr_name(name), carryfs_qstr_len(name) as usize)
-    }
+    unsafe { core::slice::from_raw_parts(carryfs_qstr_name(name), carryfs_qstr_len(name) as usize) }
 }

@@ -21,7 +21,7 @@ use kernel::prelude::*;
 use crate::glue;
 use crate::inode::Ops;
 use crate::ondisk::name::validate_disk_name_characters;
-use crate::tree::{self, Tree, le_u64};
+use crate::tree::{self, le_u64, Tree};
 use crate::{corrupt, inode, volume};
 
 /// Entries read per hold of the volume lock (FORMAT.md section 6's
@@ -129,7 +129,9 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
             };
             let name = &entry.name;
             // SAFETY: `ctx` is valid; the name is at most 255 bytes.
-            if !unsafe { glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, entry.target, dt) } {
+            if !unsafe {
+                glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, entry.target, dt)
+            } {
                 break 'listing;
             }
             // SAFETY: `ctx` is valid, and the open directory pins its dentry.
@@ -200,6 +202,7 @@ pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
         read: Some(bindings::generic_read_dir),
         iterate_shared: Some(iterate),
         release: Some(release),
+        fsync: Some(crate::write::fsync),
         // SAFETY: All-zero entries are absent operations.
         ..unsafe { core::mem::zeroed() }
     });

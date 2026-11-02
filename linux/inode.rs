@@ -13,7 +13,7 @@ use kernel::prelude::*;
 use crate::glue::{self, qstr_bytes};
 use crate::namei::{self, DIRECTORY, FILE, SYMLINK};
 use crate::ondisk::error::Error as Encoding;
-use crate::tree::{Tree, le_u64};
+use crate::tree::{le_u64, Tree};
 use crate::{corrupt, dir, file, names, volume};
 
 /// The root directory's object ID.
@@ -108,7 +108,10 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
         let state = volume.lock();
         namei::read_record(sb, &state, object).map_err(|error| {
             if error == ENOENT {
-                corrupt(state.root.catalog.block, Encoding::Corrupt("missing inode record"))
+                corrupt(
+                    state.root.catalog.block,
+                    Encoding::Corrupt("missing inode record"),
+                )
             } else {
                 error
             }
@@ -214,8 +217,10 @@ unsafe fn change_attributes(
         let valid = (*attr).ia_valid;
         // Owners and permissions are not stored; only no-op changes pass.
         if (valid & bindings::ATTR_MODE != 0 && (*attr).ia_mode != (*inode).i_mode)
-            || (valid & bindings::ATTR_UID != 0 && (*attr).__bindgen_anon_1.ia_uid.val != (*inode).i_uid.val)
-            || (valid & bindings::ATTR_GID != 0 && (*attr).__bindgen_anon_2.ia_gid.val != (*inode).i_gid.val)
+            || (valid & bindings::ATTR_UID != 0
+                && (*attr).__bindgen_anon_1.ia_uid.val != (*inode).i_uid.val)
+            || (valid & bindings::ATTR_GID != 0
+                && (*attr).__bindgen_anon_2.ia_gid.val != (*inode).i_gid.val)
         {
             return Err(EPERM);
         }
@@ -300,7 +305,11 @@ pub(crate) fn kind_mode(kind: u8) -> u32 {
 
 /// `get`, failing as corruption unless the inode has file type `mode`, as
 /// the directory entry naming it records.
-fn get_typed(sb: *mut bindings::super_block, object: u64, mode: u32) -> Result<*mut bindings::inode> {
+fn get_typed(
+    sb: *mut bindings::super_block,
+    object: u64,
+    mode: u32,
+) -> Result<*mut bindings::inode> {
     let inode = get(sb, object)?;
     // SAFETY: `get` returned a referenced inode.
     if unsafe { (*inode).i_mode } as u32 & bindings::S_IFMT != mode {

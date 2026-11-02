@@ -14,8 +14,8 @@ use kernel::prelude::*;
 use crate::commit::{self, COMMIT_DRAFTS};
 use crate::edit::{Disk, Txn};
 use crate::glue::{self, qstr_bytes};
-use crate::ondisk::format::{MAINTENANCE_RESERVE, MAX_ID, TreeKind};
-use crate::tree::{self, Tree, le_u64};
+use crate::ondisk::format::{TreeKind, MAINTENANCE_RESERVE, MAX_ID};
+use crate::tree::{self, le_u64, Tree};
 use crate::volume::{self, State};
 use crate::{errno, inode, names};
 
@@ -44,7 +44,10 @@ pub(crate) fn set_u64(record: &mut [u8], offset: usize, value: u64) {
 
 /// The current time, clamped to the format's timestamp range.
 pub(crate) fn now() -> (i64, u32) {
-    let mut ts = bindings::timespec64 { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = bindings::timespec64 {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: Fills the caller's timespec.
     unsafe { bindings::ktime_get_real_ts64(&mut ts) };
     (
@@ -81,7 +84,11 @@ pub(crate) fn mutate<T>(
     if state.faulted {
         return Err(EIO);
     }
-    if state.txn.as_ref().is_some_and(|txn| txn.drafts.len() >= COMMIT_DRAFTS) {
+    if state
+        .txn
+        .as_ref()
+        .is_some_and(|txn| txn.drafts.len() >= COMMIT_DRAFTS)
+    {
         commit::commit(sb, &mut state)?;
     }
     if state.txn.is_none() {
@@ -109,18 +116,29 @@ pub(crate) fn txn(state: &mut State) -> &mut Txn {
 }
 
 /// `object`'s inode record, as the open transaction sees it.
-pub(crate) fn read_record(sb: *mut bindings::super_block, state: &State, object: u64) -> Result<KVec<u8>> {
+pub(crate) fn read_record(
+    sb: *mut bindings::super_block,
+    state: &State,
+    object: u64,
+) -> Result<KVec<u8>> {
     let key = tree::prefix(object, tree::INODE);
     let mut record = KVec::new();
     Tree::catalog(sb, state)
-        .get(&key, |value| Ok(record.extend_from_slice(value, GFP_KERNEL)?))?
+        .get(&key, |value| {
+            Ok(record.extend_from_slice(value, GFP_KERNEL)?)
+        })?
         .ok_or(ENOENT)?;
     Ok(record)
 }
 
 /// Store `object`'s inode record.
 pub(crate) fn write_record(state: &mut State, disk: &Disk, object: u64, record: &[u8]) -> Result {
-    txn(state).put(disk, TreeKind::Catalog, &tree::prefix(object, tree::INODE), record)
+    txn(state).put(
+        disk,
+        TreeKind::Catalog,
+        &tree::prefix(object, tree::INODE),
+        record,
+    )
 }
 
 /// A directory entry: its target and type.
@@ -148,7 +166,14 @@ fn entry_value(target: u64, kind: u8, stored: &[u8]) -> Result<KVec<u8>> {
 }
 
 /// Add `delta` children to directory `dir` and stamp its times.
-fn touch_parent(sb: *mut bindings::super_block, state: &mut State, disk: &Disk, dir: u64, delta: i64, time: (i64, u32)) -> Result {
+fn touch_parent(
+    sb: *mut bindings::super_block,
+    state: &mut State,
+    disk: &Disk,
+    dir: u64,
+    delta: i64,
+    time: (i64, u32),
+) -> Result {
     let mut record = read_record(sb, state, dir)?;
     let children = le_u64(&record, CHILDREN).saturating_add_signed(delta);
     set_u64(&mut record, CHILDREN, children);
@@ -159,7 +184,13 @@ fn touch_parent(sb: *mut bindings::super_block, state: &mut State, disk: &Disk, 
 
 /// Mark `object` unlinked: set its orphan flag and add its marker. Its
 /// eviction removes it.
-fn orphan(sb: *mut bindings::super_block, state: &mut State, disk: &Disk, object: u64, time: (i64, u32)) -> Result {
+fn orphan(
+    sb: *mut bindings::super_block,
+    state: &mut State,
+    disk: &Disk,
+    object: u64,
+    time: (i64, u32),
+) -> Result {
     let mut record = read_record(sb, state, object)?;
     record[1] |= ORPHAN;
     set_time(&mut record, CHANGED, time);
@@ -282,7 +313,11 @@ unsafe extern "C" fn symlink(
 
 /// Remove the entry `dentry` names in `dir`, which must name a directory
 /// exactly when `directory` is set.
-fn remove_entry(dir: *mut bindings::inode, dentry: *mut bindings::dentry, directory: bool) -> Result {
+fn remove_entry(
+    dir: *mut bindings::inode,
+    dentry: *mut bindings::dentry,
+    directory: bool,
+) -> Result {
     let (_, folded) = parse_name(dentry)?;
     // SAFETY: The VFS holds `dir` and the dentry's inode locked.
     let (sb, parent, victim) = unsafe { ((*dir).i_sb, (*dir).i_ino as u64, (*dentry).d_inode) };
@@ -442,7 +477,10 @@ pub(crate) fn remove_object(sb: *mut bindings::super_block, object: u64) -> Resu
                     return Ok(false);
                 }
                 if key.get(8) == Some(&tree::EXTENT) {
-                    extents.push((le_u64(value, 0), le_u64(value, 8) & u64::from(u32::MAX)), GFP_KERNEL)?;
+                    extents.push(
+                        (le_u64(value, 0), le_u64(value, 8) & u64::from(u32::MAX)),
+                        GFP_KERNEL,
+                    )?;
                 }
                 let mut copy = KVec::new();
                 copy.extend_from_slice(key, GFP_KERNEL)?;
@@ -477,7 +515,11 @@ pub(crate) fn remove_object(sb: *mut bindings::super_block, object: u64) -> Resu
 }
 
 /// Store new modification or change times from `setattr`.
-pub(crate) fn set_times(sb: *mut bindings::super_block, object: u64, modified: Option<(i64, u32)>) -> Result {
+pub(crate) fn set_times(
+    sb: *mut bindings::super_block,
+    object: u64,
+    modified: Option<(i64, u32)>,
+) -> Result {
     mutate(sb, |state, disk| {
         let mut record = read_record(sb, state, object)?;
         if let Some(time) = modified {

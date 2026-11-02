@@ -16,8 +16,8 @@ use crate::glue;
 use crate::inode::Ops;
 use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::error::Error as Encoding;
-use crate::ondisk::format::{BLOCK_BYTES, checksum_slot};
-use crate::tree::{self, Tree, le_u64};
+use crate::ondisk::format::{checksum_slot, BLOCK_BYTES};
+use crate::tree::{self, le_u64, Tree};
 use crate::volume::{self, Volume};
 use crate::{corrupt, errno};
 
@@ -40,7 +40,10 @@ impl Unit {
         if let Some(page) = self.pages.get(block).filter(|_| len > 0) {
             // SAFETY: The bounce page holds `BLOCK_BYTES` bytes.
             let source = unsafe {
-                core::slice::from_raw_parts(glue::carryfs_page_address(page.as_ptr()).cast::<u8>(), len)
+                core::slice::from_raw_parts(
+                    glue::carryfs_page_address(page.as_ptr()).cast::<u8>(),
+                    len,
+                )
             };
             destination[..len].copy_from_slice(source);
         }
@@ -115,9 +118,8 @@ impl Source<'_> {
                 .and_then(|bytes| bytes.try_into().ok())
                 .map_or(0, u64::from_be_bytes);
             let count = le_u64(value, 8) & u64::from(u32::MAX);
-            Ok((owner && block >= start && block - start < count).then(|| {
-                (le_u64(value, 0) + (block - start), count - (block - start))
-            }))
+            Ok((owner && block >= start && block - start < count)
+                .then(|| (le_u64(value, 0) + (block - start), count - (block - start))))
         })?;
         found.flatten().ok_or_else(|| {
             corrupt(
@@ -132,7 +134,11 @@ impl Source<'_> {
         let start = unit * UNIT_BYTES as u64;
         let valid = self.size.saturating_sub(start).min(UNIT_BYTES as u64) as usize;
         let mut pages = KVec::new();
-        let Some(expected) = (if valid == 0 { None } else { self.checksum(unit)? }) else {
+        let Some(expected) = (if valid == 0 {
+            None
+        } else {
+            self.checksum(unit)?
+        }) else {
             return Ok(Unit {
                 index: unit,
                 pages,
@@ -147,13 +153,15 @@ impl Source<'_> {
         self.read_blocks(unit * UNIT_BLOCKS, &pages)?;
 
         let uuid = self.volume.lock().root.uuid;
-        let mut crc = DataUnitCrc::new(&uuid, self.object, unit, valid)
-            .map_err(errno)?;
+        let mut crc = DataUnitCrc::new(&uuid, self.object, unit, valid).map_err(errno)?;
         for (index, page) in pages.iter().enumerate() {
             let len = (valid - index * BLOCK_BYTES).min(BLOCK_BYTES);
             // SAFETY: The page is ours and holds `BLOCK_BYTES` bytes.
             let bytes = unsafe {
-                core::slice::from_raw_parts(glue::carryfs_page_address(page.as_ptr()).cast::<u8>(), len)
+                core::slice::from_raw_parts(
+                    glue::carryfs_page_address(page.as_ptr()).cast::<u8>(),
+                    len,
+                )
             };
             crc.update(bytes);
         }
@@ -294,7 +302,12 @@ unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
 }
 
 /// Read and verify `unit` of `object`, a file of `size` bytes.
-pub(crate) fn read_unit(sb: *mut bindings::super_block, object: u64, size: u64, unit: u64) -> Result<Unit> {
+pub(crate) fn read_unit(
+    sb: *mut bindings::super_block,
+    object: u64,
+    size: u64,
+    unit: u64,
+) -> Result<Unit> {
     Source {
         sb,
         volume: volume::of(sb),

@@ -14,7 +14,7 @@ use kernel::prelude::*;
 
 use crate::glue::{self, qstr_bytes};
 use crate::inode::Ops;
-use crate::ondisk::name::{self, MAX_FOLDED_BYTES, MAX_STORED_BYTES, Scratch};
+use crate::ondisk::name::{self, Scratch, MAX_FOLDED_BYTES, MAX_STORED_BYTES};
 use crate::tree;
 
 /// Scratch for non-ASCII names and the first key of a comparison.
@@ -65,14 +65,22 @@ fn fold_into(name: &[u8], out: &mut KVec<u8>) -> Result<Option<()>> {
 }
 
 /// `name`'s stored spelling and comparison key, for creating it.
-pub(crate) fn parse(name: &[u8]) -> core::result::Result<(KVec<u8>, KVec<u8>), crate::ondisk::error::Error> {
+pub(crate) fn parse(
+    name: &[u8],
+) -> core::result::Result<(KVec<u8>, KVec<u8>), crate::ondisk::error::Error> {
     use crate::ondisk::error::Error as E;
     let text = core::str::from_utf8(name).map_err(|_| E::InvalidName("name is not UTF-8"))?;
     let copy = |parsed: name::ParsedName<'_>| -> core::result::Result<(KVec<u8>, KVec<u8>), E> {
-        let mut stored = KVec::with_capacity(parsed.stored.len(), GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
-        stored.extend_from_slice(parsed.stored, GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
-        let mut folded = KVec::with_capacity(parsed.folded.len(), GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
-        folded.extend_from_slice(parsed.folded, GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
+        let mut stored = KVec::with_capacity(parsed.stored.len(), GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
+        stored
+            .extend_from_slice(parsed.stored, GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
+        let mut folded = KVec::with_capacity(parsed.folded.len(), GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
+        folded
+            .extend_from_slice(parsed.folded, GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
         Ok((stored, folded))
     };
     if text.is_ascii() {
@@ -93,7 +101,10 @@ pub(crate) fn entry_key(dir: u64, name: &[u8]) -> Result<Option<KVec<u8>>> {
 /// Calls `f` with the comparison key of `name`, or with `name` itself when
 /// it cannot be stored, which then matches only identical bytes.
 fn with_key<T>(name: &[u8], scratch: &mut Scratch, f: impl FnOnce(&[u8]) -> T) -> T {
-    match core::str::from_utf8(name).ok().map(|text| name::parse_unicode(text, scratch)) {
+    match core::str::from_utf8(name)
+        .ok()
+        .map(|text| name::parse_unicode(text, scratch))
+    {
         Some(Ok(parsed)) => f(parsed.folded),
         _ => f(name),
     }
@@ -138,7 +149,10 @@ unsafe extern "C" fn d_compare(
         first.eq_ignore_ascii_case(second)
     } else {
         let mut fold = FOLD.lock();
-        let Fold { scratch, first: copy } = &mut *fold;
+        let Fold {
+            scratch,
+            first: copy,
+        } = &mut *fold;
         let len = with_key(first, scratch, |key| {
             let len = key.len().min(copy.len());
             copy[..len].copy_from_slice(&key[..len]);

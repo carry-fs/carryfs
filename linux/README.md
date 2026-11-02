@@ -170,25 +170,34 @@ All of these produce images the userspace checker accepts.
 
 ## Benchmarks
 
-`benchmarks/run.py` runs the full suite with `--systems carryfs carryfs-kernel`.
-Medians of three rounds on 1 GiB loop images (KVM guest, Linux 7.0),
-measured before the fsync and listing fixes below:
+`benchmarks/run.py run --images --systems carryfs carryfs-kernel` runs the
+full suite on both adapters. Medians of three rounds on 1 GiB loop images
+in a KVM guest on Linux 7.0; loop-device timings vary by about 10% between
+runs.
 
 | Metric | FUSE | Kernel |
 |---|---:|---:|
-| sequential_write (MiB/s) | 391 | 1,323 |
-| small_file_create (files/s) | 5,597 | 21,914 |
-| tree_create (files/s) | 4,943 | 25,956 |
-| create_10000_batch128_durable (ms) | 2,986 | 901 |
-| rw-cold sequential_read (MiB/s) | 531 | 730 |
-| rw-warm sequential_read (MiB/s) | 1,734 | 9,631 |
-| mount_rw-stream (s) | 0.078 | 0.004 |
+| sequential_write (MiB/s) | 386 | 1,561 |
+| small_file_create (files/s) | 4,716 | 28,706 |
+| small_file_create_durable (files/s) | 3,351 | 9,385 |
+| tree_create (files/s) | 5,375 | 26,279 |
+| create_10000_batch128_durable (ms) | 2,856 | 1,725 |
+| remove_10000_batch128_durable (ms) | 1,284 | 779 |
+| remove_tree (ms) | 79 | 23 |
+| rw-cold sequential_read (MiB/s) | 478 | 778 |
+| rw-warm sequential_read (MiB/s) | 1,307 | 8,988 |
+| ro-cold sequential_read (MiB/s) | 230 | 425 |
+| rw-stale list_10000_names (ms) | 18.0 | 4.0 |
+| ro-cold list_10000_list-stat (ms) | 140 | 117 |
+| ro-warm list_10000_names (ms) | 2.4 | 4.3 |
+| sequential_write_durable (MiB/s) | 286 | 266 |
 
-That run lost `fsync_after_small_files` (2,802 ms against 93 ms) and warm
-listings. fsync now writes back every dirty file before committing, and
-listings batch entries in one buffer: a spot check then measured 55 ms for
-the 1,000 fsyncs and 3.4 ms for a warm 10,000-name listing (FUSE 1.8 ms).
-Rerun the suite to confirm before quoting these.
+Of 55 workload metrics the driver wins 27, ties 5, and loses 23. The
+losses are mostly listings within 5 to 15%. Two are larger. A warm listing
+of names alone takes about twice as long: FUSE serves it from cached
+readdir pages, while the driver walks the catalog again. Durable
+sequential writes trail slightly: the page cache defers writeback, so
+fsync writes what FUSE wrote during `write()`.
 
 ## Upstreaming
 

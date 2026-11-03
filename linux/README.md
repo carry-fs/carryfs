@@ -116,7 +116,11 @@ reads recheck only the page's identity.
 
 Data is checksummed per 64 KiB unit, so readahead widens each window to unit
 boundaries with `readahead_expand`, as erofs does for compressed clusters,
-and verifies a unit before any of its bytes reach the page cache.
+and verifies a unit before any of its bytes reach the page cache. Readahead
+locates up to 32 units under one hold of the volume lock, submits their
+reads without waiting, and verifies and unlocks them from a workqueue, as
+erofs and btrfs verify data in end_io work. Commits wait for reads in
+flight, so no block being read is reclaimed and reused under them.
 
 ### Writes
 

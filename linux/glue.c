@@ -163,14 +163,71 @@ static struct file_system_type carryfs_fs_type = {
 };
 MODULE_ALIAS_FS("carryfs");
 
+/*
+ * Verifies readahead units once their reads complete, outside interrupt
+ * context, as erofs and btrfs verify data in end_io work.
+ */
+static struct workqueue_struct *carryfs_read_wq;
+
 int carryfs_register(void)
 {
-	return register_filesystem(&carryfs_fs_type);
+	int error;
+
+	carryfs_read_wq = alloc_workqueue("carryfs-read", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+	if (!carryfs_read_wq)
+		return -ENOMEM;
+	error = register_filesystem(&carryfs_fs_type);
+	if (error)
+		destroy_workqueue(carryfs_read_wq);
+	return error;
 }
 
 void carryfs_unregister(void)
 {
 	unregister_filesystem(&carryfs_fs_type);
+	destroy_workqueue(carryfs_read_wq);
+}
+
+struct carryfs_read {
+	struct work_struct work;
+	void *batch;
+	int status;
+};
+
+static void carryfs_read_work(struct work_struct *work)
+{
+	struct carryfs_read *read = container_of(work, struct carryfs_read, work);
+
+	carryfs_read_done(read->batch, read->status);
+	kfree(read);
+}
+
+static void carryfs_read_end_io(struct bio *bio)
+{
+	struct carryfs_read *read = bio->bi_private;
+
+	read->status = blk_status_to_errno(bio->bi_status);
+	bio_put(bio);
+	queue_work(carryfs_read_wq, &read->work);
+}
+
+/*
+ * Submit @bio, the last of a chain, and call carryfs_read_done(@batch) from
+ * the read workqueue once the whole chain completes. Fails only before
+ * submitting.
+ */
+int carryfs_submit_read(struct bio *bio, void *batch)
+{
+	struct carryfs_read *read = kmalloc(sizeof(*read), GFP_NOFS);
+
+	if (!read)
+		return -ENOMEM;
+	INIT_WORK(&read->work, carryfs_read_work);
+	read->batch = batch;
+	bio->bi_private = read;
+	bio->bi_end_io = carryfs_read_end_io;
+	submit_bio(bio);
+	return 0;
 }
 
 /* Block device geometry. */

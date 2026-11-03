@@ -76,6 +76,10 @@ unsafe extern "C" {
     ) -> c_int;
     pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
 
+    pub(crate) fn carryfs_submit_read(
+        bio: *mut kernel::bindings::bio,
+        batch: *mut core::ffi::c_void,
+    ) -> c_int;
     pub(crate) fn carryfs_bio_alloc_read(
         sb: *mut super_block,
         sector: u64,

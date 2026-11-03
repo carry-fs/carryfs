@@ -55,8 +55,14 @@ pub(crate) struct State {
     /// Space held for dirty page-cache units.
     pub(crate) reservations: crate::reserve::Reservations,
     /// Data writes whose blocks the open transaction allocated but no
-    /// record owns yet; commit waits for them (`Locked::wait_for_writes`).
+    /// record owns yet; commit waits for them (`Locked::quiesce`).
     pub(crate) writing: u32,
+    /// Data reads in flight without the lock; commit waits for them, so no
+    /// block they read is reclaimed and reused under them.
+    reading: u32,
+    /// Commits waiting for I/O; new reads wait for them, so that a stream
+    /// of reads cannot starve a commit.
+    committing: u32,
 }
 
 impl State {
@@ -93,7 +99,7 @@ pub(crate) struct Volume {
     /// Held through each `writepages` call; see there.
     #[pin]
     pub(crate) writeback: Mutex<()>,
-    /// Signalled when `State::writing` drops.
+    /// Signalled when `State::writing`, `reading`, or `committing` drops.
     #[pin]
     written: CondVar,
 }
@@ -149,6 +155,33 @@ impl Locked<'_> {
     /// End a data write counted in `State::writing`.
     pub(crate) fn end_write(&mut self) {
         self.state.writing -= 1;
+        self.volume.written.notify_all();
+    }
+
+    /// Wait for data writes and reads in flight before a commit, holding
+    /// new reads back meanwhile; `end_quiesce` lets them go.
+    pub(crate) fn quiesce(&mut self) {
+        self.state.committing += 1;
+        while self.state.writing > 0 || self.state.reading > 0 {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    pub(crate) fn end_quiesce(&mut self) {
+        self.state.committing -= 1;
+        self.volume.written.notify_all();
+    }
+
+    /// Count a data read that continues without the lock.
+    pub(crate) fn start_read(&mut self) {
+        while self.state.committing > 0 {
+            self.volume.written.wait(&mut self.state);
+        }
+        self.state.reading += 1;
+    }
+
+    pub(crate) fn end_read(&mut self) {
+        self.state.reading -= 1;
         self.volume.written.notify_all();
     }
 }
@@ -286,6 +319,8 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 reclaim_pending: true,
                 reservations: Default::default(),
                 writing: 0,
+                reading: 0,
+                committing: 0,
             }),
         }),
         GFP_KERNEL,

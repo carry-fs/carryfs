@@ -181,7 +181,13 @@ fn read_slots(sb: *mut super_block, root: &Root) -> Result<KVec<u64>> {
 /// Publish the open transaction, if any. A failure faults the volume:
 /// FORMAT.md section 3 forbids retrying a publication.
 pub(crate) fn commit(sb: *mut super_block, state: &mut Locked<'_>) -> Result {
-    state.wait_for_writes();
+    state.quiesce();
+    let result = commit_quiesced(sb, state);
+    state.end_quiesce();
+    result
+}
+
+fn commit_quiesced(sb: *mut super_block, state: &mut State) -> Result {
     if state.faulted {
         return Err(EIO);
     }

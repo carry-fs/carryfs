@@ -21,10 +21,13 @@ void carryfs_stop_timer(struct super_block *sb);
 void carryfs_periodic_commit(struct super_block *sb);
 struct inode *carryfs_iget(struct super_block *sb, u64 ino, umode_t type);
 int carryfs_reserve_folio(struct inode *inode, u64 index);
+void carryfs_read_done(void *batch, int status);
 
 /* Implemented in glue.c. */
 int carryfs_register(void);
 void carryfs_unregister(void);
+struct bio;
+int carryfs_submit_read(struct bio *bio, void *batch);
 u64 carryfs_bdev_bytes(struct super_block *sb);
 unsigned int carryfs_bdev_logical_block_size(struct super_block *sb);
 unsigned int carryfs_bdev_physical_block_size(struct super_block *sb);

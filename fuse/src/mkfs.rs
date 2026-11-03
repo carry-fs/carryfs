@@ -1,9 +1,12 @@
-//! `mkfs.carryfs [-L LABEL] DEVICE`, which mkfs(8) runs for
-//! `mkfs -t carryfs [-L LABEL] DEVICE`, and `mkfs.carryfs --wipe DEVICE`.
+//! `mkfs.carryfs [-f] [-L LABEL] DEVICE`, which mkfs(8) runs for
+//! `mkfs -t carryfs [-f] [-L LABEL] DEVICE`, and `mkfs.carryfs --wipe DEVICE`.
 //!
-//! `Volume::format` refuses a device whose reserved bands hold data, so erasing
-//! them first is this tool's job: running it is the explicit request to destroy
-//! what the device held. macOS `newfs_carryfs` does the same.
+//! `Volume::format` refuses a device whose reserved bands hold data, and
+//! every common file system keeps its start there. Like mkfs.xfs and mkfs.btrfs,
+//! this tool keeps that refusal, so a mistyped device name cannot destroy a
+//! file system; `-f` erases the bands first. Windows' `mkfs ... force` does
+//! the same. macOS `newfs_carryfs` erases unasked: Disk Utility's Erase is
+//! the confirmation there.
 //!
 //! `--wipe` erases only those bands. libblkid does not know CarryFS, so wipefs
 //! and udisks leave its roots in place, the udev probe keeps reporting it, and
@@ -16,33 +19,50 @@ use std::io::ErrorKind;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
-use carryfs_core::{MountMode, Volume, VolumeLabel, has_root_magic};
+use carryfs_core::{Error, MountMode, Volume, VolumeLabel, has_root_magic};
 
 use crate::device::Disk;
 
 type Result<T> = std::result::Result<T, Box<dyn StdError>>;
 
 enum Request {
-    Format(Option<VolumeLabel>),
+    Format {
+        label: Option<VolumeLabel>,
+        /// Erase what the device holds first.
+        force: bool,
+    },
     Wipe,
 }
+
+const USAGE: &str = "usage: mkfs.carryfs [-f] [-L LABEL] DEVICE | mkfs.carryfs --wipe DEVICE";
 
 /// Arguments as mkfs(8) passes them: options, then the device.
 pub fn main(args: &[OsString]) -> Result<()> {
     // Validate before opening or erasing the device.
-    let (device, request) = match args {
-        // A lone option, such as `--wipe` without its device, is not a path.
-        [device] if !device.as_encoded_bytes().starts_with(b"-") => (device, Request::Format(None)),
-        [flag, label, device] if flag == "-L" => {
-            let label = label.to_str().ok_or("the label must be UTF-8")?;
-            (device, Request::Format(Some(VolumeLabel::parse(label)?)))
+    let Some((device, options)) = args.split_last() else {
+        return Err(USAGE.into());
+    };
+    // A lone option, such as `--wipe` without its device, is not a path.
+    if device.as_encoded_bytes().starts_with(b"-") {
+        return Err(USAGE.into());
+    }
+    let request = if options == ["--wipe"] {
+        Request::Wipe
+    } else {
+        let (mut label, mut force) = (None, false);
+        let mut options = options.iter();
+        while let Some(option) = options.next() {
+            if option == "-f" && !force {
+                force = true;
+            } else if option == "-L" && label.is_none() {
+                let value = options.next().ok_or(USAGE)?;
+                let value = value.to_str().ok_or("the label must be UTF-8")?;
+                label = Some(VolumeLabel::parse(value)?);
+            } else {
+                return Err(USAGE.into());
+            }
         }
-        [flag, device] if flag == "--wipe" => (device, Request::Wipe),
-        _ => {
-            return Err(
-                "usage: mkfs.carryfs [-L LABEL] DEVICE | mkfs.carryfs --wipe DEVICE".into(),
-            );
-        }
+        Request::Format { label, force }
     };
     let device = Path::new(device);
     let done = run(device, request).map_err(|error| format!("{}: {error}", device.display()))?;
@@ -86,12 +106,23 @@ fn run(device: &Path, request: Request) -> Result<String> {
                 device.display()
             ))
         }
-        Request::Format(label) => {
-            carryfs_core::erase_reserved_bands(&mut disk)?;
-            let mut volume = match label {
-                Some(label) => Volume::format_with_label(disk, label)?,
-                None => Volume::format(disk)?,
+        Request::Format { label, force } => {
+            if force {
+                carryfs_core::erase_reserved_bands(&mut disk)?;
+            }
+            let formatted = match label {
+                Some(label) => Volume::format_with_label(disk, label),
+                None => Volume::format(disk),
             };
+            let mut volume = formatted.map_err(|error| match error {
+                Error::InvalidInput(reason)
+                    if reason.starts_with("existing or unfinished format") =>
+                {
+                    "the device holds data, perhaps a file system; add -f to erase it and format"
+                        .into()
+                }
+                error => Box::<dyn StdError>::from(error),
+            })?;
             let bytes = volume.info()?.byte_len;
             volume.eject()?;
             Ok(format!(
@@ -136,6 +167,9 @@ mod tests {
             &["-n", "name", missing][..],
             &["--wipe"][..],
             &["--wipe", "-L", missing][..],
+            &["--wipe", "-f", missing][..],
+            &["-f", "-f", missing][..],
+            &["-f"][..],
         ] {
             let args: Vec<OsString> = args.iter().map(OsString::from).collect();
             let error = main(&args).unwrap_err().to_string();

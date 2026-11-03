@@ -36,6 +36,11 @@ opt-level = 1
 overflow-checks = true
 debug-assertions = true
 
+# 2-5% faster metadata reads, 2x build time.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 # fuser 0.18.0 drops macFUSE rename flags and does not dispatch FUSE_SYNCFS.
 # The fork retains upstream's syncfs and rename flags, before_destroy so
 # publication finishes before the unmount reply (cberner/fuser#757), and

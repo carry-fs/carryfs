@@ -355,8 +355,10 @@ impl<'a> Writer<'a> {
             let (modified, changed) = inode.times();
             set_time(&mut record, 56, modified);
             set_time(&mut record, 72, changed);
-            write_record(state, disk, object, &record)
+            write_record(state, disk, object, &record)?;
+            Ok(allocated)
         })
+        .map(|allocated| inode.set_blocks(allocated))
     }
 }
 
@@ -721,9 +723,10 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
         // Shrink in unit-aligned steps from the end, each a consistent state.
         let keep = size.div_ceil(UNIT_BYTES as u64) * UNIT_BLOCKS;
         loop {
-            let done = mutate(sb, |state, disk| {
+            let (done, allocated) = mutate(sb, |state, disk| {
                 shrink_step(sb, state, disk, object, keep, size)
             })?;
+            inode.set_blocks(allocated);
             if done {
                 break;
             }
@@ -754,8 +757,9 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
 const SHRINK_BATCH: usize = 256;
 
 /// Remove a batch of `object`'s extents at or past logical block `keep`,
-/// with their units' checksums; whether none remain past `keep`. Once none
-/// do, the size becomes `size` rounded up to a whole unit, so that the kept
+/// with their units' checksums; whether none remain past `keep`, and the
+/// blocks the file still has. Once none do, the size becomes `size`
+/// rounded up to a whole unit, so that the kept
 /// tail unit stays consistent until it is rewritten. Each step leaves a
 /// valid file: removed units read as holes.
 fn shrink_step(
@@ -765,7 +769,7 @@ fn shrink_step(
     object: u64,
     keep: u64,
     size: u64,
-) -> Result<bool> {
+) -> Result<(bool, u64)> {
     let prefix = tree::prefix(object, tree::EXTENT);
     let mut seen = 0;
     let mut batch_end = u64::MAX / 2;
@@ -806,7 +810,7 @@ fn shrink_step(
     set_time(&mut record, 56, time);
     set_time(&mut record, 72, time);
     write_record(state, disk, object, &record)?;
-    Ok(done)
+    Ok((done, allocated))
 }
 
 /// Clear the checksum slots of units `first..end`, dropping emptied groups.

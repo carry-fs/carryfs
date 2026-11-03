@@ -98,6 +98,12 @@ impl Inode {
         unsafe { glue::carryfs_i_size_read(self.as_ptr()) as u64 }
     }
 
+    /// Report `blocks` 4 KiB data blocks to `stat`, as the record holds.
+    pub(crate) fn set_blocks(&self, blocks: u64) {
+        // SAFETY: A plain field; `generic_fillattr` reads it unlocked.
+        unsafe { (*self.as_ptr()).i_blocks = blocks.saturating_mul(8) as _ };
+    }
+
     pub(crate) fn mapping(&self) -> *mut bindings::address_space {
         // SAFETY: A regular file's mapping is set at creation and fixed.
         unsafe { (*self.as_ptr()).i_mapping }

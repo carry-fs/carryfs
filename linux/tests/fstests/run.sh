@@ -23,13 +23,14 @@ cleanup() {
 }
 trap cleanup EXIT
 export PATH=$here/bin:$PATH
-# Golden outputs expect GNU od's lowercase hex; Ubuntu's default uutils od
-# prints uppercase (generic/029, generic/030).
-if [ -x /usr/bin/gnuod ]; then
-	mkdir "$work/bin"
-	ln -s /usr/bin/gnuod "$work/bin/od"
-	export PATH=$work/bin:$PATH
-fi
+# fstests expects GNU coreutils; Ubuntu's default uutils differ, such as
+# od's uppercase hex (generic/029, generic/030) and touch's date parsing
+# (generic/634). Ubuntu ships the GNU tools with a gnu prefix.
+mkdir "$work/bin"
+for tool in /usr/bin/gnu*; do
+	ln -s "$tool" "$work/bin/${tool#/usr/bin/gnu}"
+done
+export PATH=$work/bin:$PATH
 "$here/bin/mkfs.carryfs" "$TEST_DEV" >/dev/null
 cp "$here/local.config" "$fstests/local.config"
 cd "$fstests"

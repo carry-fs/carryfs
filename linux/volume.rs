@@ -67,15 +67,38 @@ pub(crate) struct State {
     /// Commits waiting for I/O; new reads wait for them, so that a stream
     /// of reads cannot starve a commit.
     committing: u32,
-    /// Objects whose data a writer is writing or a size change is changing,
-    /// one at a time each (`Locked::claim`).
-    claimed: [u64; CLAIMS],
-    claims: usize,
+    /// Objects with data writes in flight or a size change under way; room
+    /// for `CLAIMS` is reserved at mount. On the heap: inline, the table
+    /// overflowed the kernel stack while `fill_super` built the state.
+    flights: KVec<Flight>,
 }
 
 /// Objects written at once; more writers wait, which bounds the data
 /// writes in flight.
 const CLAIMS: usize = 64;
+/// Batches of one object in flight at once, so that its next batch is
+/// prepared and submitted while one is written.
+pub(crate) const PIPELINE: usize = 2;
+
+/// One object's data writes in flight. One writer at a time prepares and
+/// allocates a batch; up to `PIPELINE` batches are then written at once
+/// and recorded in allocation order. A size change holds the object alone.
+#[derive(Clone, Copy, Default)]
+struct Flight {
+    object: u64,
+    writer: bool,
+    exclusive: bool,
+    /// Batches allocated and not yet recorded.
+    outstanding: usize,
+    /// Tickets handed to allocated batches, and the next to record.
+    issued: u64,
+    recorded: u64,
+    /// The size the last allocated batch records.
+    planned: u64,
+    /// Completions that came before their turn: ticket, batch, errno.
+    parked: [(u64, usize, i32); PIPELINE],
+    parked_count: usize,
+}
 
 impl State {
     pub(crate) fn tree_root(&self, kind: TreeKind) -> TreeRef {
@@ -211,29 +234,156 @@ impl Locked<'_> {
         self.volume.written.notify_all();
     }
 
-    /// Take `object` for one data write or size change, waiting for the
-    /// one in progress: an object's writes must record in order.
-    pub(crate) fn claim(&mut self, object: u64) {
+    /// Wait until `ready` holds for `object`'s flight, or a new one could
+    /// be made; the flight's index, made if missing.
+    fn flight(&mut self, object: u64, ready: impl Fn(&Flight) -> bool) -> usize {
         loop {
-            let state = &*self.state;
-            let held = state.claimed[..state.claims].contains(&object);
-            if !held && state.claims < CLAIMS {
-                break;
+            let state = &mut *self.state;
+            match state.find_flight(object) {
+                Some(at) if ready(&state.flights[at]) => return at,
+                None if state.flights.len() < CLAIMS => {
+                    let flight = Flight {
+                        object,
+                        ..Default::default()
+                    };
+                    // Within the capacity reserved at mount: never fails.
+                    if state.flights.push_within_capacity(flight).is_ok() {
+                        return state.flights.len() - 1;
+                    }
+                }
+                _ => {}
             }
             self.volume.written.wait(&mut self.state);
         }
-        let claims = self.state.claims;
-        self.state.claimed[claims] = object;
-        self.state.claims += 1;
     }
 
-    pub(crate) fn unclaim(&mut self, object: u64) {
-        let state = &mut *self.state;
-        if let Some(at) = state.claimed[..state.claims].iter().position(|held| *held == object) {
-            state.claims -= 1;
-            state.claimed[at] = state.claimed[state.claims];
+    /// Become `object`'s writer: the one preparing and allocating a batch,
+    /// once fewer than `PIPELINE` are in flight.
+    pub(crate) fn claim_writer(&mut self, object: u64) {
+        let at = self.flight(object, |flight| {
+            !flight.writer && !flight.exclusive && flight.outstanding < PIPELINE
+        });
+        self.state.flights[at].writer = true;
+    }
+
+    /// Stop being `object`'s writer, its batch allocated or abandoned.
+    pub(crate) fn end_writer(&mut self, object: u64) {
+        if let Some(at) = self.state.find_flight(object) {
+            self.state.flights[at].writer = false;
+            self.state.drop_idle_flight(at);
         }
         self.volume.written.notify_all();
+    }
+
+    /// Hold `object` alone for a size change, with no write in flight.
+    pub(crate) fn claim_exclusive(&mut self, object: u64) {
+        let at = self.flight(object, |flight| {
+            !flight.writer && !flight.exclusive && flight.outstanding == 0
+        });
+        self.state.flights[at].exclusive = true;
+    }
+
+    pub(crate) fn end_exclusive(&mut self, object: u64) {
+        if let Some(at) = self.state.find_flight(object) {
+            self.state.flights[at].exclusive = false;
+            self.state.drop_idle_flight(at);
+        }
+        self.volume.written.notify_all();
+    }
+
+    /// Wait until the batch with `ticket` is next to record.
+    pub(crate) fn wait_turn(&mut self, object: u64, ticket: u64) {
+        while !self.state.is_turn(object, ticket) {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    /// Wait until no batch of `object` is in flight, so its record matches
+    /// its blocks on disk.
+    pub(crate) fn wait_recorded(&mut self, object: u64) {
+        while self.state.planned_size(object).is_some() {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    pub(crate) fn notify(&self) {
+        self.volume.written.notify_all();
+    }
+}
+
+impl State {
+    fn find_flight(&self, object: u64) -> Option<usize> {
+        self.flights.iter().position(|flight| flight.object == object)
+    }
+
+    fn drop_idle_flight(&mut self, at: usize) {
+        let flight = &self.flights[at];
+        if !flight.writer && !flight.exclusive && flight.outstanding == 0 && flight.parked_count == 0 {
+            let last = self.flights.len() - 1;
+            self.flights.swap(at, last);
+            self.flights.pop();
+        }
+    }
+
+    /// The size `object`'s batches in flight will leave recorded, if any.
+    pub(crate) fn planned_size(&self, object: u64) -> Option<u64> {
+        self.find_flight(object)
+            .map(|at| &self.flights[at])
+            .filter(|flight| flight.outstanding > 0)
+            .map(|flight| flight.planned)
+    }
+
+    /// Hand the writer's allocated batch, which records `size`, its ticket.
+    pub(crate) fn issue(&mut self, object: u64, size: u64) -> u64 {
+        let Some(at) = self.find_flight(object) else {
+            return 0;
+        };
+        let flight = &mut self.flights[at];
+        flight.outstanding += 1;
+        flight.planned = size;
+        flight.issued += 1;
+        flight.issued - 1
+    }
+
+    pub(crate) fn is_turn(&self, object: u64, ticket: u64) -> bool {
+        self.find_flight(object)
+            .is_some_and(|at| self.flights[at].recorded == ticket)
+    }
+
+    /// Note the batch whose turn it was recorded.
+    pub(crate) fn recorded(&mut self, object: u64) {
+        if let Some(at) = self.find_flight(object) {
+            self.flights[at].recorded += 1;
+            self.flights[at].outstanding = self.flights[at].outstanding.saturating_sub(1);
+            self.drop_idle_flight(at);
+        }
+    }
+
+    /// Keep a completed batch whose turn has not come, as `batch`, an
+    /// address, with its errno.
+    pub(crate) fn park(&mut self, object: u64, ticket: u64, batch: usize, errno: i32) {
+        if let Some(at) = self.find_flight(object) {
+            let flight = &mut self.flights[at];
+            // Fewer than `PIPELINE` wait: the batch whose turn it is has not
+            // completed.
+            if let Some(slot) = flight.parked.get_mut(flight.parked_count) {
+                *slot = (ticket, batch, errno);
+                flight.parked_count += 1;
+            }
+        }
+    }
+
+    /// The parked batch whose turn it is, if any.
+    pub(crate) fn take_parked(&mut self, object: u64) -> Option<(usize, i32)> {
+        let at = self.find_flight(object)?;
+        let flight = &mut self.flights[at];
+        let position = flight.parked[..flight.parked_count]
+            .iter()
+            .position(|(ticket, _, _)| *ticket == flight.recorded)?;
+        let (_, batch, errno) = flight.parked[position];
+        flight.parked_count -= 1;
+        flight.parked[position] = flight.parked[flight.parked_count];
+        Some((batch, errno))
     }
 }
 
@@ -409,6 +559,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         errno(error)
     })?;
+    let flights = KVec::with_capacity(CLAIMS, GFP_KERNEL)?;
     // SAFETY: Its work runs only once queued, after mounting.
     let background = unsafe { glue::carryfs_background_new(sb) };
     let volume = KBox::pin_init(
@@ -433,8 +584,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 writing: 0,
                 reading: 0,
                 committing: 0,
-                claimed: [0; CLAIMS],
-                claims: 0,
+                flights,
             }),
         }),
         GFP_KERNEL,

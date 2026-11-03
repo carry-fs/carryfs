@@ -322,10 +322,18 @@ impl<'a> Writer<'a> {
             // A smaller i_size is a truncate in progress, or one whose tail
             // rewrite failed: extents past it remain until truncate removes
             // them, so keep the stored size (fstests generic/476).
+            // Record no further than this batch's last unit: an appender's
+            // i_size past it ends in a unit not yet written, a hole, which
+            // the next batch would rewrite as a grown partial tail. So a
+            // stored partial tail is always a unit a batch wrote, the backed
+            // tail FORMAT.md section 5 rewrites on growth.
+            let end = units
+                .last()
+                .map_or(0, |unit| (unit.index + 1) * UNIT_BYTES as u64);
             let size = if truncate {
                 inode.size()
             } else {
-                inode.size().max(stored)
+                inode.size().min(end).max(stored)
             };
             if size > stored
                 && stored % UNIT_BYTES as u64 != 0

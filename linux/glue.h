@@ -20,6 +20,7 @@ void carryfs_free_volume(void *volume);
 void carryfs_stop_timer(struct super_block *sb);
 void carryfs_periodic_commit(struct super_block *sb);
 struct inode *carryfs_iget(struct super_block *sb, u64 ino, umode_t type);
+int carryfs_reserve_folio(struct inode *inode, u64 index);
 
 /* Implemented in glue.c. */
 int carryfs_register(void);
@@ -70,6 +71,9 @@ int carryfs_write_end(const struct kiocb *iocb, struct address_space *mapping, l
 		      unsigned int len, unsigned int copied, struct folio *folio, void *fsdata);
 struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index);
 void carryfs_folio_unlock_put(struct folio *folio);
+bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last);
+struct vm_area_desc;
+int carryfs_file_mmap_prepare(struct vm_area_desc *desc);
 void carryfs_folio_start_writeback(struct folio *folio);
 void carryfs_folio_redirty(struct writeback_control *wbc, struct folio *folio);
 void carryfs_mapping_error(struct address_space *mapping, int error);

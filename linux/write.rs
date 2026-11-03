@@ -24,18 +24,19 @@ use crate::namei::{mutate, now, read_record, set_time, set_u64, txn, write_recor
 use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::format::{
     checksum_slot, compact_group, set_checksum_slot, TreeKind, BLOCK_BYTES, CHECKSUM_GROUP_BYTES,
+    MAINTENANCE_RESERVE,
 };
 use crate::tree::{self, be_u64, le_u64, Tree};
 use crate::vfs::{Folio, Inode};
 use crate::volume::{self, State};
-use crate::{commit, errno};
+use crate::{commit, errno, reserve};
 
 /// Units one hold of the volume lock writes: 4 MiB, enough to keep a
 /// device busy between waits.
 const BATCH: usize = 64;
 const SECTORS_PER_BLOCK: u64 = (BLOCK_BYTES / 512) as u64;
-/// Free blocks a buffered write must leave, beyond what it allocates.
-const HEADROOM: u64 = crate::ondisk::format::MAINTENANCE_RESERVE + 8_192;
+/// Free blocks a new reservation, or a write without one, must leave.
+pub(crate) const HEADROOM: u64 = MAINTENANCE_RESERVE + 8_192;
 
 /// A unit being written: its content and the folios under writeback for it.
 struct Pending {
@@ -204,6 +205,18 @@ impl<'a> Writer<'a> {
                 break;
             }
         }
+        {
+            // Written or lost, these units' taken folios are clean now.
+            let units = &self.units;
+            volume::of(self.sb)
+                .lock()
+                .reservations
+                .release_clean(self.object, |unit| {
+                    units
+                        .binary_search_by_key(&unit, |pending| pending.index)
+                        .is_ok()
+                });
+        }
         let mut dirty = false;
         for unit in self.units.iter() {
             for folio in unit.folios.iter() {
@@ -225,13 +238,27 @@ impl<'a> Writer<'a> {
     fn publish(&mut self) -> Result {
         let (sb, object, inode, truncate) = (self.sb, self.object, self.inode, self.truncate);
         let units = &self.units;
+        // Dirty units reserved their blocks, so their writeback may use the
+        // reserve kept for metadata edits; a truncate's rewrite may not.
+        let spare = |state: &State, needed: u64| {
+            let free = reserve::available_to(state, object, units.iter().map(|unit| unit.index));
+            let reserved = state
+                .reservations
+                .held(object, units.iter().map(|unit| unit.index));
+            let keep = if reserved >= needed {
+                MAINTENANCE_RESERVE
+            } else {
+                HEADROOM
+            };
+            free >= needed + keep
+        };
         {
             // Retired data may still be reclaimable: commit to reclaim it,
             // as `write_begin` does, rather than fail writeback with ENOSPC.
             let size = inode.size();
             let needed: u64 = units.iter().map(|unit| unit_blocks(size, unit.index)).sum();
             let mut state = volume::of(sb).lock();
-            while state.free_blocks() < needed + HEADROOM && state.reclaim_pending {
+            while !spare(&state, needed) && state.reclaim_pending {
                 commit::commit(sb, &mut state)?;
             }
         }
@@ -260,7 +287,7 @@ impl<'a> Writer<'a> {
             for unit in units.iter() {
                 needed += unit_blocks(size, unit.index);
             }
-            if state.free_blocks() < needed + HEADROOM {
+            if !spare(state, needed) {
                 return Err(ENOSPC);
             }
             // Allocate and write every unit's blocks, then wait once. The
@@ -634,29 +661,38 @@ pub(crate) unsafe extern "C" fn write_begin(
     let inode = unsafe { glue::carryfs_mapping_host(mapping) };
     // SAFETY: As above.
     let sb = unsafe { (*inode).i_sb };
-    {
-        let mut state = volume::of(sb).lock();
-        if state.faulted {
-            return EIO.to_errno();
-        }
-        // Retired data may still be reclaimable: commit to reclaim it.
-        while state.free_blocks() < HEADROOM && state.reclaim_pending {
-            if let Err(error) = commit::commit(sb, &mut state) {
-                return error.to_errno();
-            }
-        }
-        if state.free_blocks() < HEADROOM {
-            return ENOSPC.to_errno();
-        }
-    }
     // SAFETY: As above.
     let host = unsafe { Inode::from_raw(inode) };
-    if pos as u64 > host.size() {
+    let size = host.size();
+    if pos as u64 > size {
         zero_past_eof(host);
     }
     // SAFETY: As above.
     let folio = unsafe { glue::carryfs_write_folio(mapping, pos) };
     if let Err(error) = kernel::error::from_err_ptr(folio) {
+        return error.to_errno();
+    }
+    // Reserve with the folio locked: until the write dirties it, the lock
+    // keeps writeback from releasing the reservation (reserve.rs).
+    let (unit, tail) = (pos as u64 / UNIT_BYTES as u64, size / UNIT_BYTES as u64);
+    let units = [unit, tail];
+    // Writing past a partial last unit rewrites that unit too (`add_tail`).
+    let units = if unit > tail && size % UNIT_BYTES as u64 != 0 {
+        &units[..]
+    } else {
+        &units[..1]
+    };
+    let reserved = {
+        let mut state = volume::of(sb).lock();
+        if state.faulted {
+            Err(EIO)
+        } else {
+            reserve::reserve(sb, &mut state, host, units)
+        }
+    };
+    if let Err(error) = reserved {
+        // SAFETY: Release what `carryfs_write_folio` took.
+        unsafe { glue::carryfs_folio_unlock_put(folio) };
         return error.to_errno();
     }
     // A partial write into a page not in the cache reads its old content.
@@ -732,6 +768,10 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
     // SAFETY: As above; drops pages past a smaller size and zeroes the
     // partial last page.
     unsafe { bindings::truncate_setsize(inode.as_ptr(), size as i64) };
+    volume::of(sb)
+        .lock()
+        .reservations
+        .release_from(object, size.div_ceil(UNIT_BYTES as u64));
     let tail = (size % UNIT_BYTES as u64 != 0).then_some(size / UNIT_BYTES as u64);
     if size < old {
         // Shrink in unit-aligned steps from the end, each a consistent state.

@@ -196,6 +196,13 @@ pub(crate) unsafe extern "C" fn evict_inode(raw: *mut bindings::inode) {
         dir::forget(inode);
     }
     let sb = inode.super_block();
+    if !inode.is_dir() {
+        // Its pages are gone, dirty ones too.
+        sb.volume()
+            .lock()
+            .reservations
+            .release_from(inode.object(), 0);
+    }
     if inode.unlinked() && sb.volume().writable {
         if let Err(error) = namei::remove_object(sb.as_ptr(), inode.object()) {
             pr_err!("cannot remove object {}: {:?}\n", inode.object(), error);

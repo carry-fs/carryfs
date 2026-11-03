@@ -226,7 +226,7 @@ fn create_object(
         if read_entry(sb, state, &key)?.is_some() {
             return Err(EEXIST);
         }
-        if state.free_blocks() < HEADROOM {
+        if crate::reserve::available(state) < HEADROOM {
             return Err(ENOSPC);
         }
         let object = txn(state).next_object;

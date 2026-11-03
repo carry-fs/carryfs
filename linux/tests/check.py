@@ -10,10 +10,12 @@ temporary directory on loop devices.
 
 import argparse
 import errno
+import hashlib
 import itertools
 import os
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -28,6 +30,9 @@ def run(*args, **kwargs):
 class Volume:
     """A fresh image, mounted through the kernel driver while in use."""
 
+    # Volumes still mounted, which a failed check leaves for `main`.
+    mounted = set()
+
     def __init__(self, cli, work, name, mib):
         self.cli, self.image, self.point = cli, work / f"{name}.img", work / f"mnt-{name}"
         self.point.mkdir(exist_ok=True)
@@ -38,10 +43,12 @@ class Volume:
         self.loop = subprocess.check_output(["losetup", "-f", "--show", self.image], text=True).strip()
         # -i: an installed mount.carryfs helper would mount through FUSE.
         run("mount", "-i", "-t", "carryfs", "-o", mode, self.loop, self.point)
+        Volume.mounted.add(self)
         return self.point
 
     def unmount(self):
         run("umount", self.point)
+        Volume.mounted.discard(self)
         run("losetup", "-d", self.loop)
         backing = Path("/sys/block") / Path(self.loop).name / "loop/backing_file"
         while backing.exists():
@@ -234,20 +241,68 @@ def reclaim(volume):
     print(f"  reclaim: {used} blocks in use after 12 rewrites of 1954, 300 MiB delete drained; {volume.check()}")
 
 
-def fill(path, chunk, once=False):
-    """Append synced chunks to `path` until one fails with ENOSPC, or write
-    one chunk if `once`; whether every chunk fit."""
-    with open(path, "ab") as f:
+def fill(path, chunk):
+    """Append synced chunks to `path` until one fails with ENOSPC.
+    Unbuffered, so a failed chunk is not retried at close."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
         while True:
             try:
-                f.write(os.urandom(chunk))
-                f.flush()
-                os.fsync(f.fileno())
+                if os.write(fd, os.urandom(chunk)) < chunk:
+                    return
+                os.fsync(fd)
             except OSError as error:
                 assert error.errno == errno.ENOSPC, error
-                return False
-            if once:
-                return True
+                return
+    finally:
+        os.close(fd)
+
+
+def full_write(volume):
+    """Writes to a full volume fail with ENOSPC instead of being accepted
+    and lost at writeback; dirtied units' space reservations all return."""
+    root = volume.mount()
+    (root / "mapped").write_bytes(os.urandom(65536))
+    os.sync()
+    start = os.statvfs(root).f_bavail
+    digest, written = hashlib.sha256(), 0
+    fd = os.open(root / "fill", os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        while True:
+            chunk = os.urandom(1 << 20)
+            count = os.write(fd, chunk)
+            digest.update(chunk[:count])
+            written += count
+            assert written <= start * 4096, "writes accepted past the free space"
+    except OSError as error:
+        assert error.errno == errno.ENOSPC, error
+    # Every accepted byte had space reserved, so writeback finds it.
+    os.fsync(fd)
+    os.close(fd)
+    assert written > start * 4096 // 2, f"only {written} bytes fit"
+    # A shared mapping dirtying a clean unit needs space too: SIGBUS.
+    mapped = subprocess.run([sys.executable, "-c", (
+        "import mmap, sys\n"
+        "with open(sys.argv[1], 'r+b') as f:\n"
+        "    m = mmap.mmap(f.fileno(), 0)\n"
+        "    m[0] = 1\n"
+    ), root / "mapped"])
+    assert mapped.returncode == -signal.SIGBUS, mapped.returncode
+    volume.unmount()
+    root = volume.mount("ro")
+    data = (root / "fill").read_bytes()
+    assert len(data) == written and hashlib.sha256(data).digest() == digest.digest()
+    volume.unmount()
+    root = volume.mount()
+    os.unlink(root / "fill")
+    os.sync()
+    deadline = time.monotonic() + 60
+    while os.statvfs(root).f_bavail < start - 64:
+        assert time.monotonic() < deadline, f"{start - os.statvfs(root).f_bavail} blocks not returned"
+        os.sync()
+        time.sleep(1)
+    volume.unmount()
+    print(f"  full write: {written >> 20} MiB accepted and kept; {volume.check()}")
 
 
 def full_truncate(volume):
@@ -258,12 +313,14 @@ def full_truncate(volume):
     path = root / "file"
     path.write_bytes(os.urandom(2 * 65536))
     os.sync()
-    # Fill until even a one-block file fails. Each chunk is synced: buffered
-    # writes reserve no space, so the error comes from writeback.
+    # Fill with data, then with empty files, which may use the 8,192 blocks
+    # of headroom data writes leave (write.rs HEADROOM), until the 9 blocks
+    # of the tail unit's rewrite no longer fit.
     fill(root / "filler", 1 << 20)
     for i in itertools.count():
-        if not fill(root / f"pad{i}", 4096, once=True):
+        if os.statvfs(root).f_bavail < 8192 + 9:
             break
+        (root / f"empty{i}").touch()
     try:
         os.truncate(path, 100_000)
         raise AssertionError("truncate had space for its tail rewrite")
@@ -309,20 +366,30 @@ def main():
     if not module_loaded():
         sys.exit("load the module first: make build && insmod carryfs.ko")
     with tempfile.TemporaryDirectory(prefix="carryfs-kernel-") as directory:
-        work = Path(directory)
-        print("namespace")
-        namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
-        print("listings")
-        listings(Volume(args.cli, work, "listings", 512))
-        print("data")
-        data(Volume(args.cli, work, "data", 512), work)
-        print("reclaim")
-        reclaim(Volume(args.cli, work, "reclaim", 512))
-        print("full truncate")
-        full_truncate(Volume(args.cli, work, "full-truncate", 512))
-        print("orphan")
-        orphan(Volume(args.cli, work, "orphan", 512), work)
+        try:
+            checks(args, Path(directory))
+        finally:
+            # A failed check leaves its volume mounted.
+            for volume in list(Volume.mounted):
+                volume.unmount()
     print("all checks passed")
+
+
+def checks(args, work):
+    print("namespace")
+    namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
+    print("listings")
+    listings(Volume(args.cli, work, "listings", 512))
+    print("data")
+    data(Volume(args.cli, work, "data", 512), work)
+    print("reclaim")
+    reclaim(Volume(args.cli, work, "reclaim", 512))
+    print("full write")
+    full_write(Volume(args.cli, work, "full-write", 512))
+    print("full truncate")
+    full_truncate(Volume(args.cli, work, "full-truncate", 512))
+    print("orphan")
+    orphan(Volume(args.cli, work, "orphan", 512), work)
 
 
 def module_loaded():

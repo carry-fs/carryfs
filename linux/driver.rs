@@ -27,6 +27,7 @@ mod glue;
 mod inode;
 mod namei;
 mod names;
+mod reserve;
 mod space;
 mod tree;
 mod vfs;

@@ -111,6 +111,12 @@ unsafe extern "C" {
         index: u64,
     ) -> *mut folio;
     pub(crate) fn carryfs_folio_unlock_put(folio: *mut folio);
+    pub(crate) fn carryfs_range_busy(
+        mapping: *mut kernel::bindings::address_space,
+        first: u64,
+        last: u64,
+    ) -> bool;
+    pub(crate) fn carryfs_file_mmap_prepare(desc: *mut kernel::bindings::vm_area_desc) -> c_int;
     pub(crate) fn carryfs_folio_start_writeback(folio: *mut folio);
     pub(crate) fn carryfs_folio_redirty(
         wbc: *mut kernel::bindings::writeback_control,

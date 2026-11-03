@@ -15,6 +15,7 @@
 #include <linux/fs_parser.h>
 #include <linux/highmem.h>
 #include <linux/iversion.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
@@ -541,6 +542,76 @@ struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index)
 		return NULL;
 	}
 	return folio;
+}
+
+/*
+ * Whether a folio of @mapping in [@first, @last] is dirty, or locked: a
+ * write holds its folio locked from reserving space until dirtying it.
+ */
+bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last)
+{
+	XA_STATE(xas, &mapping->i_pages, first);
+	struct folio *folio;
+	bool busy = false;
+
+	rcu_read_lock();
+	xas_for_each(&xas, folio, last) {
+		if (xas_retry(&xas, folio) || xa_is_value(folio))
+			continue;
+		if (folio_test_dirty(folio) || folio_test_locked(folio)) {
+			busy = true;
+			break;
+		}
+	}
+	rcu_read_unlock();
+	return busy;
+}
+
+/*
+ * filemap_page_mkwrite() from mm/filemap.c, reserving space for the folio's
+ * unit while it is locked, before a shared mapping dirties it.
+ */
+static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
+{
+	struct address_space *mapping = vmf->vma->vm_file->f_mapping;
+	struct folio *folio = page_folio(vmf->page);
+	vm_fault_t ret = VM_FAULT_LOCKED;
+	int error;
+
+	sb_start_pagefault(mapping->host->i_sb);
+	file_update_time(vmf->vma->vm_file);
+	folio_lock(folio);
+	if (folio->mapping != mapping) {
+		folio_unlock(folio);
+		ret = VM_FAULT_NOPAGE;
+		goto out;
+	}
+	error = carryfs_reserve_folio(mapping->host, folio->index);
+	if (error) {
+		folio_unlock(folio);
+		ret = vmf_error(error);
+		goto out;
+	}
+	folio_mark_dirty(folio);
+	folio_wait_stable(folio);
+out:
+	sb_end_pagefault(mapping->host->i_sb);
+	return ret;
+}
+
+static const struct vm_operations_struct carryfs_file_vm_ops = {
+	.fault = filemap_fault,
+	.map_pages = filemap_map_pages,
+	.page_mkwrite = carryfs_page_mkwrite,
+};
+
+int carryfs_file_mmap_prepare(struct vm_area_desc *desc)
+{
+	int error = generic_file_mmap_prepare(desc);
+
+	if (!error)
+		desc->vm_ops = &carryfs_file_vm_ops;
+	return error;
 }
 
 void carryfs_folio_unlock_put(struct folio *folio)

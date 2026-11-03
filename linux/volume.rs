@@ -52,6 +52,8 @@ pub(crate) struct State {
     pub(crate) timer: usize,
     /// Retired data may be reclaimable by a later commit.
     pub(crate) reclaim_pending: bool,
+    /// Space held for dirty page-cache units.
+    pub(crate) reservations: crate::reserve::Reservations,
 }
 
 impl State {
@@ -251,6 +253,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 hint: 0,
                 timer: 0,
                 reclaim_pending: true,
+                reservations: Default::default(),
             }),
         }),
         GFP_KERNEL,
@@ -314,9 +317,10 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
 unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::kstatfs) -> c_int {
     // SAFETY: The VFS passes a live dentry of this filesystem.
     let sb = unsafe { SuperBlock::from_raw((*dentry).d_sb) };
+    // Space reserved for dirty data is not free to anyone else.
     let (root, free) = {
         let state = sb.volume().lock();
-        (state.root, state.free_blocks())
+        (state.root, crate::reserve::available(&state))
     };
     let fsid = root.uuid;
     let word = |offset: usize| {

@@ -579,6 +579,32 @@ wait:
 	return error;
 }
 
+/*
+ * A regular file's i_private holds the unit it last reserved, plus one,
+ * so that writes into a unit already reserved skip the volume lock. Every
+ * release of the file's reservations clears it before testing whether a
+ * unit is busy; a write tests it after locking its folio, which makes the
+ * unit busy. With a full barrier on each side, either the release sees
+ * the locked folio and keeps the unit, or the write sees the cleared hint
+ * and takes the lock.
+ */
+bool carryfs_reserved_hint(struct inode *inode, u64 unit)
+{
+	smp_mb();
+	return (unsigned long)READ_ONCE(inode->i_private) == unit + 1;
+}
+
+void carryfs_set_reserved_hint(struct inode *inode, u64 unit)
+{
+	WRITE_ONCE(inode->i_private, (void *)(unsigned long)(unit + 1));
+}
+
+void carryfs_clear_reserved_hint(struct address_space *mapping)
+{
+	WRITE_ONCE(mapping->host->i_private, NULL);
+	smp_mb();
+}
+
 /* A durable cache flush: earlier writes reach media before later ones. */
 int carryfs_flush(struct super_block *sb)
 {

@@ -828,12 +828,25 @@ pub(crate) unsafe extern "C" fn write_begin(
         } else {
             &units[..1]
         };
-        let reserved = {
+        // A write into the unit this file last reserved, still held, skips
+        // the volume lock (glue.c's reserved hint).
+        // SAFETY: The folio is locked, which keeps a held unit's reservation.
+        let hinted = units.len() == 1
+            && !volume::of(sb).faulted()
+            && unsafe { glue::carryfs_reserved_hint(inode, unit) };
+        let reserved = if hinted {
+            Ok(())
+        } else {
             let mut state = volume::of(sb).lock();
             if state.faulted {
                 Err(EIO)
             } else {
-                reserve::reserve(sb, &mut state, host, units)
+                reserve::reserve(sb, &mut state, host, units).inspect(|()| {
+                    if units.len() == 1 {
+                        // SAFETY: Under the volume lock, which releases take.
+                        unsafe { glue::carryfs_set_reserved_hint(inode, unit) };
+                    }
+                })
             }
         };
         match reserved {

@@ -67,7 +67,7 @@ pub(crate) fn settle(sb: *mut super_block, state: &mut State) -> Result {
         return Ok(());
     }
     let root = state.root;
-    write_root(sb, &root, root_b(&root)).inspect_err(|_| state.faulted = true)?;
+    write_root(sb, &root, root_b(&root)).inspect_err(|_| crate::volume::fault(sb, state))?;
     state.mirror_pending = false;
     Ok(())
 }
@@ -213,7 +213,7 @@ fn commit_quiesced(sb: *mut super_block, state: &mut State) -> Result {
         Ok(()) => Ok(()),
         Err(error) => {
             pr_err!("publication failed; the volume is read-only until remounted\n");
-            state.faulted = true;
+            crate::volume::fault(sb, state);
             Err(error)
         }
     }

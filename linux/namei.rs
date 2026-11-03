@@ -128,7 +128,7 @@ pub(crate) fn edit<T>(
     let result = f(state, &disk);
     if result.is_err() && state.txn.as_ref().map_or(0, |txn| txn.edits) != before {
         pr_err!("a change failed part-way; the volume is read-only until remounted\n");
-        state.faulted = true;
+        volume::fault(sb, state);
     }
     result
 }

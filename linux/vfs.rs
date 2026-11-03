@@ -156,7 +156,8 @@ impl Inode {
 
     /// `i_private`, where a directory keeps its listing (dir.rs), as an
     /// address: the kernel's atomics have no pointer type in Linux 7.0.
-    /// This driver uses the field only atomically.
+    /// This driver uses the field only atomically; a regular file's holds
+    /// glue.c's reserved hint instead.
     fn private(&self) -> &Atomic<usize> {
         // SAFETY: The inode is referenced, so the field outlives the borrow,
         // every access to it goes through this view, and a pointer has the

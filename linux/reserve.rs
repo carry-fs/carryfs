@@ -90,6 +90,13 @@ impl Reservations {
         };
         let entry = &mut self.entries[at];
         let mapping = entry.mapping;
+        // Before testing which units are busy (glue.c's reserved hint).
+        // SAFETY: An inode holding reservations is live, and so is its mapping.
+        unsafe {
+            glue::carryfs_clear_reserved_hint(
+                core::ptr::with_exposed_provenance_mut::<bindings::address_space>(mapping),
+            )
+        };
         let before = entry.units.len();
         entry.units.retain(|unit| keep(mapping, *unit));
         self.blocks -= (before - entry.units.len()) as u64 * UNIT_BLOCKS;

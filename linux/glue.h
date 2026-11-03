@@ -53,6 +53,9 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
 int carryfs_flush(struct super_block *sb);
 int carryfs_write_dirty_inodes(struct super_block *sb);
 int carryfs_file_release(struct inode *inode, struct file *file);
+bool carryfs_reserved_hint(struct inode *inode, u64 unit);
+void carryfs_set_reserved_hint(struct inode *inode, u64 unit);
+void carryfs_clear_reserved_hint(struct address_space *mapping);
 void *carryfs_timer_start(struct super_block *sb);
 void carryfs_timer_stop(void *timer);
 unsigned int carryfs_nofs_save(void);

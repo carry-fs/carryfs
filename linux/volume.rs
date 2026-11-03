@@ -11,6 +11,7 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
+use kernel::sync::atomic::{Acquire, Atomic, Release};
 use kernel::sync::{new_condvar, new_mutex, CondVar, Mutex, MutexGuard};
 
 use crate::edit::Txn;
@@ -122,6 +123,8 @@ pub(crate) struct Volume {
     /// The mount's background work, from glue.c: catalog prefetch, and
     /// writeback started at close. Stopped by `kill_sb`.
     background: usize,
+    /// Set with `State::faulted`, for writes that skip the lock.
+    fault_seen: Atomic<u32>,
     /// Signalled when `State::writing`, `reading`, or `committing` drops.
     #[pin]
     written: CondVar,
@@ -246,6 +249,20 @@ impl DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut State {
         &mut self.state
     }
+}
+
+impl Volume {
+    /// Whether the volume faulted, without the lock.
+    pub(crate) fn faulted(&self) -> bool {
+        self.fault_seen.load(Acquire) != 0
+    }
+}
+
+/// Fault the volume: FORMAT.md section 3 allows no further mutation until
+/// remount.
+pub(crate) fn fault(sb: *mut bindings::super_block, state: &mut State) {
+    state.faulted = true;
+    of(sb).fault_seen.store(1, Release);
 }
 
 /// The volume of a mounted super block.
@@ -402,6 +419,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
             writeback <- new_mutex!(()),
             background: background as usize,
             written <- new_condvar!(),
+            fault_seen: Atomic::new(0),
             state <- new_mutex!(State {
                 root,
                 txn: None,

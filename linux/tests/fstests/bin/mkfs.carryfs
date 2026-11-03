@@ -1,6 +1,5 @@
 #!/bin/sh
-# mkfs(8) helper for fstests: clear any earlier format, then format.
-
-device=$(for arg in "$@"; do last=$arg; done; echo "$last")
-"$CARRYFS_BIN/carryfs-fuse" mkfs --wipe "$device" >/dev/null 2>&1 || true
-exec "$CARRYFS_BIN/carryfs-fuse" mkfs "$device"
+# mkfs(8) helper for fstests. Options pass through: local.config sets
+# MKFS_OPTIONS=-f, as fstests passes -f to mkfs.xfs, and generic/740 runs
+# without it to check that mkfs refuses another file system.
+exec "$CARRYFS_BIN/carryfs-fuse" mkfs "$@"

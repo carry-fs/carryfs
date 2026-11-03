@@ -201,14 +201,18 @@ impl<'a> Writer<'a> {
                 break;
             }
         }
+        let mut dirty = false;
         for unit in self.units.iter() {
             for folio in unit.folios.iter() {
+                dirty = true;
                 // SAFETY: `add_folio` started this folio's writeback.
                 unsafe { bindings::folio_end_writeback(*folio) };
             }
         }
         self.units.clear();
-        if let Err(error) = result {
+        // Only lost dirty folios are the mapping's error, for a later fsync;
+        // truncate's tail rewrite has none and reports to its caller.
+        if let (Err(error), true) = (result, dirty) {
             // SAFETY: The mapping belongs to a referenced inode.
             unsafe { glue::carryfs_mapping_error(self.mapping, error.to_errno()) };
         }

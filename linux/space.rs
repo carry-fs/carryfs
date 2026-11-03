@@ -206,19 +206,21 @@ impl Txn {
     }
 
     /// Reclaim retired data from generations both roots already hold,
-    /// removing the records and clearing the blocks' bits; whether a full
-    /// batch was taken, so that more may remain.
+    /// removing the records and clearing the blocks' bits; whether the batch
+    /// filled, so that more may remain.
     ///
     /// FORMAT.md section 6 sets an initial batch of 64 records and 1,024
-    /// blocks. Bitmaps live in memory here, so a batch takes 64 records of
-    /// up to `RECLAIM_BLOCKS`: rewrites retire faster than 1,024 blocks a
-    /// commit would return.
+    /// blocks. Bitmaps live in memory here, so a batch takes 64 records and
+    /// `RECLAIM_BLOCKS`: rewrites retire faster than 1,024 blocks a commit
+    /// would return. A record past the block budget is split: its prefix is
+    /// reclaimed and the rest stays, so a range of any size drains.
     pub(crate) fn reclaim(
         &mut self,
         disk: &Disk,
         committed_cleanup: crate::ondisk::format::TreeRef,
     ) -> Result<bool> {
-        let mut records: KVec<([u8; 17], u64, u64)> = KVec::new();
+        // Key, first block, block count, and blocks to reclaim now.
+        let mut records: KVec<([u8; 17], u64, u64, u64)> = KVec::new();
         let mut blocks = 0;
         let tree = Tree {
             sb: disk.sb,
@@ -230,32 +232,44 @@ impl Txn {
             drafts: &[],
         };
         tree.scan(&[1], &mut |key, value| {
-            if key.first() != Some(&1) || key.len() != 17 || records.len() == 64 {
+            if key.first() != Some(&1) || key.len() != 17 {
                 return Ok(false);
             }
-            let generation = crate::tree::be_u64(key, 1);
+            if crate::tree::be_u64(key, 1) > disk.generation {
+                return Ok(false);
+            }
+            if records.len() == 64 || blocks == RECLAIM_BLOCKS {
+                return Ok(false);
+            }
             let count = value
                 .get(..4)
                 .and_then(|bytes| bytes.try_into().ok())
                 .map_or(0, |bytes| u64::from(u32::from_le_bytes(bytes)));
-            if generation > disk.generation || blocks + count > RECLAIM_BLOCKS {
-                return Ok(false);
-            }
+            let take = count.min(RECLAIM_BLOCKS - blocks);
             let mut copy = [0u8; 17];
             copy.copy_from_slice(key);
-            records.push((copy, crate::tree::be_u64(key, 9), count), GFP_KERNEL)?;
-            blocks += count;
+            records.push((copy, crate::tree::be_u64(key, 9), count, take), GFP_KERNEL)?;
+            blocks += take;
             Ok(true)
         })?;
-        for (key, first, count) in records.iter() {
+        for (key, first, count, take) in records.iter() {
             self.delete(disk, TreeKind::Cleanup, key)?;
-            for block in *first..*first + *count {
+            if take < count {
+                let mut rest = *key;
+                rest[9..].copy_from_slice(&(first + take).to_be_bytes());
+                let mut value = [0u8; 8];
+                value[..4].copy_from_slice(&((count - take) as u32).to_le_bytes());
+                self.put(disk, TreeKind::Cleanup, &rest, &value)?;
+            }
+            for block in *first..*first + *take {
                 let group = self.group(disk, block / ALLOCATION_GROUP_BLOCKS)?;
                 set_bit(&mut self.groups[group].current, block, false);
             }
-            self.reclaimed += count;
+            self.reclaimed += take;
         }
-        Ok(records.len() == 64)
+        // A filled batch may have split the last record, so it says nothing
+        // of what follows: report more, at worst one empty pass.
+        Ok(records.len() == 64 || blocks == RECLAIM_BLOCKS)
     }
 
     /// Free blocks once this transaction commits, counting its live drafts.

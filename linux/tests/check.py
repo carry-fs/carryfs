@@ -215,9 +215,21 @@ def reclaim(volume):
         os.sync()
     time.sleep(6)
     used = before - os.statvfs(root).f_bfree
-    volume.unmount()
     assert used < 2 * 8_000_000 // 4096, f"{used} blocks still used"
-    print(f"  reclaim: {used} blocks in use after 12 rewrites of 1954; {volume.check()}")
+    # A deleted file retires one range larger than a reclaim batch (65,536
+    # blocks); it must drain too, not stall all reclaim behind it.
+    with open(root / "big", "wb") as f:
+        for _ in range(300):
+            f.write(os.urandom(1 << 20))
+    os.sync()
+    os.unlink(root / "big")
+    os.sync()
+    deadline = time.monotonic() + 60
+    while before - os.statvfs(root).f_bfree > 2 * 8_000_000 // 4096:
+        assert time.monotonic() < deadline, f"{before - os.statvfs(root).f_bfree} blocks still used"
+        time.sleep(1)
+    volume.unmount()
+    print(f"  reclaim: {used} blocks in use after 12 rewrites of 1954, 300 MiB delete drained; {volume.check()}")
 
 
 def orphan(volume, work):

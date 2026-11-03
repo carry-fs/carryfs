@@ -218,6 +218,16 @@ impl<'a> Writer<'a> {
     fn publish(&mut self) -> Result {
         let (sb, object, inode) = (self.sb, self.object, self.inode);
         let units = &self.units;
+        {
+            // Retired data may still be reclaimable: commit to reclaim it,
+            // as `write_begin` does, rather than fail writeback with ENOSPC.
+            let size = inode.size();
+            let needed: u64 = units.iter().map(|unit| unit_blocks(size, unit.index)).sum();
+            let mut state = volume::of(sb).lock();
+            while state.free_blocks() < needed + HEADROOM && state.reclaim_pending {
+                commit::commit(sb, &mut state)?;
+            }
+        }
         mutate(sb, |state, disk| {
             let size = inode.size();
             let mut record = read_record(sb, state, object)?;
@@ -622,6 +632,11 @@ pub(crate) unsafe extern "C" fn write_begin(
         }
     }
     // SAFETY: As above.
+    let host = unsafe { Inode::from_raw(inode) };
+    if pos as u64 > host.size() {
+        zero_past_eof(host);
+    }
+    // SAFETY: As above.
     let folio = unsafe { glue::carryfs_write_folio(mapping, pos) };
     if let Err(error) = kernel::error::from_err_ptr(folio) {
         return error.to_errno();
@@ -643,6 +658,27 @@ pub(crate) unsafe extern "C" fn write_begin(
     // SAFETY: The VFS passes where to return the folio.
     unsafe { *foliop = folio };
     0
+}
+
+/// Zero the cached last page past the size, before the size grows over it:
+/// a shared mapping may have written there (fstests generic/363). The disk
+/// needs nothing, as reads stop at a unit's valid length.
+fn zero_past_eof(inode: &Inode) {
+    let size = inode.size();
+    let offset = (size % BLOCK_BYTES as u64) as usize;
+    if offset == 0 {
+        return;
+    }
+    // SAFETY: The mapping belongs to a referenced inode.
+    let folio = unsafe { glue::carryfs_cached_folio(inode.mapping(), size / BLOCK_BYTES as u64) };
+    if folio.is_null() {
+        return;
+    }
+    // SAFETY: `carryfs_cached_folio` returned it locked and referenced.
+    unsafe {
+        Folio::from_raw(folio).with_bytes(|bytes| bytes[offset..].fill(0));
+        glue::carryfs_folio_unlock_put(folio);
+    }
 }
 
 /// Change a regular file's size under the inode lock, as truncate and

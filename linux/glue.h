@@ -92,6 +92,7 @@ struct vm_area_desc;
 int carryfs_file_mmap_prepare(struct vm_area_desc *desc);
 void carryfs_folio_start_writeback(struct folio *folio);
 void carryfs_folio_redirty(struct writeback_control *wbc, struct folio *folio);
+bool carryfs_wbc_background(struct writeback_control *wbc);
 void carryfs_mapping_error(struct address_space *mapping, int error);
 loff_t carryfs_i_size_read(struct inode *inode);
 struct inode *carryfs_mapping_host(struct address_space *mapping);

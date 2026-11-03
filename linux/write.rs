@@ -850,6 +850,8 @@ pub(crate) unsafe extern "C" fn writepages(
     let _writeback = inode.super_block().volume().writeback.lock();
     let mut writer = Writer::new(inode);
     writer.asynchronous = true;
+    // SAFETY: The VFS passes a valid writeback control.
+    let background = unsafe { glue::carryfs_wbc_background(wbc) };
     let mut error: c_int = 0;
     let mut folio = core::ptr::null_mut();
     loop {
@@ -861,6 +863,19 @@ pub(crate) unsafe extern "C" fn writepages(
         // SAFETY: As above.
         let locked = unsafe { Folio::from_raw(folio) };
         let unit = locked.pos() / BLOCK_BYTES as u64 / UNIT_BLOCKS;
+        // Background writeback, which runs while a writer appends, leaves the
+        // partial unit at EOF dirty: written now, it would be written again
+        // whole once the append fills it. Sync, close-time, and periodic
+        // writeback write it.
+        let size = inode.size();
+        if background && size % UNIT_BYTES as u64 != 0 && unit == size / UNIT_BYTES as u64 {
+            // SAFETY: The folio is still locked; leave it dirty for later.
+            unsafe {
+                glue::carryfs_folio_redirty(wbc, folio);
+                bindings::folio_unlock(folio);
+            }
+            continue;
+        }
         if writer.units.last().is_some_and(|last| last.index != unit) && writer.units.len() == BATCH
         {
             // The folio may lie in the stored tail unit, which `flush` adds.

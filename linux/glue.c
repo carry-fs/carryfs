@@ -911,6 +911,11 @@ void carryfs_folio_redirty(struct writeback_control *wbc, struct folio *folio)
 	folio_redirty_for_writepage(wbc, folio);
 }
 
+bool carryfs_wbc_background(struct writeback_control *wbc)
+{
+	return wbc->for_background;
+}
+
 void carryfs_mapping_error(struct address_space *mapping, int error)
 {
 	mapping_set_error(mapping, error);

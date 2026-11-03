@@ -140,6 +140,7 @@ unsafe extern "C" {
         wbc: *mut kernel::bindings::writeback_control,
         folio: *mut folio,
     );
+    pub(crate) fn carryfs_wbc_background(wbc: *mut kernel::bindings::writeback_control) -> bool;
     pub(crate) fn carryfs_mapping_error(
         mapping: *mut kernel::bindings::address_space,
         error: c_int,

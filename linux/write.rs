@@ -141,8 +141,10 @@ impl<'a> Writer<'a> {
     }
 
     /// Fill each unit's missing pages: uptodate page-cache pages first, then
-    /// the old unit, read and verified, then zeros.
-    fn fill(&mut self) -> Result {
+    /// the old unit, read and verified, then zeros. `held` is the block of a
+    /// folio the caller holds locked, which is still dirty: it is filled from
+    /// the old unit, and written with its own unit later.
+    fn fill(&mut self, held: Option<u64>) -> Result {
         let source_size = {
             let state = volume::of(self.sb).lock();
             record_size(&read_record(self.sb, &state, self.object)?)
@@ -154,8 +156,12 @@ impl<'a> Writer<'a> {
                     continue;
                 }
                 let block = unit.index * UNIT_BLOCKS + slot as u64;
-                // SAFETY: The mapping belongs to a referenced inode.
-                let folio = unsafe { glue::carryfs_cached_folio(self.mapping, block) };
+                let folio = if held == Some(block) {
+                    core::ptr::null_mut()
+                } else {
+                    // SAFETY: The mapping belongs to a referenced inode.
+                    unsafe { glue::carryfs_cached_folio(self.mapping, block) }
+                };
                 if !folio.is_null() {
                     // SAFETY: `carryfs_cached_folio` returned it locked.
                     copy_folio(unsafe { Folio::from_raw(folio) }, &unit.pages[slot]);
@@ -178,8 +184,9 @@ impl<'a> Writer<'a> {
     }
 
     /// Write the collected units and record them, then end their folios'
-    /// writeback. Returns the error to report on the mapping, if any.
-    fn flush(&mut self) -> Result {
+    /// writeback. Returns the error to report on the mapping, if any. `held`
+    /// is as for `fill`.
+    fn flush(&mut self, held: Option<u64>) -> Result {
         if self.units.is_empty() {
             return Ok(());
         }
@@ -188,7 +195,7 @@ impl<'a> Writer<'a> {
         for _ in 0..3 {
             result = self
                 .add_tail()
-                .and_then(|()| self.fill())
+                .and_then(|()| self.fill(held))
                 .and_then(|()| self.publish());
             if result != Err(EAGAIN) {
                 break;
@@ -566,7 +573,9 @@ pub(crate) unsafe extern "C" fn writepages(
         let unit = locked.pos() / BLOCK_BYTES as u64 / UNIT_BLOCKS;
         if writer.units.last().is_some_and(|last| last.index != unit) && writer.units.len() == BATCH
         {
-            if let Err(failure) = writer.flush() {
+            // The folio may lie in the stored tail unit, which `flush` adds.
+            let held = locked.pos() / BLOCK_BYTES as u64;
+            if let Err(failure) = writer.flush(Some(held)) {
                 error = failure.to_errno();
             }
         }
@@ -579,7 +588,7 @@ pub(crate) unsafe extern "C" fn writepages(
             error = failure.to_errno();
         }
     }
-    if let Err(failure) = writer.flush() {
+    if let Err(failure) = writer.flush(None) {
         error = failure.to_errno();
     }
     error
@@ -678,7 +687,7 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
     if let Some(unit) = rewrite {
         let mut writer = Writer::new(inode);
         writer.pending(unit)?;
-        return writer.flush();
+        return writer.flush(None);
     }
     mutate(sb, |state, disk| {
         let mut record = read_record(sb, state, object)?;

@@ -184,6 +184,20 @@ def data(volume, work):
     both("size-1048699", lambda p: os.truncate(p, 200_000))
     both("size-131072", lambda p: os.truncate(p, 70_001))
     both("size-65537", lambda p: os.truncate(p, 300_000))
+    # A writeback batch of 64 units that ends right before the stored
+    # partial tail unit, which the rewrite grows. This used to hang
+    # writeback (fstests generic/551).
+    unit = 65536
+    first, second = os.urandom(64 * unit + unit // 2), os.urandom(66 * unit)
+
+    def batch_tail(path):
+        path.write_bytes(first)
+        os.sync()
+        with open(path, "r+b") as f:
+            f.write(second)
+            os.fsync(f.fileno())
+
+    both("batch-tail", batch_tail)
     volume.unmount()
     print(f"  data: {volume.check(scrub=True)}")
     root = volume.mount("ro")

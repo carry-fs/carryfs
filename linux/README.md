@@ -133,11 +133,19 @@ and a transaction of 3,072 drafts commit.
 
 Writeback copies each dirty unit whole, filling clean pages from the page
 cache or the verified old unit, writes it to new blocks, and replaces the
-unit's extents and checksum. It holds the volume lock to allocate and to
-record the units, but not while the data is written; commits wait for
-writes in between, so no publication sees blocks allocated but unowned.
-A write that finds no space writes back dirty data and retries once, as
-btrfs flushes delalloc and ext4 retries allocation before ENOSPC.
+unit's extents and checksum. It holds the volume lock to allocate the
+units' blocks, submits their writes, and returns; a workqueue records the
+units and ends their folios' writeback once the writes complete, as iomap
+completes ioends. Commits wait for writes in flight, so no publication
+sees blocks allocated but unowned. Each file has one writer or size change
+at a time, so its writes record in order. A write that finds no space
+writes back dirty data and retries once, as btrfs flushes delalloc and
+ext4 retries allocation before ENOSPC.
+
+fsync starts writeback of every dirty file under one plug, so their data
+merges into large writes, then waits for all of it. The last close of a
+file written through it starts its writeback, as NFS does, so a later
+fsync of its directory finds the data written.
 
 ## Caveats learned from other filesystems
 

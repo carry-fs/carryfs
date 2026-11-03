@@ -566,6 +566,7 @@ pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
     Ops(bindings::file_operations {
         llseek: Some(bindings::generic_file_llseek),
         open: Some(open),
+        release: Some(glue::carryfs_file_release),
         read_iter: Some(read_iter),
         write_iter: Some(write_iter),
         fsync: Some(crate::write::fsync),

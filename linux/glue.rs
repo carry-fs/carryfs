@@ -55,6 +55,7 @@ unsafe extern "C" {
     pub(crate) fn carryfs_write_dirty_inodes(sb: *mut super_block) -> c_int;
     pub(crate) fn carryfs_timer_start(sb: *mut super_block) -> *mut c_void;
     pub(crate) fn carryfs_timer_stop(timer: *mut c_void);
+    pub(crate) fn carryfs_file_release(inode: *mut inode, file: *mut file) -> c_int;
     pub(crate) fn carryfs_prefetch_start(sb: *mut super_block) -> *mut c_void;
     pub(crate) fn carryfs_prefetch_stop(prefetch: *mut c_void);
     pub(crate) fn carryfs_nofs_save() -> u32;
@@ -79,6 +80,10 @@ unsafe extern "C" {
     ) -> c_int;
     pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
 
+    pub(crate) fn carryfs_submit_write(
+        bio: *mut kernel::bindings::bio,
+        batch: *mut core::ffi::c_void,
+    ) -> c_int;
     pub(crate) fn carryfs_submit_read(
         bio: *mut kernel::bindings::bio,
         batch: *mut core::ffi::c_void,

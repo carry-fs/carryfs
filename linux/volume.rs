@@ -65,7 +65,15 @@ pub(crate) struct State {
     /// Commits waiting for I/O; new reads wait for them, so that a stream
     /// of reads cannot starve a commit.
     committing: u32,
+    /// Objects whose data a writer is writing or a size change is changing,
+    /// one at a time each (`Locked::claim`).
+    claimed: [u64; CLAIMS],
+    claims: usize,
 }
+
+/// Objects written at once; more writers wait, which bounds the data
+/// writes in flight.
+const CLAIMS: usize = 64;
 
 impl State {
     pub(crate) fn tree_root(&self, kind: TreeKind) -> TreeRef {
@@ -193,6 +201,31 @@ impl Locked<'_> {
 
     pub(crate) fn end_read(&mut self) {
         self.state.reading -= 1;
+        self.volume.written.notify_all();
+    }
+
+    /// Take `object` for one data write or size change, waiting for the
+    /// one in progress: an object's writes must record in order.
+    pub(crate) fn claim(&mut self, object: u64) {
+        loop {
+            let state = &*self.state;
+            let held = state.claimed[..state.claims].contains(&object);
+            if !held && state.claims < CLAIMS {
+                break;
+            }
+            self.volume.written.wait(&mut self.state);
+        }
+        let claims = self.state.claims;
+        self.state.claimed[claims] = object;
+        self.state.claims += 1;
+    }
+
+    pub(crate) fn unclaim(&mut self, object: u64) {
+        let state = &mut *self.state;
+        if let Some(at) = state.claimed[..state.claims].iter().position(|held| *held == object) {
+            state.claims -= 1;
+            state.claimed[at] = state.claimed[state.claims];
+        }
         self.volume.written.notify_all();
     }
 }
@@ -362,6 +395,8 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 writing: 0,
                 reading: 0,
                 committing: 0,
+                claimed: [0; CLAIMS],
+                claims: 0,
             }),
         }),
         GFP_KERNEL,

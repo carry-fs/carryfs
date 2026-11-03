@@ -203,8 +203,9 @@ static struct file_system_type carryfs_fs_type = {
 MODULE_ALIAS_FS("carryfs");
 
 /*
- * Verifies readahead units once their reads complete, outside interrupt
- * context, as erofs and btrfs verify data in end_io work.
+ * Verifies readahead units once their reads complete, and records data
+ * units once their writes do, outside interrupt context, as erofs and
+ * btrfs verify data and iomap completes ioends in work.
  */
 static struct workqueue_struct *carryfs_read_wq;
 
@@ -212,7 +213,7 @@ int carryfs_register(void)
 {
 	int error;
 
-	carryfs_read_wq = alloc_workqueue("carryfs-read", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+	carryfs_read_wq = alloc_workqueue("carryfs-io", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
 	if (!carryfs_read_wq)
 		return -ENOMEM;
 	error = register_filesystem(&carryfs_fs_type);
@@ -227,6 +228,7 @@ void carryfs_unregister(void)
 	destroy_workqueue(carryfs_read_wq);
 }
 
+/* A chain of data reads or writes in flight; its batch belongs to Rust. */
 struct carryfs_read {
 	struct work_struct work;
 	void *batch;
@@ -248,6 +250,33 @@ static void carryfs_read_end_io(struct bio *bio)
 	read->status = blk_status_to_errno(bio->bi_status);
 	bio_put(bio);
 	queue_work(carryfs_read_wq, &read->work);
+}
+
+static void carryfs_write_work(struct work_struct *work)
+{
+	struct carryfs_read *write = container_of(work, struct carryfs_read, work);
+
+	carryfs_write_done(write->batch, write->status);
+	kfree(write);
+}
+
+/*
+ * Submit @bio, the last of a chain of data writes, and call
+ * carryfs_write_done(@batch) from the I/O workqueue once all complete, as
+ * iomap completes ioends. Fails only before submitting.
+ */
+int carryfs_submit_write(struct bio *bio, void *batch)
+{
+	struct carryfs_read *write = kmalloc(sizeof(*write), GFP_NOFS);
+
+	if (!write)
+		return -ENOMEM;
+	INIT_WORK(&write->work, carryfs_write_work);
+	write->batch = batch;
+	bio->bi_private = write;
+	bio->bi_end_io = carryfs_read_end_io;
+	submit_bio(bio);
+	return 0;
 }
 
 /*
@@ -405,9 +434,17 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
  */
 int carryfs_write_dirty_inodes(struct super_block *sb)
 {
-	struct inode *inode, *toput = NULL;
-	int error = 0;
+	struct inode *inode, **started = NULL, **grown;
+	unsigned int count = 0, capacity = 0, i;
+	struct blk_plug plug;
+	int error = 0, status;
 
+	/*
+	 * Start every dirty inode's writeback under one plug, so the block
+	 * layer merges their writes, then wait for them all: writeback
+	 * completes in the I/O workqueue.
+	 */
+	blk_start_plug(&plug);
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
 		spin_lock(&inode->i_lock);
@@ -420,17 +457,50 @@ int carryfs_write_dirty_inodes(struct super_block *sb)
 		spin_unlock(&inode->i_lock);
 		spin_unlock(&sb->s_inode_list_lock);
 
+		if (count == capacity) {
+			capacity = max(2 * capacity, 64U);
+			grown = krealloc_array(started, capacity, sizeof(*started), GFP_NOFS);
+			if (!grown) {
+				blk_finish_plug(&plug);
+				error = -ENOMEM;
+				iput(inode);
+				goto wait;
+			}
+			started = grown;
+		}
+		started[count++] = inode;
+		status = filemap_fdatawrite(inode->i_mapping);
 		if (!error)
-			error = filemap_write_and_wait(inode->i_mapping);
-		iput(toput);
-		toput = inode;
+			error = status;
 
 		cond_resched();
 		spin_lock(&sb->s_inode_list_lock);
 	}
 	spin_unlock(&sb->s_inode_list_lock);
-	iput(toput);
+	blk_finish_plug(&plug);
+wait:
+	for (i = 0; i < count; i++) {
+		status = filemap_fdatawait(started[i]->i_mapping);
+		if (!error)
+			error = status;
+		iput(started[i]);
+	}
+	kfree(started);
 	return error;
+}
+
+/*
+ * At the last close of a file written through it, start writing it back
+ * without waiting, so its data is on its way before an fsync of it or its
+ * directory, as the FUSE adapter writes data before fsync. NFS writes back
+ * on close too, and XFS after a truncate. Errors stay on the mapping for
+ * a later fsync.
+ */
+int carryfs_file_release(struct inode *inode, struct file *file)
+{
+	if (file->f_mode & FMODE_WRITE)
+		filemap_flush(inode->i_mapping);
+	return 0;
 }
 
 /* A durable cache flush: earlier writes reach media before later ones. */

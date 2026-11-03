@@ -23,6 +23,13 @@ cleanup() {
 }
 trap cleanup EXIT
 export PATH=$here/bin:$PATH
+# Golden outputs expect GNU od's lowercase hex; Ubuntu's default uutils od
+# prints uppercase (generic/029, generic/030).
+if [ -x /usr/bin/gnuod ]; then
+	mkdir "$work/bin"
+	ln -s /usr/bin/gnuod "$work/bin/od"
+	export PATH=$work/bin:$PATH
+fi
 "$here/bin/mkfs.carryfs" "$TEST_DEV" >/dev/null
 cp "$here/local.config" "$fstests/local.config"
 cd "$fstests"

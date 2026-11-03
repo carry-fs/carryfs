@@ -275,6 +275,7 @@ impl<'a> Writer<'a> {
                                     bindings::bio_put(bio);
                                 }
                             }
+                            release(state, disk, &runs)?;
                             return Err(error);
                         }
                     };
@@ -301,6 +302,7 @@ impl<'a> Writer<'a> {
                 };
                 if status != 0 {
                     pr_err!("data write failed in object {object}\n");
+                    release(state, disk, &runs)?;
                     return Err(EIO);
                 }
             }
@@ -658,6 +660,16 @@ pub(crate) unsafe extern "C" fn write_begin(
     // SAFETY: The VFS passes where to return the folio.
     unsafe { *foliop = folio };
     0
+}
+
+/// Free the runs a failed `publish` allocated: no record refers to them,
+/// and the transaction would otherwise commit them as owned (fstests
+/// generic/441).
+fn release(state: &mut State, disk: &Disk, runs: &[(usize, u64, u64)]) -> Result {
+    for (_, first, count) in runs {
+        txn(state).retire(disk, *first, *count)?;
+    }
+    Ok(())
 }
 
 /// Zero the cached last page past the size, before the size grows over it:

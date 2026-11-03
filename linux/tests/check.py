@@ -9,6 +9,8 @@ temporary directory on loop devices.
 """
 
 import argparse
+import errno
+import itertools
 import os
 import random
 import shutil
@@ -232,6 +234,52 @@ def reclaim(volume):
     print(f"  reclaim: {used} blocks in use after 12 rewrites of 1954, 300 MiB delete drained; {volume.check()}")
 
 
+def fill(path, chunk, once=False):
+    """Append synced chunks to `path` until one fails with ENOSPC, or write
+    one chunk if `once`; whether every chunk fit."""
+    with open(path, "ab") as f:
+        while True:
+            try:
+                f.write(os.urandom(chunk))
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError as error:
+                assert error.errno == errno.ENOSPC, error
+                return False
+            if once:
+                return True
+
+
+def full_truncate(volume):
+    """A truncate whose tail rewrite fails for space leaves the stored size
+    past i_size; a later writeback of the file must not store i_size over
+    the full tail unit (fstests generic/476)."""
+    root = volume.mount()
+    path = root / "file"
+    path.write_bytes(os.urandom(2 * 65536))
+    os.sync()
+    # Fill until even a one-block file fails. Each chunk is synced: buffered
+    # writes reserve no space, so the error comes from writeback.
+    fill(root / "filler", 1 << 20)
+    for i in itertools.count():
+        if not fill(root / f"pad{i}", 4096, once=True):
+            break
+    try:
+        os.truncate(path, 100_000)
+        raise AssertionError("truncate had space for its tail rewrite")
+    except OSError as error:
+        assert error.errno == errno.ENOSPC, error
+    for name in os.listdir(root):
+        if name != "file":
+            os.unlink(root / name)
+    os.sync()
+    with open(path, "r+b") as f:
+        f.write(b"x")
+        os.fsync(f.fileno())
+    volume.unmount()
+    print(f"  full truncate: {volume.check()}")
+
+
 def orphan(volume, work):
     """An unlinked file still open is durable as an orphan; mounting a copy
     of that state removes it."""
@@ -270,6 +318,8 @@ def main():
         data(Volume(args.cli, work, "data", 512), work)
         print("reclaim")
         reclaim(Volume(args.cli, work, "reclaim", 512))
+        print("full truncate")
+        full_truncate(Volume(args.cli, work, "full-truncate", 512))
         print("orphan")
         orphan(Volume(args.cli, work, "orphan", 512), work)
     print("all checks passed")

@@ -72,6 +72,8 @@ struct Writer<'a> {
     mapping: *mut bindings::address_space,
     object: u64,
     units: KVec<Pending>,
+    /// Truncate's tail rewrite, the one write that may lower the stored size.
+    truncate: bool,
 }
 
 impl<'a> Writer<'a> {
@@ -82,6 +84,7 @@ impl<'a> Writer<'a> {
             mapping: inode.mapping(),
             object: inode.object(),
             units: KVec::new(),
+            truncate: false,
         }
     }
 
@@ -220,7 +223,7 @@ impl<'a> Writer<'a> {
     }
 
     fn publish(&mut self) -> Result {
-        let (sb, object, inode) = (self.sb, self.object, self.inode);
+        let (sb, object, inode, truncate) = (self.sb, self.object, self.inode, self.truncate);
         let units = &self.units;
         {
             // Retired data may still be reclaimable: commit to reclaim it,
@@ -233,9 +236,16 @@ impl<'a> Writer<'a> {
             }
         }
         mutate(sb, |state, disk| {
-            let size = inode.size();
             let mut record = read_record(sb, state, object)?;
             let stored = record_size(&record);
+            // A smaller i_size is a truncate in progress, or one whose tail
+            // rewrite failed: extents past it remain until truncate removes
+            // them, so keep the stored size (fstests generic/476).
+            let size = if truncate {
+                inode.size()
+            } else {
+                inode.size().max(stored)
+            };
             if size > stored
                 && stored % UNIT_BYTES as u64 != 0
                 && !units
@@ -744,6 +754,7 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
     let rewrite = if size < old { tail } else { old_tail };
     if let Some(unit) = rewrite {
         let mut writer = Writer::new(inode);
+        writer.truncate = true;
         writer.pending(unit)?;
         return writer.flush(None);
     }

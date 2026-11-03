@@ -554,9 +554,11 @@ struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index)
 
 /*
  * Whether a folio of @mapping in [@first, @last] is dirty, or locked: a
- * write holds its folio locked from reserving space until dirtying it.
+ * write holds its folio locked from reserving space until dirtying it. With
+ * @writeback, a folio under writeback counts too.
  */
-bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last)
+bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last,
+			bool writeback)
 {
 	XA_STATE(xas, &mapping->i_pages, first);
 	struct folio *folio;
@@ -566,7 +568,8 @@ bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t la
 	xas_for_each(&xas, folio, last) {
 		if (xas_retry(&xas, folio) || xa_is_value(folio))
 			continue;
-		if (folio_test_dirty(folio) || folio_test_locked(folio)) {
+		if (folio_test_dirty(folio) || folio_test_locked(folio) ||
+		    (writeback && folio_test_writeback(folio))) {
 			busy = true;
 			break;
 		}

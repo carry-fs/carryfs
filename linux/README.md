@@ -129,9 +129,11 @@ and a transaction of 3,072 drafts commit.
 
 Writeback copies each dirty unit whole, filling clean pages from the page
 cache or the verified old unit, writes it to new blocks, and replaces the
-unit's extents and checksum. Allocation, the data writes, and the catalog
-update share one hold of the volume lock, so no publication sees blocks
-allocated but unowned.
+unit's extents and checksum. It holds the volume lock to allocate and to
+record the units, but not while the data is written; commits wait for
+writes in between, so no publication sees blocks allocated but unowned.
+A write that finds no space writes back dirty data and retries once, as
+btrfs flushes delalloc and ext4 retries allocation before ENOSPC.
 
 ## Caveats learned from other filesystems
 

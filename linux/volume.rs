@@ -11,7 +11,7 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
-use kernel::sync::{new_mutex, Mutex, MutexGuard};
+use kernel::sync::{new_condvar, new_mutex, CondVar, Mutex, MutexGuard};
 
 use crate::edit::Txn;
 use crate::glue;
@@ -54,6 +54,9 @@ pub(crate) struct State {
     pub(crate) reclaim_pending: bool,
     /// Space held for dirty page-cache units.
     pub(crate) reservations: crate::reserve::Reservations,
+    /// Data writes whose blocks the open transaction allocated but no
+    /// record owns yet; commit waits for them (`Locked::wait_for_writes`).
+    pub(crate) writing: u32,
 }
 
 impl State {
@@ -63,6 +66,12 @@ impl State {
             TreeKind::Allocation => self.root.allocation,
             _ => self.root.cleanup,
         }
+    }
+
+    /// Whether a commit may free blocks: retired data, committed or in the
+    /// open transaction, awaits reclamation.
+    pub(crate) fn reclaimable(&self) -> bool {
+        self.reclaim_pending || self.txn.as_ref().is_some_and(|txn| !txn.retired.is_empty())
     }
 
     /// Free blocks, counting the open transaction's changes.
@@ -84,6 +93,9 @@ pub(crate) struct Volume {
     /// Held through each `writepages` call; see there.
     #[pin]
     pub(crate) writeback: Mutex<()>,
+    /// Signalled when `State::writing` drops.
+    #[pin]
+    written: CondVar,
 }
 
 impl Volume {
@@ -95,6 +107,7 @@ impl Volume {
         let nofs = NoFs::new();
         Locked {
             state: self.state.lock(),
+            volume: self,
             _nofs: nofs,
         }
     }
@@ -120,7 +133,24 @@ impl Drop for NoFs {
 /// The locked volume state. The lock is released before the scope ends.
 pub(crate) struct Locked<'a> {
     state: MutexGuard<'a, State>,
+    volume: &'a Volume,
     _nofs: NoFs,
+}
+
+impl Locked<'_> {
+    /// Wait until no data write holds unrecorded blocks, releasing the lock
+    /// meanwhile, so a publication never sees blocks allocated but unowned.
+    pub(crate) fn wait_for_writes(&mut self) {
+        while self.state.writing > 0 {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    /// End a data write counted in `State::writing`.
+    pub(crate) fn end_write(&mut self) {
+        self.state.writing -= 1;
+        self.volume.written.notify_all();
+    }
 }
 
 impl Deref for Locked<'_> {
@@ -245,6 +275,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
             gid: bindings::kgid_t { val: gid },
             writable,
             writeback <- new_mutex!(()),
+            written <- new_condvar!(),
             state <- new_mutex!(State {
                 root,
                 txn: None,
@@ -254,6 +285,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 timer: 0,
                 reclaim_pending: true,
                 reservations: Default::default(),
+                writing: 0,
             }),
         }),
         GFP_KERNEL,

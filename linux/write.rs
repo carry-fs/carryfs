@@ -9,8 +9,9 @@
 //! old blocks are retired. A unit is always rewritten whole: FORMAT.md lets
 //! a writer keep unchanged blocks, but does not require it.
 //!
-//! Allocation, the data writes, and the catalog update share one hold of
-//! the volume lock, so no publication sees blocks allocated but unowned.
+//! The volume lock is held to allocate and to record, not while the data is
+//! written; commits wait for writes in between (`State::writing`), so no
+//! publication sees blocks allocated but unowned.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -20,7 +21,9 @@ use kernel::prelude::*;
 use crate::edit::Disk;
 use crate::file::{read_unit, Unit, UNIT_BLOCKS};
 use crate::glue;
-use crate::namei::{mutate, now, read_record, set_time, set_u64, txn, write_record, ALLOCATED};
+use crate::namei::{
+    edit, mutate, now, read_record, set_time, set_u64, txn, write_record, ALLOCATED,
+};
 use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::format::{
     checksum_slot, compact_group, set_checksum_slot, TreeKind, BLOCK_BYTES, CHECKSUM_GROUP_BYTES,
@@ -75,6 +78,9 @@ struct Writer<'a> {
     units: KVec<Pending>,
     /// Truncate's tail rewrite, the one write that may lower the stored size.
     truncate: bool,
+    /// The units' reservations covered their blocks; allocation released
+    /// them, and a retry may still use the metadata reserve.
+    reserved: bool,
 }
 
 impl<'a> Writer<'a> {
@@ -86,6 +92,7 @@ impl<'a> Writer<'a> {
             object: inode.object(),
             units: KVec::new(),
             truncate: false,
+            reserved: false,
         }
     }
 
@@ -237,15 +244,23 @@ impl<'a> Writer<'a> {
 
     fn publish(&mut self) -> Result {
         let (sb, object, inode, truncate) = (self.sb, self.object, self.inode, self.truncate);
+        let was_reserved = self.reserved;
+        // A reclaiming commit may wait for this write's own `State::writing`
+        // if reclaim re-entered the filesystem during the data write.
+        let _nofs = volume::NoFs::new();
         let units = &self.units;
         // Dirty units reserved their blocks, so their writeback may use the
         // reserve kept for metadata edits; a truncate's rewrite may not.
+        let reserved = |state: &State, needed: u64| {
+            was_reserved
+                || state
+                    .reservations
+                    .held(object, units.iter().map(|unit| unit.index))
+                    >= needed
+        };
         let spare = |state: &State, needed: u64| {
             let free = reserve::available_to(state, object, units.iter().map(|unit| unit.index));
-            let reserved = state
-                .reservations
-                .held(object, units.iter().map(|unit| unit.index));
-            let keep = if reserved >= needed {
+            let keep = if reserved(state, needed) {
                 MAINTENANCE_RESERVE
             } else {
                 HEADROOM
@@ -258,13 +273,16 @@ impl<'a> Writer<'a> {
             let size = inode.size();
             let needed: u64 = units.iter().map(|unit| unit_blocks(size, unit.index)).sum();
             let mut state = volume::of(sb).lock();
-            while !spare(&state, needed) && state.reclaim_pending {
+            while !spare(&state, needed) && state.reclaimable() {
                 commit::commit(sb, &mut state)?;
             }
         }
-        mutate(sb, |state, disk| {
-            let mut record = read_record(sb, state, object)?;
-            let stored = record_size(&record);
+        // Allocate under the volume lock, write the data without it, then
+        // record the units under it again. Until they are recorded or
+        // released, `State::writing` holds commits back, so no publication
+        // sees blocks allocated but unowned.
+        let (size, stored, runs, covered) = mutate(sb, |state, disk| {
+            let stored = record_size(&read_record(sb, state, object)?);
             // A smaller i_size is a truncate in progress, or one whose tail
             // rewrite failed: extents past it remain until truncate removes
             // them, so keep the stored size (fstests generic/476).
@@ -282,70 +300,56 @@ impl<'a> Writer<'a> {
                 // The tail moved since `add_tail`; retry before any edit.
                 return Err(EAGAIN);
             }
-            let mut runs: KVec<(usize, u64, u64)> = KVec::new();
-            let mut needed = 0u64;
-            for unit in units.iter() {
-                needed += unit_blocks(size, unit.index);
-            }
+            let needed: u64 = units.iter().map(|unit| unit_blocks(size, unit.index)).sum();
             if !spare(state, needed) {
                 return Err(ENOSPC);
             }
-            // Allocate and write every unit's blocks, then wait once. The
-            // plug lets the block layer merge adjacent units' writes.
-            // SAFETY: Finished below, on this task, before any return.
-            let plug = unsafe { glue::carryfs_plug_start() };
-            let mut bio: *mut bindings::bio = core::ptr::null_mut();
+            let covered = reserved(state, needed);
+            let mut runs: KVec<(usize, u64, u64)> = KVec::new();
             for (position, unit) in units.iter().enumerate() {
                 let blocks = unit_blocks(size, unit.index);
-                let valid = unit_valid(size, unit.index);
-                if let Some(last) = blocks.checked_sub(1) {
-                    page_bytes(&unit.pages[last as usize])[valid - last as usize * BLOCK_BYTES..]
-                        .fill(0);
-                }
                 let mut done = 0;
                 while done < blocks {
-                    let (first, count) = match txn(state).allocate_data(disk, blocks - done) {
-                        Ok(run) => run,
+                    runs.reserve(1, GFP_KERNEL).or_else(|error| {
+                        release(state, disk, &runs)?;
+                        Err(Error::from(error))
+                    })?;
+                    match txn(state).allocate_data(disk, blocks - done) {
+                        Ok((first, count)) => {
+                            runs.push_within_capacity((position, first, count))
+                                .map_err(|_| ENOMEM)?;
+                            done += count;
+                        }
                         Err(error) => {
-                            // SAFETY: Started above; submits what was queued.
-                            unsafe { glue::carryfs_plug_finish(plug) };
-                            if !bio.is_null() {
-                                // SAFETY: The chain's last bio, not yet submitted.
-                                unsafe {
-                                    bindings::submit_bio_wait(bio);
-                                    bindings::bio_put(bio);
-                                }
-                            }
                             release(state, disk, &runs)?;
                             return Err(error);
                         }
-                    };
-                    runs.push((position, first, count), GFP_KERNEL)?;
-                    // SAFETY: `sb` holds its block device.
-                    unsafe { glue::carryfs_clean_aliases(sb, first, count) };
-                    bio = write_run(
-                        sb,
-                        bio,
-                        first,
-                        &unit.pages[done as usize..(done + count) as usize],
-                    );
-                    done += count;
+                    }
                 }
             }
-            // SAFETY: Started above.
-            unsafe { glue::carryfs_plug_finish(plug) };
-            if !bio.is_null() {
-                // SAFETY: `bio` is the last of the chain, not yet submitted.
-                let status = unsafe {
-                    let status = bindings::submit_bio_wait(bio);
-                    bindings::bio_put(bio);
-                    status
-                };
-                if status != 0 {
-                    pr_err!("data write failed in object {object}\n");
-                    release(state, disk, &runs)?;
-                    return Err(EIO);
-                }
+            // The allocation takes over the reservations of units with no
+            // folio dirty again, so the blocks are not counted twice while
+            // the data is written.
+            state.reservations.release_clean(object, |unit| {
+                units.binary_search_by_key(&unit, |pending| pending.index).is_ok()
+            });
+            state.writing += 1;
+            Ok((size, stored, runs, covered))
+        })?;
+        self.reserved = covered;
+        let written = write_units(sb, units, size, &runs);
+        let mut state = volume::of(sb).lock();
+        let result = edit(sb, &mut state, |state, disk| {
+            let mut record = read_record(sb, state, object)?;
+            if record_size(&record) != stored {
+                // A size change raced the data write; write the units again.
+                release(state, disk, &runs)?;
+                return Err(EAGAIN);
+            }
+            if let Err(error) = written {
+                pr_err!("data write failed in object {object}\n");
+                release(state, disk, &runs)?;
+                return Err(error);
             }
             // Record the units: extents, checksums, then the inode.
             let uuid = state.root.uuid;
@@ -398,9 +402,63 @@ impl<'a> Writer<'a> {
             set_time(&mut record, 72, changed);
             write_record(state, disk, object, &record)?;
             Ok(allocated)
-        })
-        .map(|allocated| inode.set_blocks(allocated))
+        });
+        // As at allocation, recorded or lost units' reservations go with
+        // the write, before anyone sees its blocks counted twice.
+        state.reservations.release_clean(object, |unit| {
+            units.binary_search_by_key(&unit, |pending| pending.index).is_ok()
+        });
+        state.end_write();
+        drop(state);
+        result.map(|allocated| inode.set_blocks(allocated))
     }
+}
+
+/// Write the units to the runs allocated for them and wait once. The plug
+/// lets the block layer merge adjacent units' writes.
+fn write_units(
+    sb: *mut bindings::super_block,
+    units: &[Pending],
+    size: u64,
+    runs: &[(usize, u64, u64)],
+) -> Result {
+    for unit in units {
+        // Zero the last block past the unit's valid bytes.
+        if let Some(last) = unit_blocks(size, unit.index).checked_sub(1) {
+            let valid = unit_valid(size, unit.index);
+            page_bytes(&unit.pages[last as usize])[valid - last as usize * BLOCK_BYTES..].fill(0);
+        }
+    }
+    // SAFETY: Finished below, on this task.
+    let plug = unsafe { glue::carryfs_plug_start() };
+    let mut bio: *mut bindings::bio = core::ptr::null_mut();
+    // Each unit's runs are consecutive; `done` counts its blocks queued.
+    let mut done = 0;
+    for (index, (position, first, count)) in runs.iter().copied().enumerate() {
+        if index > 0 && runs[index - 1].0 != position {
+            done = 0;
+        }
+        // SAFETY: `sb` holds its block device.
+        unsafe { glue::carryfs_clean_aliases(sb, first, count) };
+        let pages = &units[position].pages[done as usize..(done + count) as usize];
+        bio = write_run(sb, bio, first, pages);
+        done += count;
+    }
+    // SAFETY: Started above.
+    unsafe { glue::carryfs_plug_finish(plug) };
+    if bio.is_null() {
+        return Ok(());
+    }
+    // SAFETY: `bio` is the last of the chain, not yet submitted.
+    let status = unsafe {
+        let status = bindings::submit_bio_wait(bio);
+        bindings::bio_put(bio);
+        status
+    };
+    if status != 0 {
+        return Err(EIO);
+    }
+    Ok(())
 }
 
 /// Bytes of unit `index` within a file of `size` bytes.
@@ -663,38 +721,54 @@ pub(crate) unsafe extern "C" fn write_begin(
     let sb = unsafe { (*inode).i_sb };
     // SAFETY: As above.
     let host = unsafe { Inode::from_raw(inode) };
-    let size = host.size();
-    if pos as u64 > size {
-        zero_past_eof(host);
-    }
-    // SAFETY: As above.
-    let folio = unsafe { glue::carryfs_write_folio(mapping, pos) };
-    if let Err(error) = kernel::error::from_err_ptr(folio) {
-        return error.to_errno();
-    }
-    // Reserve with the folio locked: until the write dirties it, the lock
-    // keeps writeback from releasing the reservation (reserve.rs).
-    let (unit, tail) = (pos as u64 / UNIT_BYTES as u64, size / UNIT_BYTES as u64);
-    let units = [unit, tail];
-    // Writing past a partial last unit rewrites that unit too (`add_tail`).
-    let units = if unit > tail && size % UNIT_BYTES as u64 != 0 {
-        &units[..]
-    } else {
-        &units[..1]
-    };
-    let reserved = {
-        let mut state = volume::of(sb).lock();
-        if state.faulted {
-            Err(EIO)
-        } else {
-            reserve::reserve(sb, &mut state, host, units)
+    let mut retried = false;
+    let folio = loop {
+        let size = host.size();
+        if pos as u64 > size {
+            zero_past_eof(host);
         }
+        // SAFETY: As above.
+        let folio = unsafe { glue::carryfs_write_folio(mapping, pos) };
+        if let Err(error) = kernel::error::from_err_ptr(folio) {
+            return error.to_errno();
+        }
+        // Reserve with the folio locked: until the write dirties it, the
+        // lock keeps writeback from releasing the reservation (reserve.rs).
+        let (unit, tail) = (pos as u64 / UNIT_BYTES as u64, size / UNIT_BYTES as u64);
+        let units = [unit, tail];
+        // Writing past a partial last unit rewrites that unit too (`add_tail`).
+        let units = if unit > tail && size % UNIT_BYTES as u64 != 0 {
+            &units[..]
+        } else {
+            &units[..1]
+        };
+        let reserved = {
+            let mut state = volume::of(sb).lock();
+            if state.faulted {
+                Err(EIO)
+            } else {
+                reserve::reserve(sb, &mut state, host, units)
+            }
+        };
+        match reserved {
+            Ok(()) => break folio,
+            Err(error) => {
+                // SAFETY: Release what `carryfs_write_folio` took.
+                unsafe { glue::carryfs_folio_unlock_put(folio) };
+                if error != ENOSPC || retried {
+                    return error.to_errno();
+                }
+            }
+        }
+        // A unit written back while it was being filled holds both its new
+        // blocks and its reservation until written again. Write back dirty
+        // data, which settles that, and retry once, as btrfs flushes
+        // delalloc and ext4 retries allocation before reporting ENOSPC.
+        retried = true;
+        // SAFETY: `sb` is the super block of a file being written; no folio
+        // is held.
+        unsafe { glue::carryfs_write_dirty_inodes(sb) };
     };
-    if let Err(error) = reserved {
-        // SAFETY: Release what `carryfs_write_folio` took.
-        unsafe { glue::carryfs_folio_unlock_put(folio) };
-        return error.to_errno();
-    }
     // A partial write into a page not in the cache reads its old content.
     // SAFETY: The folio is locked and referenced.
     if !unsafe { glue::carryfs_folio_uptodate(folio) } && len as usize != BLOCK_BYTES {

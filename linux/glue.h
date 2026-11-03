@@ -71,7 +71,8 @@ int carryfs_write_end(const struct kiocb *iocb, struct address_space *mapping, l
 		      unsigned int len, unsigned int copied, struct folio *folio, void *fsdata);
 struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index);
 void carryfs_folio_unlock_put(struct folio *folio);
-bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last);
+bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last,
+			bool writeback);
 struct vm_area_desc;
 int carryfs_file_mmap_prepare(struct vm_area_desc *desc);
 void carryfs_folio_start_writeback(struct folio *folio);

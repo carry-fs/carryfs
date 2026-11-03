@@ -351,6 +351,7 @@ impl<'a> Tree<'a> {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;
         let mut spent = 1;
+        let mut complete = true;
         while !level.is_empty() {
             let mut blocks = KVec::with_capacity(level.len(), GFP_KERNEL)?;
             for at in level.iter() {
@@ -372,24 +373,26 @@ impl<'a> Tree<'a> {
             // SAFETY: `sb` is mounted; `ahead` holds block numbers.
             unsafe { glue::carryfs_readahead_blocks(self.sb, ahead.as_ptr(), ahead.len() as u32) };
             if level[0].level == Some(0) && !verify_leaves {
-                return Ok(true);
+                return Ok(complete);
             }
             for at in level.iter() {
                 self.load(*at, None)?;
             }
             if level[0].level == Some(0) {
-                return Ok(true);
+                return Ok(complete);
             }
+            // The next level, cut at the budget: a cut level is still read.
             let mut next = KVec::new();
-            for at in level.iter() {
+            'level: for at in level.iter() {
                 let page = self.load(*at, None)?;
                 let view = self.view(&page, *at)?;
                 if view.level == 0 {
-                    return Ok(true);
+                    return Ok(complete);
                 }
                 for (_, value) in view.records() {
                     if spent == budget {
-                        return Ok(false);
+                        complete = false;
+                        break 'level;
                     }
                     next.push(self.child(*at, view.level, value), GFP_KERNEL)?;
                     spent += 1;
@@ -397,7 +400,7 @@ impl<'a> Tree<'a> {
             }
             level = next;
         }
-        Ok(true)
+        Ok(complete)
     }
 
     /// Check the tree's root page, as opening a volume does.

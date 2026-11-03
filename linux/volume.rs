@@ -317,8 +317,8 @@ unsafe extern "C" fn carryfs_volume_background(sb: *mut bindings::super_block) -
 /// budget.
 const PREFETCH_PAGES: usize = 4_096;
 /// Catalog pages a mount on a non-rotational device reads before it
-/// returns: 4 MiB, at most about 1,000 random reads.
-const MOUNT_PREFETCH_PAGES: usize = 1_024;
+/// returns: 16 MiB, in reads that merge where commits clustered pages.
+const MOUNT_PREFETCH_PAGES: usize = 4_096;
 
 /// Read the committed catalog ahead; glue.c's background work queues it.
 #[no_mangle]

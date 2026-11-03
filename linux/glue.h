@@ -24,6 +24,7 @@ int carryfs_reserve_folio(struct inode *inode, u64 index);
 void carryfs_read_done(void *batch, int status);
 void carryfs_write_done(void *batch, int status);
 void carryfs_prefetch_catalog(struct super_block *sb);
+void *carryfs_volume_background(struct super_block *sb);
 
 /* Implemented in glue.c. */
 int carryfs_register(void);
@@ -31,8 +32,9 @@ void carryfs_unregister(void);
 struct bio;
 int carryfs_submit_read(struct bio *bio, void *batch);
 int carryfs_submit_write(struct bio *bio, void *batch);
-void *carryfs_prefetch_start(struct super_block *sb);
-void carryfs_prefetch_stop(void *prefetch);
+void *carryfs_background_new(struct super_block *sb);
+void carryfs_prefetch_queue(void *background);
+void carryfs_background_stop(void *background);
 u64 carryfs_bdev_bytes(struct super_block *sb);
 unsigned int carryfs_bdev_logical_block_size(struct super_block *sb);
 unsigned int carryfs_bdev_physical_block_size(struct super_block *sb);

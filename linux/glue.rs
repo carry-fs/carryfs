@@ -56,8 +56,9 @@ unsafe extern "C" {
     pub(crate) fn carryfs_timer_start(sb: *mut super_block) -> *mut c_void;
     pub(crate) fn carryfs_timer_stop(timer: *mut c_void);
     pub(crate) fn carryfs_file_release(inode: *mut inode, file: *mut file) -> c_int;
-    pub(crate) fn carryfs_prefetch_start(sb: *mut super_block) -> *mut c_void;
-    pub(crate) fn carryfs_prefetch_stop(prefetch: *mut c_void);
+    pub(crate) fn carryfs_background_new(sb: *mut super_block) -> *mut c_void;
+    pub(crate) fn carryfs_prefetch_queue(background: *mut c_void);
+    pub(crate) fn carryfs_background_stop(background: *mut c_void);
     pub(crate) fn carryfs_nofs_save() -> u32;
     pub(crate) fn carryfs_nofs_restore(flags: u32);
     pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;

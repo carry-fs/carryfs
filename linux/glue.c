@@ -153,43 +153,124 @@ void carryfs_timer_stop(void *timer)
 	kfree(t);
 }
 
+/* Inodes closed after writing whose writeback starts in one batch. */
+#define CARRYFS_FLUSH_BATCH 64
+
 /*
- * Read the catalog ahead after mounting, as the FUSE adapter does and as
- * ext4 prefetches block bitmaps, so that first listings find it cached.
+ * A mount's background work: reading the catalog ahead after mounting, as
+ * the FUSE adapter does and as ext4 prefetches block bitmaps, so that
+ * first listings find it cached; and starting writeback of files closed
+ * after writing.
  */
-struct carryfs_prefetch {
-	struct work_struct work;
+struct carryfs_background {
 	struct super_block *sb;
+	struct work_struct prefetch;
+	struct work_struct flush;
+	spinlock_t lock;
+	bool stopped;
+	unsigned int count;
+	struct inode *inodes[CARRYFS_FLUSH_BATCH];
 };
 
 static void carryfs_prefetch_fn(struct work_struct *work)
 {
-	struct carryfs_prefetch *prefetch =
-		container_of(work, struct carryfs_prefetch, work);
+	struct carryfs_background *bg =
+		container_of(work, struct carryfs_background, prefetch);
 
-	carryfs_prefetch_catalog(prefetch->sb);
+	carryfs_prefetch_catalog(bg->sb);
 }
 
-void *carryfs_prefetch_start(struct super_block *sb)
+/* Start writeback of the queued inodes under one plug, so their writes merge. */
+static void carryfs_flush_fn(struct work_struct *work)
 {
-	struct carryfs_prefetch *prefetch = kzalloc(sizeof(*prefetch), GFP_KERNEL);
+	struct carryfs_background *bg =
+		container_of(work, struct carryfs_background, flush);
+	struct inode *inodes[CARRYFS_FLUSH_BATCH];
+	struct blk_plug plug;
+	unsigned int count, i;
 
-	if (!prefetch)
+	for (;;) {
+		spin_lock(&bg->lock);
+		count = bg->count;
+		memcpy(inodes, bg->inodes, count * sizeof(*inodes));
+		bg->count = 0;
+		spin_unlock(&bg->lock);
+		if (!count)
+			return;
+		blk_start_plug(&plug);
+		/* Errors stay on the mapping for a later fsync. */
+		for (i = 0; i < count; i++)
+			filemap_flush(inodes[i]->i_mapping);
+		blk_finish_plug(&plug);
+		for (i = 0; i < count; i++)
+			iput(inodes[i]);
+	}
+}
+
+void *carryfs_background_new(struct super_block *sb)
+{
+	struct carryfs_background *bg = kzalloc(sizeof(*bg), GFP_KERNEL);
+
+	if (!bg)
 		return NULL;
-	prefetch->sb = sb;
-	INIT_WORK(&prefetch->work, carryfs_prefetch_fn);
-	queue_work(system_unbound_wq, &prefetch->work);
-	return prefetch;
+	bg->sb = sb;
+	INIT_WORK(&bg->prefetch, carryfs_prefetch_fn);
+	INIT_WORK(&bg->flush, carryfs_flush_fn);
+	spin_lock_init(&bg->lock);
+	return bg;
 }
 
-void carryfs_prefetch_stop(void *prefetch)
+void carryfs_prefetch_queue(void *background)
 {
-	struct carryfs_prefetch *p = prefetch;
+	struct carryfs_background *bg = background;
 
-	if (!p)
+	queue_work(system_unbound_wq, &bg->prefetch);
+}
+
+/* Before unmounting evicts inodes: the queue holds references. */
+void carryfs_background_stop(void *background)
+{
+	struct carryfs_background *bg = background;
+
+	if (!bg)
 		return;
-	cancel_work_sync(&p->work);
-	kfree(p);
+	spin_lock(&bg->lock);
+	bg->stopped = true;
+	spin_unlock(&bg->lock);
+	cancel_work_sync(&bg->prefetch);
+	flush_work(&bg->flush);
+	/* Closes cannot queue more once stopped; drain what raced the stop. */
+	carryfs_flush_fn(&bg->flush);
+	kfree(bg);
+}
+
+/*
+ * At the last close of a file written through it, have a worker start its
+ * writeback, so its data is on its way before an fsync of it or its
+ * directory, as the FUSE adapter writes data before fsync and NFS writes
+ * back on close. The close itself does not wait.
+ */
+int carryfs_file_release(struct inode *inode, struct file *file)
+{
+	struct carryfs_background *bg = carryfs_volume_background(inode->i_sb);
+	bool queued = false;
+
+	if (!(file->f_mode & FMODE_WRITE) || !bg ||
+	    !mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY) || !igrab(inode))
+		return 0;
+	spin_lock(&bg->lock);
+	if (!bg->stopped && bg->count < CARRYFS_FLUSH_BATCH) {
+		bg->inodes[bg->count++] = inode;
+		queued = true;
+	}
+	spin_unlock(&bg->lock);
+	if (queued) {
+		queue_work(system_unbound_wq, &bg->flush);
+	} else {
+		filemap_flush(inode->i_mapping);
+		iput(inode);
+	}
+	return 0;
 }
 
 static struct file_system_type carryfs_fs_type = {
@@ -487,20 +568,6 @@ wait:
 	}
 	kfree(started);
 	return error;
-}
-
-/*
- * At the last close of a file written through it, start writing it back
- * without waiting, so its data is on its way before an fsync of it or its
- * directory, as the FUSE adapter writes data before fsync. NFS writes back
- * on close too, and XFS after a truncate. Errors stay on the mapping for
- * a later fsync.
- */
-int carryfs_file_release(struct inode *inode, struct file *file)
-{
-	if (file->f_mode & FMODE_WRITE)
-		filemap_flush(inode->i_mapping);
-	return 0;
 }
 
 /* A durable cache flush: earlier writes reach media before later ones. */

@@ -144,8 +144,10 @@ ext4 retries allocation before ENOSPC.
 
 fsync starts writeback of every dirty file under one plug, so their data
 merges into large writes, then waits for all of it. The last close of a
-file written through it starts its writeback, as NFS does, so a later
-fsync of its directory finds the data written.
+file written through it queues the file for a worker that starts the
+writeback of each batch of closed files under one plug, so a later fsync
+of their directory finds the data written, as NFS writes back on close,
+without making the close wait.
 
 ## Caveats learned from other filesystems
 

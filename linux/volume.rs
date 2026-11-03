@@ -50,8 +50,6 @@ pub(crate) struct State {
     pub(crate) hint: u64,
     /// The periodic-commit timer of a writable mount, from glue.c.
     pub(crate) timer: usize,
-    /// The catalog prefetch started at mount, from glue.c.
-    prefetch: usize,
     /// Retired data may be reclaimable by a later commit.
     pub(crate) reclaim_pending: bool,
     /// Space held for dirty page-cache units.
@@ -118,6 +116,9 @@ pub(crate) struct Volume {
     /// Held through each `writepages` call; see there.
     #[pin]
     pub(crate) writeback: Mutex<()>,
+    /// The mount's background work, from glue.c: catalog prefetch, and
+    /// writeback started at close. Stopped by `kill_sb`.
+    background: usize,
     /// Signalled when `State::writing`, `reading`, or `committing` drops.
     #[pin]
     written: CondVar,
@@ -276,16 +277,20 @@ unsafe extern "C" fn carryfs_stop_timer(sb: *mut bindings::super_block) {
     if unsafe { (*sb).s_fs_info }.is_null() {
         return;
     }
-    let (timer, prefetch) = {
-        let mut state = of(sb).lock();
-        (core::mem::take(&mut state.timer), core::mem::take(&mut state.prefetch))
-    };
-    // SAFETY: The timer and prefetch were started by `fill_super` and are
-    // stopped once; the lock is not held, since their work takes it.
+    let timer = core::mem::take(&mut of(sb).lock().timer);
+    // SAFETY: The timer and background work were started by `fill_super`
+    // and are stopped once, `kill_sb` running once; the lock is not held,
+    // since their work takes it.
     unsafe {
         glue::carryfs_timer_stop(timer as *mut c_void);
-        glue::carryfs_prefetch_stop(prefetch as *mut c_void);
+        glue::carryfs_background_stop(of(sb).background as *mut c_void);
     }
+}
+
+/// The mount's background work for glue.c, or null if it has none.
+#[no_mangle]
+unsafe extern "C" fn carryfs_volume_background(sb: *mut bindings::super_block) -> *mut c_void {
+    of(sb).background as *mut c_void
 }
 
 /// Catalog pages read ahead at mount: 16 MiB, the FUSE adapter's budget.
@@ -375,12 +380,15 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         errno(error)
     })?;
+    // SAFETY: Its work runs only once queued, after mounting.
+    let background = unsafe { glue::carryfs_background_new(sb) };
     let volume = KBox::pin_init(
         try_pin_init!(Volume {
             uid: bindings::kuid_t { val: uid },
             gid: bindings::kgid_t { val: gid },
             writable,
             writeback <- new_mutex!(()),
+            background: background as usize,
             written <- new_condvar!(),
             state <- new_mutex!(State {
                 root,
@@ -389,7 +397,6 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 faulted: false,
                 hint: 0,
                 timer: 0,
-                prefetch: 0,
                 reclaim_pending: true,
                 reservations: Default::default(),
                 writing: 0,
@@ -400,7 +407,11 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
             }),
         }),
         GFP_KERNEL,
-    )?;
+    )
+    .inspect_err(|_| {
+        // SAFETY: Never queued, and owned here alone.
+        unsafe { glue::carryfs_background_stop(background) }
+    })?;
     // SAFETY: `sb` is not yet visible to anyone else; `carryfs_free_volume`
     // unpins and frees the volume.
     unsafe {
@@ -437,9 +448,10 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         of(sb).lock().timer = timer as usize;
     }
 
-    // SAFETY: `kill_sb` stops the prefetch before the volume goes away.
-    let prefetch = unsafe { glue::carryfs_prefetch_start(sb) };
-    of(sb).lock().prefetch = prefetch as usize;
+    if of(sb).background != 0 {
+        // SAFETY: `kill_sb` stops the work before the volume goes away.
+        unsafe { glue::carryfs_prefetch_queue(of(sb).background as *mut c_void) };
+    }
 
     let root_inode = inode::get(sb, inode::ROOT)?;
     // SAFETY: `get` returned a referenced inode.

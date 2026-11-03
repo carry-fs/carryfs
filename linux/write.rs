@@ -698,6 +698,9 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
         let state = volume::of(sb).lock();
         record_size(&read_record(sb, &state, object)?)
     };
+    if size > inode.size() {
+        zero_past_eof(inode);
+    }
     // SAFETY: As above; drops pages past a smaller size and zeroes the
     // partial last page.
     unsafe { bindings::truncate_setsize(inode.as_ptr(), size as i64) };

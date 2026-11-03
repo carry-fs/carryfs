@@ -22,6 +22,7 @@
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
+#include <linux/version.h>
 #include <linux/workqueue.h>
 
 #include "glue.h"
@@ -373,7 +374,9 @@ void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 
 			  umode_t type)
 {
 	struct qstr qname = QSTR_INIT(name, len);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
+#endif
 	struct dentry *dentry, *alias;
 	struct inode *inode;
 
@@ -384,7 +387,12 @@ void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 
 			dput(dentry);
 		return;
 	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
 	dentry = d_alloc_parallel(parent, &qname, &wq);
+#else
+	/* 7.2 dropped the caller's wait queue. */
+	dentry = d_alloc_parallel(parent, &qname);
+#endif
 	if (IS_ERR(dentry))
 		return;
 	if (!d_in_lookup(dentry))

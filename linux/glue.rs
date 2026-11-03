@@ -20,6 +20,7 @@ unsafe extern "C" {
     pub(crate) fn carryfs_register() -> c_int;
     pub(crate) fn carryfs_unregister();
 
+    pub(crate) fn carryfs_bdev_nonrot(sb: *mut super_block) -> bool;
     pub(crate) fn carryfs_bdev_bytes(sb: *mut super_block) -> u64;
     pub(crate) fn carryfs_bdev_logical_block_size(sb: *mut super_block) -> u32;
     pub(crate) fn carryfs_bdev_physical_block_size(sb: *mut super_block) -> u32;

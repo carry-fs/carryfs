@@ -176,10 +176,13 @@ without making the close wait.
   the dcache as NFS and CIFS do. Priming reads the batch's inode records in
   one catalog walk in object order, as XFS bulkstat walks inode clusters,
   instead of a search per entry.
-- **Cold catalog.** The FUSE adapter reads catalog leaves ahead at mount.
-  The driver does too, on a workqueue, as ext4 prefetches block bitmaps:
-  internal pages a level at a time, then the leaves without waiting, up
-  to 4,096 pages.
+- **Cold catalog.** The FUSE adapter reads the catalog at mount: a writable
+  open checks the whole forest first. The driver reads it a level at a
+  time, each level in block order with short gaps filled, so that pages
+  written by the same commits merge into a few large reads. On a
+  non-rotational device the mount reads up to 1,024 pages before it
+  returns; a workqueue then continues to 4,096, as ext4 prefetches block
+  bitmaps.
 - **Repeated listings.** FUSE keeps readdir output in the page cache. A
   directory listed whole keeps its entries on its inode, up to 2 MiB of
   names, until it changes or the inode is evicted; inode reclaim bounds the

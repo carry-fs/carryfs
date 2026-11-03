@@ -90,6 +90,10 @@ pub(crate) fn compare(a: &[u8], b: &[u8]) -> Ordering {
 /// walk neighboring leaves.
 const LEAF_READAHEAD: usize = 16;
 
+/// Blocks between two pages of a level that the mount-time prefetch reads
+/// too, so that their reads merge: 64 KiB.
+const PREFETCH_GAP: u64 = 16;
+
 /// Records a page search bisects; catalog pages hold at most 148. Pages of
 /// more, such as cleanup leaves of orphan markers, are searched linearly.
 pub(crate) const SEARCH_RECORDS: usize = 160;
@@ -334,8 +338,11 @@ impl<'a> Tree<'a> {
         unsafe { glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), count as u32) };
     }
 
-    /// Read the tree's internal pages, a level at a time, and start reading
-    /// its leaves, until `budget` pages.
+    /// Read and verify the tree's pages, a level at a time, until `budget`
+    /// pages. A level's pages, written by the same commits into neighboring
+    /// workspace slots, cluster on the device: each level is read in block
+    /// order, short gaps included, so the block layer merges it into a few
+    /// large reads instead of one random read per page.
     pub(crate) fn prefetch(&self, budget: usize) -> Result {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;
@@ -347,12 +354,23 @@ impl<'a> Tree<'a> {
                     blocks.push(reference.block, GFP_KERNEL)?;
                 }
             }
-            // SAFETY: `sb` is mounted; `blocks` holds block numbers.
-            unsafe {
-                glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), blocks.len() as u32)
-            };
+            crate::commit::heapsort(&mut blocks);
+            let mut ahead = KVec::with_capacity(blocks.len(), GFP_KERNEL)?;
+            for (index, block) in blocks.iter().copied().enumerate() {
+                let from = match index.checked_sub(1).map(|previous| blocks[previous]) {
+                    Some(previous) if block - previous <= PREFETCH_GAP => previous + 1,
+                    _ => block,
+                };
+                for gap in from..=block {
+                    ahead.push(gap, GFP_KERNEL)?;
+                }
+            }
+            // SAFETY: `sb` is mounted; `ahead` holds block numbers.
+            unsafe { glue::carryfs_readahead_blocks(self.sb, ahead.as_ptr(), ahead.len() as u32) };
+            for at in level.iter() {
+                self.load(*at, None)?;
+            }
             if level[0].level == Some(0) {
-                // Leaves are verified when first used.
                 return Ok(());
             }
             let mut next = KVec::new();

@@ -435,7 +435,7 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
 
 /// Sort in place. `slice::sort_unstable` has a panic path objtool in Linux
 /// 7.0 does not know is noreturn.
-fn heapsort(values: &mut [u64]) {
+pub(crate) fn heapsort(values: &mut [u64]) {
     fn sift(values: &mut [u64], mut root: usize, end: usize) {
         loop {
             let mut child = 2 * root + 1;

@@ -36,6 +36,7 @@ void *carryfs_background_new(struct super_block *sb);
 void carryfs_prefetch_queue(void *background);
 void carryfs_background_stop(void *background);
 u64 carryfs_bdev_bytes(struct super_block *sb);
+bool carryfs_bdev_nonrot(struct super_block *sb);
 unsigned int carryfs_bdev_logical_block_size(struct super_block *sb);
 unsigned int carryfs_bdev_physical_block_size(struct super_block *sb);
 void carryfs_set_uuid(struct super_block *sb, const u8 *uuid);

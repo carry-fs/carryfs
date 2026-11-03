@@ -296,12 +296,20 @@ unsafe extern "C" fn carryfs_volume_background(sb: *mut bindings::super_block) -
     of(sb).background as *mut c_void
 }
 
-/// Catalog pages read ahead at mount: 16 MiB, the FUSE adapter's budget.
+/// Catalog pages read ahead after mounting: 16 MiB, the FUSE adapter's
+/// budget.
 const PREFETCH_PAGES: usize = 4_096;
+/// Catalog pages a mount on a non-rotational device reads before it
+/// returns: 4 MiB, at most about 1,000 random reads.
+const MOUNT_PREFETCH_PAGES: usize = 1_024;
 
-/// Read the committed catalog ahead; `carryfs_prefetch_start` queues it.
+/// Read the committed catalog ahead; glue.c's background work queues it.
 #[no_mangle]
 unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
+    prefetch_catalog(sb, PREFETCH_PAGES);
+}
+
+fn prefetch_catalog(sb: *mut bindings::super_block, budget: usize) {
     let tree = {
         let state = of(sb).lock();
         Tree {
@@ -316,7 +324,7 @@ unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
     };
     // Only a cache warms or not: a page a commit has since replaced or a
     // read failure ends the walk, and use reports real errors.
-    let _ = tree.prefetch(PREFETCH_PAGES);
+    let _ = tree.prefetch(budget);
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -452,6 +460,13 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         of(sb).lock().timer = timer as usize;
     }
 
+    // A small catalog is read before the mount returns, as the FUSE adapter
+    // reads it before mounting writable, so that first listings find it
+    // cached; on a disk that seeks, only in the background.
+    // SAFETY: `sb` holds its block device.
+    if unsafe { glue::carryfs_bdev_nonrot(sb) } {
+        prefetch_catalog(sb, MOUNT_PREFETCH_PAGES);
+    }
     if of(sb).background != 0 {
         // SAFETY: `kill_sb` stops the work before the volume goes away.
         unsafe { glue::carryfs_prefetch_queue(of(sb).background as *mut c_void) };

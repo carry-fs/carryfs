@@ -381,6 +381,15 @@ int carryfs_submit_read(struct bio *bio, void *batch)
 
 /* Block device geometry. */
 
+bool carryfs_bdev_nonrot(struct super_block *sb)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
+	return bdev_nonrot(sb->s_bdev);
+#else
+	return !bdev_rot(sb->s_bdev);
+#endif
+}
+
 u64 carryfs_bdev_bytes(struct super_block *sb)
 {
 	return bdev_nr_bytes(sb->s_bdev);

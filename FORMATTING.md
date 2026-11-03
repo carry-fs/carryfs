@@ -26,6 +26,15 @@ To format a CarryFS partition as something else, see
    sudo mkfs -t carryfs -L NAME /dev/sdXN
    ```
 
+If the partition held data before, such as another file system or an earlier
+CarryFS volume, `mkfs` stops and reports that the device holds data. This keeps
+a mistyped device name from erasing the wrong partition. Check the name with
+`lsblk`, then add `-f` to erase the old data and format anyway.
+
+```sh
+sudo mkfs -t carryfs -f -L NAME /dev/sdXN
+```
+
 `mkfs` refuses a mounted partition. It also refuses a whole disk that holds
 partitions, because formatting the disk would erase its partition table. Format
 one of the partitions instead. To put CarryFS on the whole disk, first remove

@@ -48,7 +48,7 @@ fn main() -> ExitCode {
                     mount::serve(Path::new(device), Path::new(directory), options)
                 }),
             [command, rest @ ..] if command == "mount" => mount::helper(rest),
-            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mkfs [-L LABEL | --wipe] DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
+            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mkfs [-f] [-L LABEL] DEVICE | carryfs-fuse mkfs --wipe DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
         }
     };
     match result {

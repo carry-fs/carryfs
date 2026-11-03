@@ -128,7 +128,7 @@ A writable mount keeps one open transaction under the volume lock. The
 first change under a committed page copies it into a draft; later changes
 edit the draft. Commit seals drafts onto workspace slots, writes the
 successor workspace bank, and publishes with FORMAT.md's flush, root A,
-flush, root B, flush sequence. Sync, fsync, unmount, a five-second timer,
+flush sequence; root B follows (see [Differences](#differences-from-the-userspace-core)). Sync, fsync, unmount, a five-second timer,
 and a transaction of 3,072 drafts commit.
 
 Writeback copies each dirty unit whole, filling clean pages from the page
@@ -203,6 +203,14 @@ without making the close wait.
 
 All of these produce images the userspace checker accepts.
 
+- **Root B follows later.** FORMAT.md acknowledges a publication after
+  flush, root A, flush, root B, flush. The driver acknowledges after root
+  A's flush, which its crash table already makes durable ("G is durable in
+  A; select G and finish mirroring"), and writes root B with the next
+  publication's pages, whose first flush covers it before root A is
+  overwritten; sync and unmount write it at once. That saves one cache
+  flush per fsync. `tests/check.py` checks an image copied right after
+  fsync.
 - **Writable mounts check less.** FORMAT.md asks a writable reopen to
   check all ownership before mirroring. The driver verifies every page it
   reads and validates the workspace list, but leaves whole-volume checks to

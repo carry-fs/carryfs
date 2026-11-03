@@ -43,6 +43,9 @@ pub(crate) struct State {
     pub(crate) txn: Option<Txn>,
     /// The committed workspace list of a writable mount.
     pub(crate) slots: KVec<u64>,
+    /// Root A holds the committed root, and root B does not yet: the next
+    /// publication writes it with its pages (`commit::settle`).
+    pub(crate) mirror_pending: bool,
     /// Set after a failed publication or an edit that stopped part-way;
     /// FORMAT.md section 3 allows no further mutation until remount.
     pub(crate) faulted: bool,
@@ -394,6 +397,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 root,
                 txn: None,
                 slots: KVec::new(),
+                mirror_pending: false,
                 faulted: false,
                 hint: 0,
                 timer: 0,
@@ -529,7 +533,8 @@ unsafe extern "C" fn sync_fs(sb: *mut bindings::super_block, _wait: c_int) -> c_
     if !volume.writable {
         return 0;
     }
-    match commit::commit(sb, &mut volume.lock()) {
+    let mut state = volume.lock();
+    match commit::commit(sb, &mut state).and_then(|()| commit::settle(sb, &mut state)) {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }

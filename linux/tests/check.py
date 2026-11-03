@@ -358,6 +358,29 @@ def orphan(volume, work):
     print(f"  orphan: removed at mount; {copy.check()}")
 
 
+def fsync_crash(volume, work):
+    """fsync is durable once root A is: an image copied right after it, as a
+    crash would leave the device with root B one publication behind, opens
+    with the synced file."""
+    root = volume.mount()
+    (root / "before").write_bytes(b"b")
+    os.sync()
+    payload = os.urandom(200_000)
+    with open(root / "synced", "wb") as f:
+        f.write(payload)
+        os.fsync(f.fileno())
+    crashed = work / "fsync-crashed.img"
+    run("cp", "--sparse=always", volume.image, crashed)
+    volume.unmount()
+    copy = Volume.__new__(Volume)
+    copy.cli, copy.image, copy.point, copy.loop = volume.cli, crashed, volume.point, None
+    result = copy.check()
+    root = copy.mount("ro")
+    assert (root / "synced").read_bytes() == payload
+    copy.unmount()
+    print(f"  fsync crash: synced file kept; {result}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, default=Path(__file__).resolve().parents[2] / "target/release/carryfs")
@@ -390,6 +413,8 @@ def checks(args, work):
     full_truncate(Volume(args.cli, work, "full-truncate", 512))
     print("orphan")
     orphan(Volume(args.cli, work, "orphan", 512), work)
+    print("fsync crash")
+    fsync_crash(Volume(args.cli, work, "fsync-crash", 512), work)
 
 
 def module_loaded():

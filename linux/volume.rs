@@ -306,10 +306,11 @@ const MOUNT_PREFETCH_PAGES: usize = 1_024;
 /// Read the committed catalog ahead; glue.c's background work queues it.
 #[no_mangle]
 unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
-    prefetch_catalog(sb, PREFETCH_PAGES);
+    prefetch_catalog(sb, PREFETCH_PAGES, false);
 }
 
-fn prefetch_catalog(sb: *mut bindings::super_block, budget: usize) {
+/// Whether the walk read the whole catalog.
+fn prefetch_catalog(sb: *mut bindings::super_block, budget: usize, verify_leaves: bool) -> bool {
     let tree = {
         let state = of(sb).lock();
         Tree {
@@ -324,7 +325,7 @@ fn prefetch_catalog(sb: *mut bindings::super_block, budget: usize) {
     };
     // Only a cache warms or not: a page a commit has since replaced or a
     // read failure ends the walk, and use reports real errors.
-    let _ = tree.prefetch(budget);
+    tree.prefetch(budget, verify_leaves).unwrap_or(false)
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -464,10 +465,9 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
     // reads it before mounting writable, so that first listings find it
     // cached; on a disk that seeks, only in the background.
     // SAFETY: `sb` holds its block device.
-    if unsafe { glue::carryfs_bdev_nonrot(sb) } {
-        prefetch_catalog(sb, MOUNT_PREFETCH_PAGES);
-    }
-    if of(sb).background != 0 {
+    let read = unsafe { glue::carryfs_bdev_nonrot(sb) }
+        && prefetch_catalog(sb, MOUNT_PREFETCH_PAGES, true);
+    if !read && of(sb).background != 0 {
         // SAFETY: `kill_sb` stops the work before the volume goes away.
         unsafe { glue::carryfs_prefetch_queue(of(sb).background as *mut c_void) };
     }

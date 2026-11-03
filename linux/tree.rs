@@ -338,12 +338,16 @@ impl<'a> Tree<'a> {
         unsafe { glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), count as u32) };
     }
 
-    /// Read and verify the tree's pages, a level at a time, until `budget`
-    /// pages. A level's pages, written by the same commits into neighboring
+    /// Read the tree's pages, a level at a time, until `budget` pages, and
+    /// verify them; leaves only if `verify_leaves`, as verifying costs CPU
+    /// a background walk should not take from the mount's users. Whether
+    /// the walk reached every page within the budget.
+    ///
+    /// A level's pages, written by the same commits into neighboring
     /// workspace slots, cluster on the device: each level is read in block
     /// order, short gaps included, so the block layer merges it into a few
     /// large reads instead of one random read per page.
-    pub(crate) fn prefetch(&self, budget: usize) -> Result {
+    pub(crate) fn prefetch(&self, budget: usize, verify_leaves: bool) -> Result<bool> {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;
         let mut spent = 1;
@@ -367,22 +371,25 @@ impl<'a> Tree<'a> {
             }
             // SAFETY: `sb` is mounted; `ahead` holds block numbers.
             unsafe { glue::carryfs_readahead_blocks(self.sb, ahead.as_ptr(), ahead.len() as u32) };
+            if level[0].level == Some(0) && !verify_leaves {
+                return Ok(true);
+            }
             for at in level.iter() {
                 self.load(*at, None)?;
             }
             if level[0].level == Some(0) {
-                return Ok(());
+                return Ok(true);
             }
             let mut next = KVec::new();
             for at in level.iter() {
                 let page = self.load(*at, None)?;
                 let view = self.view(&page, *at)?;
                 if view.level == 0 {
-                    return Ok(());
+                    return Ok(true);
                 }
                 for (_, value) in view.records() {
                     if spent == budget {
-                        break;
+                        return Ok(false);
                     }
                     next.push(self.child(*at, view.level, value), GFP_KERNEL)?;
                     spent += 1;
@@ -390,7 +397,7 @@ impl<'a> Tree<'a> {
             }
             level = next;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Check the tree's root page, as opening a volume does.

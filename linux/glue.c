@@ -153,6 +153,45 @@ void carryfs_timer_stop(void *timer)
 	kfree(t);
 }
 
+/*
+ * Read the catalog ahead after mounting, as the FUSE adapter does and as
+ * ext4 prefetches block bitmaps, so that first listings find it cached.
+ */
+struct carryfs_prefetch {
+	struct work_struct work;
+	struct super_block *sb;
+};
+
+static void carryfs_prefetch_fn(struct work_struct *work)
+{
+	struct carryfs_prefetch *prefetch =
+		container_of(work, struct carryfs_prefetch, work);
+
+	carryfs_prefetch_catalog(prefetch->sb);
+}
+
+void *carryfs_prefetch_start(struct super_block *sb)
+{
+	struct carryfs_prefetch *prefetch = kzalloc(sizeof(*prefetch), GFP_KERNEL);
+
+	if (!prefetch)
+		return NULL;
+	prefetch->sb = sb;
+	INIT_WORK(&prefetch->work, carryfs_prefetch_fn);
+	queue_work(system_unbound_wq, &prefetch->work);
+	return prefetch;
+}
+
+void carryfs_prefetch_stop(void *prefetch)
+{
+	struct carryfs_prefetch *p = prefetch;
+
+	if (!p)
+		return;
+	cancel_work_sync(&p->work);
+	kfree(p);
+}
+
 static struct file_system_type carryfs_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "carryfs",
@@ -426,9 +465,10 @@ void carryfs_i_size_write(struct inode *inode, loff_t size)
  * Instantiate a dentry for an entry readdir just returned, as NFS and CIFS
  * do for readdirplus, so stats after a listing find it in the dcache.
  * Entries already cached are left alone; failures only skip the priming.
+ * @known, if not NULL, is the entry's inode record as readdir read it.
  */
 void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 ino,
-			  umode_t type)
+			  umode_t type, const void *known)
 {
 	struct qstr qname = QSTR_INIT(name, len);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
@@ -454,7 +494,7 @@ void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 
 		return;
 	if (!d_in_lookup(dentry))
 		goto out;
-	inode = carryfs_iget(parent->d_sb, ino, type);
+	inode = carryfs_iget(parent->d_sb, ino, type, known);
 	if (IS_ERR(inode)) {
 		d_lookup_done(dentry);
 		goto out;

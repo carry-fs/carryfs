@@ -50,6 +50,8 @@ pub(crate) struct State {
     pub(crate) hint: u64,
     /// The periodic-commit timer of a writable mount, from glue.c.
     pub(crate) timer: usize,
+    /// The catalog prefetch started at mount, from glue.c.
+    prefetch: usize,
     /// Retired data may be reclaimable by a later commit.
     pub(crate) reclaim_pending: bool,
     /// Space held for dirty page-cache units.
@@ -78,6 +80,15 @@ impl State {
     /// open transaction, awaits reclamation.
     pub(crate) fn reclaimable(&self) -> bool {
         self.reclaim_pending || self.txn.as_ref().is_some_and(|txn| !txn.retired.is_empty())
+    }
+
+    /// Changes whenever a record may have: identifies the state a record
+    /// was read in.
+    pub(crate) fn stamp(&self) -> (u64, u64) {
+        (
+            self.root.generation,
+            self.txn.as_ref().map_or(0, |txn| txn.edits),
+        )
     }
 
     /// Free blocks, counting the open transaction's changes.
@@ -232,10 +243,39 @@ unsafe extern "C" fn carryfs_stop_timer(sb: *mut bindings::super_block) {
     if unsafe { (*sb).s_fs_info }.is_null() {
         return;
     }
-    let timer = core::mem::take(&mut of(sb).lock().timer);
-    // SAFETY: The timer was started by `fill_super` and is stopped once;
-    // the lock is not held, since the timer's work takes it.
-    unsafe { glue::carryfs_timer_stop(timer as *mut c_void) };
+    let (timer, prefetch) = {
+        let mut state = of(sb).lock();
+        (core::mem::take(&mut state.timer), core::mem::take(&mut state.prefetch))
+    };
+    // SAFETY: The timer and prefetch were started by `fill_super` and are
+    // stopped once; the lock is not held, since their work takes it.
+    unsafe {
+        glue::carryfs_timer_stop(timer as *mut c_void);
+        glue::carryfs_prefetch_stop(prefetch as *mut c_void);
+    }
+}
+
+/// Catalog pages read ahead at mount: 16 MiB, the FUSE adapter's budget.
+const PREFETCH_PAGES: usize = 4_096;
+
+/// Read the committed catalog ahead; `carryfs_prefetch_start` queues it.
+#[no_mangle]
+unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
+    let tree = {
+        let state = of(sb).lock();
+        Tree {
+            sb,
+            uuid: state.root.uuid,
+            blocks: state.root.blocks,
+            kind: TreeKind::Catalog,
+            root: crate::tree::Link::Disk(state.root.catalog),
+            generation: state.root.generation,
+            drafts: &[],
+        }
+    };
+    // Only a cache warms or not: a page a commit has since replaced or a
+    // read failure ends the walk, and use reports real errors.
+    let _ = tree.prefetch(PREFETCH_PAGES);
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -316,6 +356,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 faulted: false,
                 hint: 0,
                 timer: 0,
+                prefetch: 0,
                 reclaim_pending: true,
                 reservations: Default::default(),
                 writing: 0,
@@ -360,6 +401,10 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         of(sb).lock().timer = timer as usize;
     }
+
+    // SAFETY: `kill_sb` stops the prefetch before the volume goes away.
+    let prefetch = unsafe { glue::carryfs_prefetch_start(sb) };
+    of(sb).lock().prefetch = prefetch as usize;
 
     let root_inode = inode::get(sb, inode::ROOT)?;
     // SAFETY: `get` returned a referenced inode.

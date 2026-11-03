@@ -40,6 +40,57 @@ struct Item {
     name: usize,
     target: u64,
     kind: u8,
+    /// Where the target's inode record is in the batch's bytes, if read.
+    record: Option<(usize, usize)>,
+}
+
+/// Catalog records `read_records` visits per entry before giving up: the
+/// records of the objects between the targets it looks for.
+const RECORDS_PER_ENTRY: usize = 16;
+
+/// Copy the inode records of `items`' targets into `bytes`, in one walk in
+/// object order rather than a search each, as XFS bulkstat walks inode
+/// clusters. Targets created together are neighbors; spread ones stop the
+/// walk, and priming searches for those.
+fn read_records(
+    sb: *mut bindings::super_block,
+    state: &crate::volume::State,
+    items: &mut [Item],
+    bytes: &mut KVec<u8>,
+) -> Result {
+    // Insertion sort of at most `BATCH` indices, by target.
+    let mut order = [0usize; BATCH];
+    let order = &mut order[..items.len()];
+    for index in 0..order.len() {
+        order[index] = index;
+        let mut at = index;
+        while at > 0 && items[order[at - 1]].target > items[order[at]].target {
+            order.swap(at - 1, at);
+            at -= 1;
+        }
+    }
+    let Some(&first) = order.first() else {
+        return Ok(());
+    };
+    let start = tree::prefix(items[first].target, tree::INODE);
+    let (mut next, mut budget) = (0, order.len() * RECORDS_PER_ENTRY);
+    Tree::catalog(sb, state).scan(&start, &mut |key, value| {
+        let owner = tree::be_u64(key, 0);
+        while next < order.len() && items[order[next]].target < owner {
+            next += 1;
+        }
+        if next == order.len() || budget == 0 {
+            return Ok(false);
+        }
+        budget -= 1;
+        if key.len() == 9 && key[8] == tree::INODE && owner == items[order[next]].target {
+            let at = bytes.len();
+            tree::append(bytes, value)?;
+            items[order[next]].record = Some((at, value.len()));
+            next += 1;
+        }
+        Ok(true)
+    })
 }
 
 /// Most name bytes a kept listing holds; larger directories are listed
@@ -131,9 +182,10 @@ unsafe extern "C" fn iterate(file: *mut bindings::file, ctx: *mut bindings::dir_
             cursor,
         )
     };
-    let prime = |name: &[u8], target: u64, kind: u8| {
+    let prime = |name: &[u8], target: u64, kind: u8, known: Option<&inode::Known<'_>>| {
+        let known = known.map_or(core::ptr::null(), |known| core::ptr::from_ref(known).cast());
         // SAFETY: The open directory pins its dentry; names are at most
-        // 255 bytes.
+        // 255 bytes; `known` outlives the call.
         unsafe {
             glue::carryfs_prime_dentry(
                 parent,
@@ -141,6 +193,7 @@ unsafe extern "C" fn iterate(file: *mut bindings::file, ctx: *mut bindings::dir_
                 name.len() as c_int,
                 target,
                 inode::kind_mode(kind) as u16,
+                known,
             )
         }
     };
@@ -179,7 +232,7 @@ fn list(
     dir: &Inode,
     context: &DirContext,
     cursor: &mut Option<KBox<Cursor>>,
-    prime: &dyn Fn(&[u8], u64, u8),
+    prime: &dyn Fn(&[u8], u64, u8, Option<&inode::Known<'_>>),
 ) -> Result {
     let pos = context.pos();
     let prefix = tree::prefix(dir.object(), tree::ENTRY);
@@ -221,7 +274,7 @@ fn list(
     'listing: loop {
         bytes.clear();
         items.clear();
-        {
+        let stamp = {
             let state = volume.lock();
             let catalog = state.root.catalog.block;
             Tree::catalog(sb.as_ptr(), &state).scan(&last, &mut |key, value| {
@@ -248,12 +301,15 @@ fn list(
                         name: name.len(),
                         target: le_u64(value, 0),
                         kind: value.get(8).copied().unwrap_or(0),
+                        record: None,
                     },
                     GFP_KERNEL,
                 )?;
                 Ok(items.len() < BATCH)
             })?;
-        }
+            read_records(sb.as_ptr(), &state, &mut items, &mut bytes)?;
+            state.stamp()
+        };
         let full = items.len() == BATCH;
         let mut emitted_in_batch: usize = 0;
         for entry in items.iter() {
@@ -262,7 +318,11 @@ fn list(
                 stopped = true;
                 break;
             }
-            prime(name, entry.target, entry.kind);
+            let known = entry.record.map(|(at, len)| inode::Known {
+                stamp,
+                record: &bytes[at..at + len],
+            });
+            prime(name, entry.target, entry.kind, known.as_ref());
             if let Some((listing, _)) = &mut building {
                 if !listing.add(name, entry.kind, entry.target)? {
                     building = None;

@@ -55,6 +55,8 @@ unsafe extern "C" {
     pub(crate) fn carryfs_write_dirty_inodes(sb: *mut super_block) -> c_int;
     pub(crate) fn carryfs_timer_start(sb: *mut super_block) -> *mut c_void;
     pub(crate) fn carryfs_timer_stop(timer: *mut c_void);
+    pub(crate) fn carryfs_prefetch_start(sb: *mut super_block) -> *mut c_void;
+    pub(crate) fn carryfs_prefetch_stop(prefetch: *mut c_void);
     pub(crate) fn carryfs_nofs_save() -> u32;
     pub(crate) fn carryfs_nofs_restore(flags: u32);
     pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;
@@ -65,6 +67,7 @@ unsafe extern "C" {
         len: c_int,
         ino: u64,
         kind: u16,
+        known: *const c_void,
     );
     pub(crate) fn carryfs_inode_query_iversion(inode: *mut inode) -> u64;
     pub(crate) fn carryfs_inode_eq_iversion(inode: *mut inode, version: u64) -> bool;

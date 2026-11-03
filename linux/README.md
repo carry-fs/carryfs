@@ -163,7 +163,13 @@ btrfs flushes delalloc and ext4 retries allocation before ENOSPC.
   ext4 does.
 - **Listing then stat.** FUSE's readdirplus instantiates every entry during
   a listing. Without that, a native `ls -l` lost to FUSE, so listings prime
-  the dcache as NFS and CIFS do.
+  the dcache as NFS and CIFS do. Priming reads the batch's inode records in
+  one catalog walk in object order, as XFS bulkstat walks inode clusters,
+  instead of a search per entry.
+- **Cold catalog.** The FUSE adapter reads catalog leaves ahead at mount.
+  The driver does too, on a workqueue, as ext4 prefetches block bitmaps:
+  internal pages a level at a time, then the leaves without waiting, up
+  to 4,096 pages.
 - **Repeated listings.** FUSE keeps readdir output in the page cache. A
   directory listed whole keeps its entries on its inode, up to 2 MiB of
   names, until it changes or the inode is evicted; inode reclaim bounds the

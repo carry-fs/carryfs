@@ -19,15 +19,18 @@ int carryfs_fill_super(struct super_block *sb, u32 uid, u32 gid, int silent);
 void carryfs_free_volume(void *volume);
 void carryfs_stop_timer(struct super_block *sb);
 void carryfs_periodic_commit(struct super_block *sb);
-struct inode *carryfs_iget(struct super_block *sb, u64 ino, umode_t type);
+struct inode *carryfs_iget(struct super_block *sb, u64 ino, umode_t type, const void *known);
 int carryfs_reserve_folio(struct inode *inode, u64 index);
 void carryfs_read_done(void *batch, int status);
+void carryfs_prefetch_catalog(struct super_block *sb);
 
 /* Implemented in glue.c. */
 int carryfs_register(void);
 void carryfs_unregister(void);
 struct bio;
 int carryfs_submit_read(struct bio *bio, void *batch);
+void *carryfs_prefetch_start(struct super_block *sb);
+void carryfs_prefetch_stop(void *prefetch);
 u64 carryfs_bdev_bytes(struct super_block *sb);
 unsigned int carryfs_bdev_logical_block_size(struct super_block *sb);
 unsigned int carryfs_bdev_physical_block_size(struct super_block *sb);
@@ -51,7 +54,7 @@ void carryfs_nofs_restore(unsigned int flags);
 bool carryfs_inode_is_new(struct inode *inode);
 void carryfs_i_size_write(struct inode *inode, loff_t size);
 void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 ino,
-			  umode_t type);
+			  umode_t type, const void *known);
 u64 carryfs_inode_query_iversion(struct inode *inode);
 bool carryfs_inode_eq_iversion(struct inode *inode, u64 version);
 void carryfs_inode_inc_iversion(struct inode *dir);

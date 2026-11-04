@@ -48,37 +48,86 @@ struct Item {
 /// records of the objects between the targets it looks for.
 const RECORDS_PER_ENTRY: usize = 16;
 
+/// Entries `Ahead` keeps scanned past those the listing emitted: about
+/// sixteen leaves.
+const AHEAD_ENTRIES: usize = 1024;
+/// Entry leaves `Ahead` scans at a time, reading their children's leaves in
+/// one merged pass; the next group's entry leaves are read ahead meanwhile.
+const AHEAD_LEAVES: usize = 16;
+
+/// Read-ahead for a first listing of a directory, kept with its open file.
+///
+/// A listing needs the leaves of the directory's entries and those of its
+/// children's records, and the children are found from the entries. Reading
+/// all entry leaves first, then the children's, made a cold listing of
+/// 10,000 entries wait 10 ms for the entries before its CPU work could
+/// start, and any read queued behind them waited too. So this reads the
+/// entry leaves a few at a time and, as each is scanned, the leaves of its
+/// entries' children, each merged (`Tree::read_ahead_merged`), keeping
+/// about `AHEAD_ENTRIES` ahead of the listing. Only hints: a change to the
+/// catalog stops it, as its leaf positions may then be gone.
+struct Ahead {
+    stamp: (u64, u64),
+    leaves: KVec<tree::Position>,
+    /// Leaves scanned, and leaves whose reads were started.
+    scanned: usize,
+    issued: usize,
+    /// Entries in the scanned leaves, and entries the listing emitted.
+    entries: usize,
+    emitted: usize,
+}
+
+impl Ahead {
+    fn new(sb: *mut bindings::super_block, state: &crate::volume::State, prefix: &[u8], dir: u64) -> Result<Self> {
+        let leaves = Tree::catalog(sb, state).leaves_in(prefix, &tree::prefix(dir, tree::ENTRY + 1))?;
+        Ok(Self {
+            stamp: state.stamp(),
+            leaves,
+            scanned: 0,
+            issued: 0,
+            entries: 0,
+            emitted: 0,
+        })
+    }
+
+    /// Scan entry leaves until `AHEAD_ENTRIES` past those emitted, a group
+    /// of `AHEAD_LEAVES` at a time: read the next group's entry leaves
+    /// ahead, then the group's children's leaves.
+    fn advance(&mut self, sb: *mut bindings::super_block, state: &crate::volume::State, prefix: &[u8]) -> Result {
+        if state.stamp() != self.stamp {
+            self.leaves.clear();
+        }
+        let tree = Tree::catalog(sb, state);
+        while self.scanned < self.leaves.len() && self.entries < self.emitted + AHEAD_ENTRIES {
+            let group = (self.scanned + AHEAD_LEAVES).min(self.leaves.len());
+            let want = (group + AHEAD_LEAVES).min(self.leaves.len());
+            if self.issued < want {
+                tree.read_ahead_merged(&self.leaves[self.issued..want])?;
+                self.issued = want;
+            }
+            let (mut low, mut high, mut count) = (u64::MAX, 0, 0);
+            for at in self.leaves[self.scanned..group].iter() {
+                tree.leaf_records(*at, &mut |key, value| {
+                    if key.starts_with(prefix) {
+                        let target = le_u64(value, 0);
+                        (low, high, count) = (low.min(target), high.max(target), count + 1);
+                    }
+                })?;
+            }
+            self.scanned = group;
+            self.entries += count;
+            if low <= high {
+                tree.prefetch_range(&low.to_be_bytes(), &high.saturating_add(1).to_be_bytes())?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Copy the inode records of `items`' targets into `bytes`, in one walk in
 /// object order rather than a search each, as XFS bulkstat walks inode
 /// clusters. Targets created together are neighbors; spread ones stop the
 /// walk, and priming searches for those.
-/// Start reading what a first listing of `dir` needs: the leaves of its
-/// entries, then those of its children's records, each in one merged pass
-/// (`Tree::prefetch_range`) rather than 16 scattered leaves at a time. The
-/// children's objects are found from the entries, which this waits for.
-fn prefetch_listing(
-    sb: *mut bindings::super_block,
-    state: &crate::volume::State,
-    prefix: &[u8],
-    dir: u64,
-) -> Result {
-    let tree = Tree::catalog(sb, state);
-    tree.prefetch_range(prefix, &tree::prefix(dir, tree::ENTRY + 1))?;
-    let (mut low, mut high) = (u64::MAX, 0);
-    tree.scan(prefix, &mut |key, value| {
-        if !key.starts_with(prefix) {
-            return Ok(false);
-        }
-        let target = le_u64(value, 0);
-        (low, high) = (low.min(target), high.max(target));
-        Ok(true)
-    })?;
-    if low <= high {
-        tree.prefetch_range(&low.to_be_bytes(), &high.saturating_add(1).to_be_bytes())?;
-    }
-    Ok(())
-}
-
 fn read_records(
     sb: *mut bindings::super_block,
     state: &crate::volume::State,
@@ -185,6 +234,7 @@ struct Cursor {
     pos: i64,
     key: KVec<u8>,
     building: Option<(KBox<Listing>, u64)>,
+    ahead: Option<KBox<Ahead>>,
 }
 
 unsafe extern "C" fn iterate(file: *mut bindings::file, ctx: *mut bindings::dir_context) -> c_int {
@@ -293,9 +343,14 @@ fn list(
     let mut emitted = 0;
     let sb = dir.super_block();
     let volume = sb.volume();
-    if pos == 2 && !resume {
-        prefetch_listing(sb.as_ptr(), &volume.lock(), &prefix, dir.object())?;
-    }
+    let mut ahead = match cursor.as_deref_mut() {
+        Some(cursor) if resuming => cursor.ahead.take(),
+        _ if pos == 2 && !resume => Some(KBox::new(
+            Ahead::new(sb.as_ptr(), &volume.lock(), &prefix, dir.object())?,
+            GFP_KERNEL,
+        )?),
+        _ => None,
+    };
     // Entries are read under the volume lock in batches, then emitted and
     // primed without it: priming fills inodes, which takes the lock.
     // One buffer for the batch's keys and names, reused across batches.
@@ -306,6 +361,9 @@ fn list(
         items.clear();
         let stamp = {
             let state = volume.lock();
+            if let Some(ahead) = ahead.as_deref_mut() {
+                ahead.advance(sb.as_ptr(), &state, &prefix)?;
+            }
             let catalog = state.root.catalog.block;
             Tree::catalog(sb.as_ptr(), &state).scan(&last, &mut |key, value| {
                 if !key.starts_with(&prefix) {
@@ -361,6 +419,9 @@ fn list(
             emitted_in_batch += 1;
             emitted += 1;
         }
+        if let Some(ahead) = ahead.as_deref_mut() {
+            ahead.emitted += emitted_in_batch;
+        }
         // The last emitted entry's key, copied once per batch for resuming.
         if let Some(entry) = emitted_in_batch
             .checked_sub(1)
@@ -396,6 +457,7 @@ fn list(
             cursor.pos = pos;
             cursor.key = last;
             cursor.building = building;
+            cursor.ahead = ahead;
         }
         None => {
             *cursor = Some(KBox::new(
@@ -403,6 +465,7 @@ fn list(
                     pos,
                     key: last,
                     building,
+                    ahead,
                 },
                 GFP_KERNEL,
             )?);

@@ -641,7 +641,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
     // read-only one reads the catalog's first leaves in key order, the root
     // and the oldest directories, about 4 ms, while FUSE's read-only mount
     // takes 11 ms and starts its key-order read-ahead; other first listings
-    // read just their directory's leaves, merged (`dir::prefetch_listing`).
+    // read their directory's leaves ahead of themselves (`dir::Ahead`).
     // A background walk instead raced listings and slowed the passes after
     // them. On a disk that seeks, a background walk reads the catalog ahead.
     // SAFETY: `sb` holds its block device.

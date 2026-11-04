@@ -421,7 +421,7 @@ impl<'a> Tree<'a> {
     /// Start reading the disk pages at `positions` in block order, short
     /// gaps included, so the block layer merges them into a few large reads
     /// instead of one random read per page. Cached pages are skipped.
-    fn read_ahead_merged(&self, positions: &[Position]) -> Result {
+    pub(crate) fn read_ahead_merged(&self, positions: &[Position]) -> Result {
         let mut blocks = KVec::with_capacity(positions.len(), GFP_KERNEL)?;
         for at in positions.iter() {
             if let Link::Disk(reference) = at.link {
@@ -446,9 +446,14 @@ impl<'a> Tree<'a> {
 
     /// Start reading the leaves that hold keys in `from..to`, merged as
     /// `prefetch` reads a level, without waiting for them; the pages above
-    /// them are read on the way. A listing reads a directory's leaves this
-    /// way, rather than 16 scattered leaves at a time as searches do.
+    /// them are read on the way.
     pub(crate) fn prefetch_range(&self, from: &[u8], to: &[u8]) -> Result {
+        self.read_ahead_merged(&self.leaves_in(from, to)?)
+    }
+
+    /// The leaves that hold keys in `from..to`, in key order, found by
+    /// reading the pages above them; none when the root is a leaf.
+    pub(crate) fn leaves_in(&self, from: &[u8], to: &[u8]) -> Result<KVec<Position>> {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;
         loop {
@@ -458,7 +463,7 @@ impl<'a> Tree<'a> {
                 let page = self.load(*at, None)?;
                 let view = self.view(&page, *at)?;
                 if view.level == 0 {
-                    return Ok(());
+                    return Ok(KVec::new());
                 }
                 above_leaves = view.level == 1;
                 // Internal keys are subtree minimums: from the last child
@@ -478,10 +483,23 @@ impl<'a> Tree<'a> {
                 }
             }
             if above_leaves {
-                return self.read_ahead_merged(&next);
+                return Ok(next);
             }
             level = next;
         }
+    }
+
+    /// Calls `f` with each record of the leaf at `at`, in key order.
+    pub(crate) fn leaf_records(
+        &self,
+        at: Position,
+        f: &mut dyn FnMut(&[u8], &[u8]),
+    ) -> Result {
+        let page = self.load(at, None)?;
+        for (key, value) in self.view(&page, at)?.records() {
+            f(key, value);
+        }
+        Ok(())
     }
 
     /// Check the tree's root page, as opening a volume does.

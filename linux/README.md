@@ -195,7 +195,10 @@ without making the close wait.
   first 256 leaves in key order, the root and the oldest directories, and
   returns in 8-10 ms, against 11 ms for FUSE, whose read-only mount
   starts a key-order read-ahead; a first listing elsewhere reads the
-  leaves of its entries, then of its children's records, merged. A
+  leaves of its entries 16 at a time ahead of itself and, as it scans each
+  group, its children's record leaves, each merged, so that its CPU work
+  starts before every entry leaf has arrived: a cold read-only listing of
+  10,000 entries then waits 3-4 ms for reads rather than 10. A
   background walk, as FUSE runs, raced first listings and slowed the
   passes after them. On a disk that seeks, a workqueue reads the catalog
   ahead a level at a time, as ext4 prefetches block bitmaps.

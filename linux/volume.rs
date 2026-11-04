@@ -463,28 +463,31 @@ unsafe extern "C" fn carryfs_volume_background(sb: *mut bindings::super_block) -
     of(sb).background as *mut c_void
 }
 
-/// Catalog pages read ahead after mounting a disk that seeks: 16 MiB, the
-/// FUSE adapter's budget.
+/// Catalog pages read ahead after mounting: 16 MiB, the FUSE adapter's
+/// budget.
 const PREFETCH_PAGES: usize = 4_096;
 
-/// Read the committed catalog ahead; glue.c's background work queues it.
+/// Read the committed catalog ahead after mounting a disk that seeks;
+/// glue.c's background work queues it.
 #[no_mangle]
 unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
-    let tree = {
-        let state = of(sb).lock();
-        Tree {
-            sb,
-            uuid: state.root.uuid,
-            blocks: state.root.blocks,
-            kind: TreeKind::Catalog,
-            root: crate::tree::Link::Disk(state.root.catalog),
-            generation: state.root.generation,
-            drafts: &[],
-        }
-    };
     // Only a cache warms or not: a page a commit has since replaced or a
     // read failure ends the walk, and use reports real errors.
-    let _ = tree.prefetch(PREFETCH_PAGES);
+    let _ = committed_catalog(sb).prefetch(PREFETCH_PAGES, false);
+}
+
+/// The committed catalog, without the open transaction's drafts.
+fn committed_catalog<'a>(sb: *mut bindings::super_block) -> Tree<'a> {
+    let state = of(sb).lock();
+    Tree {
+        sb,
+        uuid: state.root.uuid,
+        blocks: state.root.blocks,
+        kind: TreeKind::Catalog,
+        root: crate::tree::Link::Disk(state.root.catalog),
+        generation: state.root.generation,
+        drafts: &[],
+    }
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -621,13 +624,20 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         of(sb).lock().timer = timer as usize;
     }
 
-    // On a disk that seeks, a background walk reads the catalog ahead. An
-    // SSD mounts without reading it: a first listing reads just its
-    // directory's leaves, in merged reads (`dir::prefetch_listing`). Reading
-    // the whole catalog first made a read-only mount 30 ms on a USB SSD,
-    // against FUSE's 11, and a 1,000-entry listing does not need it.
+    // A writable mount on an SSD reads and verifies the catalog before it
+    // returns, as the FUSE adapter's writable open checks the whole forest,
+    // in merged reads: about 28 ms for a 1,700-page catalog on a USB SSD,
+    // where FUSE takes 80, and its first listings find it cached. A
+    // read-only one returns at once, as FUSE's does in 11 ms, and a first
+    // listing reads just its directory's leaves, merged
+    // (`dir::prefetch_listing`): a background walk raced listings and
+    // slowed the passes after them. On a disk that seeks, a background walk
+    // reads the catalog ahead.
     // SAFETY: `sb` holds its block device.
-    if !unsafe { glue::carryfs_bdev_nonrot(sb) } && of(sb).background != 0 {
+    let ssd = unsafe { glue::carryfs_bdev_nonrot(sb) };
+    if ssd && writable {
+        let _ = committed_catalog(sb).prefetch(PREFETCH_PAGES, true);
+    } else if !ssd && of(sb).background != 0 {
         // SAFETY: `kill_sb` stops the work before the volume goes away.
         unsafe { glue::carryfs_prefetch_queue(of(sb).background as *mut c_void) };
     }

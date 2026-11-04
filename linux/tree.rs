@@ -339,20 +339,26 @@ impl<'a> Tree<'a> {
     }
 
     /// Read the tree's pages ahead, a level at a time, until `budget`
-    /// pages. Internal pages are verified on the way; leaves are only
-    /// started, as verifying them costs CPU a background walk should not
-    /// take from the mount's users, and use verifies them.
+    /// pages. Internal pages are verified on the way; leaves are read and
+    /// verified too if `load_leaves`, as a writable mount waits for them,
+    /// and otherwise only started, as verifying them costs CPU a background
+    /// walk should not take from the mount's users, and use verifies them.
     ///
     /// A level's pages, written by the same commits into neighboring
     /// workspace slots, cluster on the device: each level is read merged
     /// (`read_ahead_merged`) instead of one random read per page.
-    pub(crate) fn prefetch(&self, budget: usize) -> Result {
+    pub(crate) fn prefetch(&self, budget: usize, load_leaves: bool) -> Result {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;
         let mut spent = 1;
         while !level.is_empty() {
             self.read_ahead_merged(&level)?;
             if level[0].level == Some(0) {
+                if load_leaves {
+                    for at in level.iter() {
+                        self.load(*at, None)?;
+                    }
+                }
                 return Ok(());
             }
             // The next level, cut at the budget: a cut level is still read.

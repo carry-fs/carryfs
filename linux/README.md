@@ -156,7 +156,13 @@ merges into large writes, then waits for all of it. The last close of a
 file written through it queues the file for a worker that starts the
 writeback of each batch of closed files under one plug, so a later fsync
 of their directory finds the data written, as NFS writes back on close,
-without making the close wait.
+without making the close wait. The worker is a thread of the module's own
+with the utilization clamp the FUSE adapter gives its daemon threads, so
+schedutil runs it at full clock: a writer waits for it while it holds the
+volume lock. On a kworker it ran at the low clock of a short burst, and
+1,000 4 KiB creates on a USB SSD under schedutil went from about 12,000
+to about 21,000 files/s (FUSE 13,300); at a fixed full clock both are
+about 20,000.
 
 ## Caveats learned from other filesystems
 

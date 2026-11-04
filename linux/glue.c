@@ -15,11 +15,13 @@
 #include <linux/fs_parser.h>
 #include <linux/highmem.h>
 #include <linux/iversion.h>
+#include <linux/kthread.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
 #include <linux/sched/mm.h>
+#include <uapi/linux/sched/types.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/version.h>
@@ -165,7 +167,7 @@ void carryfs_timer_stop(void *timer)
 struct carryfs_background {
 	struct super_block *sb;
 	struct work_struct prefetch;
-	struct work_struct flush;
+	struct kthread_work flush;
 	spinlock_t lock;
 	bool stopped;
 	unsigned int count;
@@ -180,8 +182,18 @@ static void carryfs_prefetch_fn(struct work_struct *work)
 	carryfs_prefetch_catalog(bg->sb);
 }
 
+/*
+ * Starts close-time writeback for every mount. A writer waits for it while
+ * it holds the volume lock, so it runs on a thread of its own with the
+ * utilization clamp FUSE's daemon gives its threads (fuse/src/fs.rs,
+ * run_at_full_speed): schedutil then clocks the CPU up while it works, as
+ * it does for the daemon. Kworkers of a workqueue take no clamp.
+ * one thread for all mounts; one per mount if volumes contend.
+ */
+static struct kthread_worker *carryfs_flush_worker;
+
 /* Start writeback of the queued inodes under one plug, so their writes merge. */
-static void carryfs_flush_fn(struct work_struct *work)
+static void carryfs_flush_fn(struct kthread_work *work)
 {
 	struct carryfs_background *bg =
 		container_of(work, struct carryfs_background, flush);
@@ -215,7 +227,7 @@ void *carryfs_background_new(struct super_block *sb)
 		return NULL;
 	bg->sb = sb;
 	INIT_WORK(&bg->prefetch, carryfs_prefetch_fn);
-	INIT_WORK(&bg->flush, carryfs_flush_fn);
+	kthread_init_work(&bg->flush, carryfs_flush_fn);
 	spin_lock_init(&bg->lock);
 	return bg;
 }
@@ -238,7 +250,7 @@ void carryfs_background_stop(void *background)
 	bg->stopped = true;
 	spin_unlock(&bg->lock);
 	cancel_work_sync(&bg->prefetch);
-	flush_work(&bg->flush);
+	kthread_flush_work(&bg->flush);
 	/* Closes cannot queue more once stopped; drain what raced the stop. */
 	carryfs_flush_fn(&bg->flush);
 	kfree(bg);
@@ -265,7 +277,7 @@ int carryfs_file_release(struct inode *inode, struct file *file)
 	}
 	spin_unlock(&bg->lock);
 	if (queued) {
-		queue_work(system_unbound_wq, &bg->flush);
+		kthread_queue_work(carryfs_flush_worker, &bg->flush);
 	} else {
 		filemap_flush(inode->i_mapping);
 		iput(inode);
@@ -292,20 +304,41 @@ static struct workqueue_struct *carryfs_read_wq;
 
 int carryfs_register(void)
 {
+	struct sched_attr boost = {
+		.size = sizeof(boost),
+		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
+		.sched_util_min = SCHED_CAPACITY_SCALE,
+	};
 	int error;
 
 	carryfs_read_wq = alloc_workqueue("carryfs-io", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
 	if (!carryfs_read_wq)
 		return -ENOMEM;
+	carryfs_flush_worker = kthread_create_worker(0, "carryfs-flush");
+	if (IS_ERR(carryfs_flush_worker)) {
+		error = PTR_ERR(carryfs_flush_worker);
+		goto out_wq;
+	}
+	/* Before it first runs; older kernels start it on creation. */
+	error = sched_setattr_nocheck(carryfs_flush_worker->task, &boost);
+	if (error)
+		pr_warn("carryfs: flush thread runs without a clock clamp: %d\n", error);
+	wake_up_process(carryfs_flush_worker->task);
 	error = register_filesystem(&carryfs_fs_type);
 	if (error)
-		destroy_workqueue(carryfs_read_wq);
+		goto out_worker;
+	return 0;
+out_worker:
+	kthread_destroy_worker(carryfs_flush_worker);
+out_wq:
+	destroy_workqueue(carryfs_read_wq);
 	return error;
 }
 
 void carryfs_unregister(void)
 {
 	unregister_filesystem(&carryfs_fs_type);
+	kthread_destroy_worker(carryfs_flush_worker);
 	destroy_workqueue(carryfs_read_wq);
 }
 

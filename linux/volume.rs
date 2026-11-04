@@ -148,6 +148,11 @@ pub(crate) struct Volume {
     background: usize,
     /// Set with `State::faulted`, for writes that skip the lock.
     fault_seen: Atomic<u32>,
+    /// The block after the last small file read, and how many small reads
+    /// in a row followed on from the one before: `file::small_read` reads
+    /// ahead only for a run of them.
+    pub(crate) next_small: Atomic<u64>,
+    pub(crate) small_run: Atomic<u32>,
     /// Signalled when `State::writing`, `reading`, or `committing` drops.
     #[pin]
     written: CondVar,
@@ -569,6 +574,8 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
             background: background as usize,
             written <- new_condvar!(),
             fault_seen: Atomic::new(0),
+            next_small: Atomic::new(0),
+            small_run: Atomic::new(0),
             state <- new_mutex!(State {
                 root,
                 txn: None,

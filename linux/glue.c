@@ -738,6 +738,49 @@ void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count)
 	clean_bdev_aliases(sb->s_bdev, block, count);
 }
 
+/*
+ * Forget cached copies of @count blocks from @block, just written with bios
+ * that bypassed the buffer cache: small-file reads read data through it.
+ * Waits for a read in flight, which may have fetched the old contents.
+ * Walks the folios as clean_bdev_aliases() does, cheap when none are cached.
+ */
+void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count)
+{
+	struct address_space *mapping = sb->s_bdev->bd_mapping;
+	unsigned int shift = PAGE_SHIFT - sb->s_blocksize_bits;
+	pgoff_t index = block >> shift, end = (block + count - 1) >> shift;
+	struct folio_batch fbatch;
+	unsigned int i;
+
+	folio_batch_init(&fbatch);
+	while (filemap_get_folios(mapping, &index, end, &fbatch)) {
+		for (i = 0; i < folio_batch_count(&fbatch); i++) {
+			struct folio *folio = fbatch.folios[i];
+			struct buffer_head *head, *bh;
+
+			/* A folio read without buffers would lend them its state. */
+			folio_lock(folio);
+			folio_clear_uptodate(folio);
+			head = folio_buffers(folio);
+			bh = head;
+			while (bh) {
+				if (bh->b_blocknr >= block && bh->b_blocknr < block + count) {
+					lock_buffer(bh);
+					clear_buffer_uptodate(bh);
+					clear_bit(BH_Carryfs_Verified, &bh->b_state);
+					unlock_buffer(bh);
+				}
+				bh = bh->b_this_page;
+				if (bh == head)
+					break;
+			}
+			folio_unlock(folio);
+		}
+		folio_batch_release(&fbatch);
+		cond_resched();
+	}
+}
+
 /* A block plug for a batch of writes; NULL when out of memory. */
 void *carryfs_plug_start(void)
 {

@@ -122,6 +122,15 @@ reads without waiting, and verifies and unlocks them from a workqueue, as
 erofs and btrfs verify data in end_io work. Commits wait for reads in
 flight, so no block being read is reclaimed and reused under them.
 
+Files of up to 16 blocks, read one after another where they lie together,
+are read through the buffer cache too, with the next 256 KiB chunks read
+ahead there, as FUSE gets from reading the block device. Otherwise each
+small file is a device request of its own: on a USB SSD, reading 10,000
+4 KiB files in directory order went from 10,082 requests and 670 ms of
+device time to about 245 requests and 200 ms. A data write forgets the cached
+copies of its blocks once it ends and before it is recorded, waiting for
+reads in flight, so no reader finds stale data.
+
 ### Writes
 
 A writable mount keeps one open transaction under the volume lock. The

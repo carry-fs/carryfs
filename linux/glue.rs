@@ -108,6 +108,7 @@ unsafe extern "C" {
     pub(crate) fn carryfs_plug_start() -> *mut c_void;
     pub(crate) fn carryfs_plug_finish(plug: *mut c_void);
     pub(crate) fn carryfs_clean_aliases(sb: *mut super_block, block: u64, count: u64);
+    pub(crate) fn carryfs_forget_blocks(sb: *mut super_block, block: u64, count: u64);
     pub(crate) fn carryfs_write_folio(
         mapping: *mut kernel::bindings::address_space,
         pos: i64,

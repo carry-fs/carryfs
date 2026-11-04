@@ -6,12 +6,15 @@
 //! read and verified whole before any of its bytes reach the page cache.
 //! Readahead windows are widened to unit boundaries, so sequential reads
 //! fetch each unit once, and read in batches whose I/O overlaps: a batch
-//! is verified and its folios unlocked on the read workqueue.
+//! is verified and its folios unlocked on the read workqueue. Small files
+//! read in a run are read through the buffer cache, with read-ahead across
+//! files (`small_read`).
 
 use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::page::Page;
 use kernel::prelude::*;
+use kernel::sync::atomic::Relaxed;
 
 use crate::glue;
 use crate::inode::Ops;
@@ -375,6 +378,10 @@ fn read_batch(source: &Source<'_>, folios: KVec<*mut bindings::folio>) {
         KBox::into_inner(batch).finish(EIO.to_errno(), false);
         return;
     }
+    if small_read(source, &mut batch).is_some() {
+        KBox::into_inner(batch).finish(0, true);
+        return;
+    }
     let mut bio = core::ptr::null_mut();
     for unit in batch.units.iter() {
         unit.queue(source.sb, &mut bio);
@@ -398,6 +405,79 @@ fn read_batch(source: &Source<'_>, folios: KVec<*mut bindings::folio>) {
         };
         batch.finish(status, true);
     }
+}
+
+/// Largest readahead batch `small_read` takes: small files.
+const SMALL_BLOCKS: usize = 16;
+/// Blocks `small_read` reads ahead at a time: 256 KiB.
+const CHUNK_BLOCKS: u64 = 64;
+
+/// Fill a small batch through the block device's buffer cache, reading
+/// ahead there when the read follows on from the last small one.
+///
+/// A file of a few blocks otherwise costs a device request of its own,
+/// about 80 µs on a USB SSD whatever its size, and files written together
+/// lie together: reading 10,000 4 KiB files in directory order took 10,082
+/// requests and 670 ms of device time, against about 245 requests and 200
+/// ms this way (FUSE, which reads through this cache too, 336 ms). Read ahead are
+/// the aligned chunk holding the batch's first block and the next chunk,
+/// so each chunk is one request when first touched. Only the third of a
+/// run of reads that each follow on from the last reads ahead, so random
+/// small reads cost what they did.
+/// Data writes forget the cached copies of their blocks before they are
+/// recorded (`write::forget_cached`), so no reader finds a stale one.
+///
+/// `None` if the batch is not small, is not part of such a run, or a block
+/// could not be read: the caller reads it with bios, which report the error.
+fn small_read(source: &Source<'_>, batch: &mut Batch) -> Option<()> {
+    let blocks: usize = batch.units.iter().map(|unit| unit.pages.len()).sum();
+    if blocks == 0 || blocks > SMALL_BLOCKS {
+        return None;
+    }
+    let (first, _) = batch.units.iter().find_map(|unit| unit.runs.first().copied())?;
+    let (last, run) = batch.units.iter().rev().find_map(|unit| unit.runs.last().copied())?;
+    // one stream per volume; concurrent streams defeat it and read
+    // with bios, per-file or per-directory state if that matters.
+    let volume = source.volume;
+    let previous = volume.next_small.load(Relaxed);
+    volume.next_small.store(last + run as u64, Relaxed);
+    let follows = first.wrapping_sub(previous) < CHUNK_BLOCKS;
+    let streak = if follows { volume.small_run.load(Relaxed).saturating_add(1) } else { 0 };
+    volume.small_run.store(streak, Relaxed);
+    // Two in a row: a random read follows on by chance often enough that
+    // one would cost random reads 8% more device time.
+    if streak < 2 {
+        return None;
+    }
+    let sb = source.sb;
+    // SAFETY: `sb` is mounted.
+    let device = unsafe { glue::carryfs_bdev_bytes(sb) } / BLOCK_BYTES as u64;
+    let from = first / CHUNK_BLOCKS * CHUNK_BLOCKS;
+    let to = (from + 2 * CHUNK_BLOCKS).min(device);
+    let mut ahead = KVec::with_capacity(2 * CHUNK_BLOCKS as usize, GFP_KERNEL).ok()?;
+    for block in from..to {
+        ahead.push(block, GFP_KERNEL).ok()?;
+    }
+    // SAFETY: `sb` is mounted; the blocks are inside the device.
+    unsafe { glue::carryfs_readahead_blocks(sb, ahead.as_ptr(), ahead.len() as u32) };
+    for unit in batch.units.iter() {
+        let mut done = 0;
+        for (physical, run) in unit.runs.iter().copied() {
+            for offset in 0..run {
+                let block = tree::Block::read(sb, physical + offset as u64).ok()?;
+                // SAFETY: The bounce page holds `BLOCK_BYTES` bytes.
+                unsafe {
+                    core::slice::from_raw_parts_mut(
+                        glue::carryfs_page_address(unit.pages[done + offset].as_ptr()).cast::<u8>(),
+                        BLOCK_BYTES,
+                    )
+                }
+                .copy_from_slice(block.data());
+            }
+            done += run;
+        }
+    }
+    Some(())
 }
 
 /// Fill `folio` from `unit`, reading it first unless it is the one given.

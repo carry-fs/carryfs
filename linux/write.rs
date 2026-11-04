@@ -277,6 +277,7 @@ impl<'a> Writer<'a> {
         let bio = queue_units(sb, &batch.units, &batch.allocation);
         // SAFETY: `bio` is null or the last of the chain, not yet submitted.
         let written = if bio.is_null() { Ok(()) } else { unsafe { wait(bio) } };
+        forget_cached(sb, &batch.allocation);
         let mut state = volume::of(sb).lock();
         state.wait_turn(object, batch.allocation.ticket);
         let result = complete_turn(state, &mut batch, written);
@@ -424,6 +425,7 @@ fn complete_boxed(mut boxed: KBox<Batch>, written: Result) -> Result {
     // SAFETY: The folios under writeback keep the inode alive.
     let inode = unsafe { Inode::from_raw(boxed.inode) };
     let (sb, object, ticket) = (inode.super_block().as_ptr(), inode.object(), boxed.allocation.ticket);
+    forget_cached(sb, &boxed.allocation);
     let mut state = volume::of(sb).lock();
     if !state.is_turn(object, ticket) {
         let errno = written.err().map_or(0, |error| error.to_errno());
@@ -616,6 +618,18 @@ fn queue_units(
     // SAFETY: Started above.
     unsafe { glue::carryfs_plug_finish(plug) };
     bio
+}
+
+/// Forget the buffer cache's copies of the blocks `allocation` was written
+/// to, once the write ended and before it is recorded: small-file reads
+/// (`file::small_read`) read data through that cache, and none can find
+/// these blocks before the record does. Without the volume lock, as it
+/// waits for reads in flight.
+fn forget_cached(sb: *mut bindings::super_block, allocation: &Allocation) {
+    for (_, first, count) in allocation.runs.iter().copied() {
+        // SAFETY: `sb` holds its block device.
+        unsafe { glue::carryfs_forget_blocks(sb, first, count) };
+    }
 }
 
 /// Submit `bio`, the last of a chain, and wait for the chain.

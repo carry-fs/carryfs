@@ -925,6 +925,10 @@ def run(args):
                             sample.close()
                         rows.extend(sample_rows(sample.folder / "results.jsonl", config["workload"], config.get("selection")))
                         (sample.folder / "complete").write_text("namespace, SHA-256 and offline checks passed\n")
+                        # A passed sample's images are disposable, and a run's worth
+                        # filled the disk; a failed sample keeps them for debugging.
+                        for image in ("disk.img", "format.img"):
+                            (sample.folder / image).unlink(missing_ok=True)
         finally:
             bench.emit = original_emit
             bench.os, bench.sync_path = original_os, original_sync

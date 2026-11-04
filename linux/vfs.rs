@@ -254,12 +254,29 @@ impl Folio {
         unsafe { Inode::from_raw(glue::carryfs_folio_inode(self.as_ptr())) }
     }
 
-    /// Calls `f` with the folio's page mapped.
-    pub(crate) fn with_bytes<T>(&self, f: impl FnOnce(&mut [u8]) -> T) -> T {
-        // SAFETY: A locked order-0 folio maps one page, which no one else
-        // writes while it is locked; the mapping ends below.
+    /// The folio's first block in its file. A folio lies within one
+    /// checksum unit: its order is at most that of a unit, and the page
+    /// cache aligns a folio to its size.
+    pub(crate) fn first_block(&self) -> u64 {
+        self.pos() / crate::ondisk::format::BLOCK_BYTES as u64
+    }
+
+    /// The blocks, pages, the folio holds.
+    pub(crate) fn blocks(&self) -> usize {
+        // SAFETY: The type invariant: the folio is in the page cache.
+        unsafe { glue::carryfs_folio_nr_pages(self.as_ptr()) as usize }
+    }
+
+    /// Calls `f` with block `index` of the folio mapped.
+    pub(crate) fn with_block<T>(&self, index: usize, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        assert!(index < self.blocks());
+        // SAFETY: A locked folio's pages are written by no one else while it
+        // is locked; `index` is inside it; the mapping ends below.
         unsafe {
-            let address = glue::carryfs_kmap_local_folio(self.as_ptr(), 0);
+            let address = glue::carryfs_kmap_local_folio(
+                self.as_ptr(),
+                index * crate::ondisk::format::BLOCK_BYTES,
+            );
             let result = f(core::slice::from_raw_parts_mut(
                 address.cast::<u8>(),
                 crate::ondisk::format::BLOCK_BYTES,

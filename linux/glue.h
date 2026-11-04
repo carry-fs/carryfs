@@ -82,7 +82,7 @@ void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count);
 void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count);
 bool carryfs_boost_caller(void);
 void carryfs_unboost_caller(void);
-struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos);
+struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos, size_t len);
 bool carryfs_folio_uptodate(struct folio *folio);
 void carryfs_folio_mark_uptodate(struct folio *folio);
 int carryfs_write_end(const struct kiocb *iocb, struct address_space *mapping, loff_t pos,
@@ -103,6 +103,9 @@ struct folio *carryfs_writeback_iter(struct address_space *mapping,
 				     struct writeback_control *wbc, struct folio *folio,
 				     int *error);
 struct folio *carryfs_readahead_folio(struct readahead_control *rac);
+void carryfs_set_folio_orders(struct address_space *mapping, unsigned int max);
+unsigned long carryfs_folio_nr_pages(struct folio *folio);
+void carryfs_folio_zero_tail(struct folio *folio, loff_t pos);
 loff_t carryfs_folio_pos(struct folio *folio);
 void *carryfs_kmap_local_folio(struct folio *folio, size_t offset);
 void carryfs_kunmap_local(void *addr);

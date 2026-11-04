@@ -880,10 +880,13 @@ void carryfs_file_allow_direct(struct file *file)
 
 /* Page cache. */
 
-/* The locked folio a buffered write fills, or an ERR_PTR. */
-struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos)
+/*
+ * The locked folio a buffered write of @len bytes at @pos fills, or an
+ * ERR_PTR: a new one as large as the write and the mapping allow.
+ */
+struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos, size_t len)
 {
-	return __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN,
+	return __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN | fgf_set_order(len),
 				   mapping_gfp_mask(mapping));
 }
 
@@ -1078,6 +1081,25 @@ u64 carryfs_readahead_count(struct readahead_control *rac)
 struct folio *carryfs_readahead_folio(struct readahead_control *rac)
 {
 	return readahead_folio(rac);
+}
+
+/* Let @mapping use folios of orders 0 to @max. */
+void carryfs_set_folio_orders(struct address_space *mapping, unsigned int max)
+{
+	mapping_set_folio_order_range(mapping, 0, max);
+}
+
+unsigned long carryfs_folio_nr_pages(struct folio *folio)
+{
+	return folio_nr_pages(folio);
+}
+
+/* Zero @folio from file position @pos, inside it, to its end. */
+void carryfs_folio_zero_tail(struct folio *folio, loff_t pos)
+{
+	size_t from = offset_in_folio(folio, pos);
+
+	folio_zero_range(folio, from, folio_size(folio) - from);
 }
 
 loff_t carryfs_folio_pos(struct folio *folio)

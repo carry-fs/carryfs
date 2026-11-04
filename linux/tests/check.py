@@ -12,6 +12,7 @@ import argparse
 import errno
 import hashlib
 import itertools
+import mmap
 import os
 import random
 import shutil
@@ -187,6 +188,141 @@ def listings(volume):
         assert sorted(os.listdir(root / "c")) == names
     volume.unmount()
     print(f"  listings: {volume.check()}")
+
+
+TRACING = Path("/sys/kernel/tracing")
+
+
+def folio_orders(path):
+    """Read `path` cold and return the orders of the page-cache folios the
+    read added, from the filemap tracepoint."""
+    ino = os.stat(path).st_ino
+    fd = os.open(path, os.O_RDONLY)
+    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    event = TRACING / "events/filemap/mm_filemap_add_to_page_cache"
+    was_on = (TRACING / "tracing_on").read_text().strip()
+    (TRACING / "trace").write_text("")
+    (event / "filter").write_text(f"i_ino == {ino}")
+    (event / "enable").write_text("1")
+    (TRACING / "tracing_on").write_text("1")
+    try:
+        while os.read(fd, 1 << 20):
+            pass
+    finally:
+        (TRACING / "tracing_on").write_text(was_on)
+        (event / "enable").write_text("0")
+        (event / "filter").write_text("0")
+        os.close(fd)
+    return [int(field.split("=")[1]) for line in (TRACING / "trace").read_text().splitlines()
+            for field in line.split() if field.startswith("order=")]
+
+
+def large_folios(volume):
+    """A file read cold sits in folios of up to one 64 KiB checksum unit,
+    and writes, mmap writes, and truncation inside such folios keep every
+    byte, across a remount. Readahead grows folio orders as it goes, so the
+    changes are made 12 MiB into a 16 MiB file, past the first windows."""
+    size, base = 16 << 20, 12 << 20
+    model = bytearray(os.urandom(size))
+    root = volume.mount()
+    path = root / "large"
+    path.write_bytes(model)
+    os.sync()
+    volume.unmount()
+    root = volume.mount()
+    path = root / "large"
+    orders = folio_orders(path)
+    assert max(orders, default=0) >= 2, f"no large folios: orders {sorted(set(orders))}"
+    assert max(orders) <= 4, f"a folio larger than a unit: orders {sorted(set(orders))}"
+    with open(path, "r+b") as f:
+        for offset, length in ((8192, 4096), (70_000, 100), (65536 - 10, 20)):
+            data = os.urandom(length)
+            f.seek(base + offset)
+            f.write(data)
+            model[base + offset:base + offset + length] = data
+        f.flush()
+        with mmap.mmap(f.fileno(), size) as mapped:
+            mapped[base + 130_000:base + 130_500] = b"m" * 500
+        model[base + 130_000:base + 130_500] = b"m" * 500
+        os.fsync(f.fileno())
+    end = base + 200_123
+    os.truncate(path, end)
+    del model[end:]
+    with open(path, "r+b") as f:
+        f.seek(base + 300_000)
+        f.write(b"grown")
+    model.extend(bytes(base + 300_000 - len(model)))
+    model.extend(b"grown")
+    assert path.read_bytes() == model, "content differs before remount"
+    volume.unmount()
+    root = volume.mount()
+    assert (root / "large").read_bytes() == model, "content differs after remount"
+    volume.unmount()
+    print(f"  large folios (orders {sorted(set(orders))}): {volume.check(scrub=True)}")
+
+
+def fsx(volume, operations, seed):
+    """Random writes, truncates, mmap writes, reads, fsyncs, cache drops and
+    remounts on one file, compared with an in-memory copy, as xfstests' fsx
+    does. Whole-file reads after cache drops let readahead build large
+    folios for the changes after them. Prints the seed, which reproduces a
+    failure."""
+    rng = random.Random(seed)
+    limit = 8 << 20
+    model = bytearray()
+    root = volume.mount()
+    path = root / "fsx"
+    path.write_bytes(b"")
+    for step in range(operations):
+        choice = rng.random()
+        if choice < 0.35:
+            offset, length = rng.randrange(limit), rng.randrange(1, 70_000)
+            data = rng.randbytes(length)
+            with open(path, "r+b") as f:
+                f.seek(offset)
+                f.write(data)
+            if offset > len(model):
+                model.extend(bytes(offset - len(model)))
+            model[offset:offset + length] = data
+        elif choice < 0.45:
+            size = rng.randrange(limit)
+            os.truncate(path, size)
+            del model[size:]
+            model.extend(bytes(size - len(model)))
+        elif choice < 0.6 and model:
+            offset = rng.randrange(len(model))
+            length = rng.randrange(1, min(20_000, len(model) - offset) + 1)
+            data = rng.randbytes(length)
+            with open(path, "r+b") as f, mmap.mmap(f.fileno(), len(model)) as mapped:
+                mapped[offset:offset + length] = data
+            model[offset:offset + length] = data
+        elif choice < 0.65:
+            assert path.read_bytes() == model, f"seed {seed} step {step}: content differs"
+        elif choice < 0.8 and model:
+            offset = rng.randrange(len(model))
+            length = rng.randrange(1, 200_000)
+            with open(path, "rb") as f:
+                f.seek(offset)
+                got = f.read(length)
+            assert got == bytes(model[offset:offset + length]), f"seed {seed} step {step}: read differs"
+        elif choice < 0.9:
+            with open(path, "r+b") as f:
+                os.fsync(f.fileno())
+        elif choice < 0.98:
+            fd = os.open(path, os.O_RDONLY)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.close(fd)
+        else:
+            volume.unmount()
+            root = volume.mount()
+            path = root / "fsx"
+        assert os.path.getsize(path) == len(model), f"seed {seed} step {step}: size differs"
+    assert path.read_bytes() == model, f"seed {seed}: content differs"
+    volume.unmount()
+    root = volume.mount()
+    assert (root / "fsx").read_bytes() == model, f"seed {seed}: content differs after remount"
+    volume.unmount()
+    print(f"  fsx seed {seed}, {operations} operations: {volume.check(scrub=True)}")
 
 
 def data(volume, work):
@@ -417,6 +553,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, default=Path(__file__).resolve().parents[2] / "target/release/carryfs")
     parser.add_argument("--entries", type=int, default=3000)
+    parser.add_argument("--fsx-operations", type=int, default=2000)
+    parser.add_argument("--seed", type=int, default=random.randrange(1 << 32))
     args = parser.parse_args()
     if not module_loaded():
         sys.exit("load the module first: make build && insmod carryfs.ko")
@@ -435,6 +573,10 @@ def checks(args, work):
     namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
     print("case names")
     case_names(Volume(args.cli, work, "case-names", 512))
+    print("large folios")
+    large_folios(Volume(args.cli, work, "large-folios", 512))
+    print("fsx")
+    fsx(Volume(args.cli, work, "fsx", 512), args.fsx_operations, args.seed)
     print("listings")
     listings(Volume(args.cli, work, "listings", 512))
     print("data")

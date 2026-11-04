@@ -122,6 +122,13 @@ reads without waiting, and verifies and unlocks them from a workqueue, as
 erofs and btrfs verify data in end_io work. Commits wait for reads in
 flight, so no block being read is reclaimed and reused under them.
 
+File data sits in page-cache folios of up to one 64 KiB unit, which reads
+and writes allocate as large as the request allows. The page cache aligns a
+folio to its size, so each lies within one unit, and everything done per
+unit stays as it was. A 512 MiB cached reread at a fixed clock on a USB
+SSD went from 9.3 to 10.5 GB/s (ext4 10.7), and unmounts that drop such a
+file from 65 to 35 ms, as the page cache handles 16 times fewer folios.
+
 Files of up to 16 blocks, read one after another where they lie together,
 are read through the buffer cache too, with the next 256 KiB chunks read
 ahead there, as FUSE gets from reading the block device. Otherwise each

@@ -59,10 +59,14 @@ fn record_size(record: &[u8]) -> u64 {
     le_u64(record, 16)
 }
 
-/// Copy a folio into a bounce page.
-fn copy_folio(folio: &Folio, page: &Page) {
-    folio.with_bytes(|source| page_bytes(page).copy_from_slice(source));
+/// Copy block `index` of a folio into a bounce page.
+fn copy_block(folio: &Folio, index: usize, page: &Page) {
+    folio.with_block(index, |source| page_bytes(page).copy_from_slice(source));
 }
+
+/// The blocks of the folio writeback holds locked, which `fill` must not
+/// lock again.
+type Held = Option<core::ops::Range<u64>>;
 
 fn page_bytes(page: &Page) -> &mut [u8] {
     // SAFETY: The page is private to the writer and holds `BLOCK_BYTES`.
@@ -146,11 +150,13 @@ impl<'a> Writer<'a> {
     /// Take a dirty folio from writeback: copy it, start its writeback, and
     /// unlock it.
     fn add_folio(&mut self, folio: &Folio) -> Result {
-        let block = folio.pos() / BLOCK_BYTES as u64;
+        let block = folio.first_block();
         let unit = self.pending(block / UNIT_BLOCKS)?;
         let slot = (block % UNIT_BLOCKS) as usize;
-        copy_folio(folio, &unit.pages[slot]);
-        unit.present |= 1 << slot;
+        for index in 0..folio.blocks() {
+            copy_block(folio, index, &unit.pages[slot + index]);
+            unit.present |= 1 << (slot + index);
+        }
         unit.folios.push(folio.as_ptr(), GFP_KERNEL)?;
         // SAFETY: Writeback handed the folio over locked; its writeback
         // ends after the batch is written, in `flush`.
@@ -159,10 +165,10 @@ impl<'a> Writer<'a> {
     }
 
     /// Fill each unit's missing pages: uptodate page-cache pages first, then
-    /// the old unit, read and verified, then zeros. `held` is the block of a
-    /// folio the caller holds locked, which is still dirty: it is filled from
-    /// the old unit, and written with its own unit later.
-    fn fill(&mut self, held: Option<u64>) -> Result {
+    /// the old unit, read and verified, then zeros. `held` are the blocks of
+    /// a folio the caller holds locked, which is still dirty: they are filled
+    /// from the old unit, and written with their own unit later.
+    fn fill(&mut self, held: &Held) -> Result {
         let source_size = {
             let mut state = volume::of(self.sb).lock();
             // A batch in flight may record this file's size and units while
@@ -182,15 +188,17 @@ impl<'a> Writer<'a> {
                     continue;
                 }
                 let block = unit.index * UNIT_BLOCKS + slot as u64;
-                let folio = if held == Some(block) {
+                let folio = if held.as_ref().is_some_and(|held| held.contains(&block)) {
                     core::ptr::null_mut()
                 } else {
                     // SAFETY: The mapping belongs to a referenced inode.
                     unsafe { glue::carryfs_cached_folio(self.mapping, block) }
                 };
                 if !folio.is_null() {
-                    // SAFETY: `carryfs_cached_folio` returned it locked.
-                    copy_folio(unsafe { Folio::from_raw(folio) }, &unit.pages[slot]);
+                    // SAFETY: `carryfs_cached_folio` returned the folio
+                    // holding `block`, locked.
+                    let cached = unsafe { Folio::from_raw(folio) };
+                    copy_block(cached, (block - cached.first_block()) as usize, &unit.pages[slot]);
                     // SAFETY: `carryfs_cached_folio` locked and referenced it.
                     unsafe { glue::carryfs_folio_unlock_put(folio) };
                 } else if block * (BLOCK_BYTES as u64) < source_size {
@@ -212,7 +220,7 @@ impl<'a> Writer<'a> {
     /// Write the collected units and record them, then end their folios'
     /// writeback, now or, for writeback, once the writes complete. Returns
     /// the error to report on the mapping, if any. `held` is as for `fill`.
-    fn flush(&mut self, held: Option<u64>) -> Result {
+    fn flush(&mut self, held: Held) -> Result {
         if self.units.is_empty() {
             return Ok(());
         }
@@ -224,7 +232,7 @@ impl<'a> Writer<'a> {
         for _ in 0..3 {
             result = self
                 .add_tail()
-                .and_then(|()| self.fill(held))
+                .and_then(|()| self.fill(&held))
                 .and_then(|()| self.allocate())
                 .map(|allocated| allocation = Some(allocated));
             if result != Err(EAGAIN) {
@@ -893,8 +901,8 @@ pub(crate) unsafe extern "C" fn writepages(
         if writer.units.last().is_some_and(|last| last.index != unit) && writer.units.len() == BATCH
         {
             // The folio may lie in the stored tail unit, which `flush` adds.
-            let held = locked.pos() / BLOCK_BYTES as u64;
-            if let Err(failure) = writer.flush(Some(held)) {
+            let first = locked.first_block();
+            if let Err(failure) = writer.flush(Some(first..first + locked.blocks() as u64)) {
                 error = failure.to_errno();
             }
         }
@@ -934,7 +942,7 @@ pub(crate) unsafe extern "C" fn write_begin(
             zero_past_eof(host);
         }
         // SAFETY: As above.
-        let folio = unsafe { glue::carryfs_write_folio(mapping, pos) };
+        let folio = unsafe { glue::carryfs_write_folio(mapping, pos, len as usize) };
         if let Err(error) = kernel::error::from_err_ptr(folio) {
             return error.to_errno();
         }
@@ -988,9 +996,17 @@ pub(crate) unsafe extern "C" fn write_begin(
         // is held.
         unsafe { glue::carryfs_write_dirty_inodes(sb) };
     };
-    // A partial write into a page not in the cache reads its old content.
+    // A write that does not cover a folio not in the cache reads its old
+    // content: a large folio's other blocks too. The write may be longer
+    // than a smaller folio the cache had to fall back to; it is then cut to
+    // that folio, which it covers.
     // SAFETY: The folio is locked and referenced.
-    if !unsafe { glue::carryfs_folio_uptodate(folio) } && len as usize != BLOCK_BYTES {
+    let covered = unsafe {
+        let held = Folio::from_raw(folio);
+        pos as u64 == held.pos() && len as usize >= held.blocks() * BLOCK_BYTES
+    };
+    // SAFETY: As above.
+    if !unsafe { glue::carryfs_folio_uptodate(folio) } && !covered {
         // SAFETY: The VFS holds the file's inode and the new folio locked.
         let filled =
             unsafe { crate::file::fill_folio(Inode::from_raw(inode), Folio::from_raw(folio)) };
@@ -1017,13 +1033,13 @@ fn release(state: &mut State, disk: &Disk, runs: &[(usize, u64, u64)]) -> Result
     Ok(())
 }
 
-/// Zero the cached last page past the size, before the size grows over it:
-/// a shared mapping may have written there (fstests generic/363). The disk
-/// needs nothing, as reads stop at a unit's valid length.
+/// Zero the cached last folio past the size, before the size grows over
+/// it: a shared mapping may have written there (fstests generic/363), in
+/// any of a large folio's pages past the size. The disk needs nothing, as
+/// reads stop at a unit's valid length.
 fn zero_past_eof(inode: &Inode) {
     let size = inode.size();
-    let offset = (size % BLOCK_BYTES as u64) as usize;
-    if offset == 0 {
+    if size % BLOCK_BYTES as u64 == 0 {
         return;
     }
     // SAFETY: The mapping belongs to a referenced inode.
@@ -1033,7 +1049,7 @@ fn zero_past_eof(inode: &Inode) {
     }
     // SAFETY: `carryfs_cached_folio` returned it locked and referenced.
     unsafe {
-        Folio::from_raw(folio).with_bytes(|bytes| bytes[offset..].fill(0));
+        glue::carryfs_folio_zero_tail(folio, size as i64);
         glue::carryfs_folio_unlock_put(folio);
     }
 }

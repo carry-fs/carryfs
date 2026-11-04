@@ -135,6 +135,7 @@ unsafe extern "C" {
     pub(crate) fn carryfs_write_folio(
         mapping: *mut kernel::bindings::address_space,
         pos: i64,
+        len: usize,
     ) -> *mut folio;
     pub(crate) fn carryfs_folio_uptodate(folio: *mut folio) -> bool;
     pub(crate) fn carryfs_folio_mark_uptodate(folio: *mut folio);
@@ -182,6 +183,9 @@ unsafe extern "C" {
     pub(crate) fn carryfs_readahead_index(rac: *mut readahead_control) -> u64;
     pub(crate) fn carryfs_readahead_count(rac: *mut readahead_control) -> u64;
     pub(crate) fn carryfs_readahead_folio(rac: *mut readahead_control) -> *mut folio;
+    pub(crate) fn carryfs_set_folio_orders(mapping: *mut kernel::bindings::address_space, max: u32);
+    pub(crate) fn carryfs_folio_nr_pages(folio: *mut folio) -> core::ffi::c_ulong;
+    pub(crate) fn carryfs_folio_zero_tail(folio: *mut folio, pos: i64);
     pub(crate) fn carryfs_folio_pos(folio: *mut folio) -> i64;
     pub(crate) fn carryfs_kmap_local_folio(folio: *mut folio, offset: usize) -> *mut c_void;
     pub(crate) fn carryfs_kunmap_local(addr: *mut c_void);

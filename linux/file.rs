@@ -58,10 +58,13 @@ impl Unit {
         copy_block(&self.pages, self.valid, block, destination);
     }
 
-    /// Copy page `block` of this unit into `folio`, zero past the valid
-    /// bytes; a hole reads as zeros.
-    fn copy_to(&self, block: usize, folio: &Folio) {
-        folio.with_bytes(|destination| self.copy_into(block, destination));
+    /// Copy this unit's blocks into `folio`, which lies within it, zero past
+    /// the valid bytes; a hole reads as zeros.
+    fn copy_to(&self, folio: &Folio) {
+        let first = (folio.first_block() % UNIT_BLOCKS) as usize;
+        for index in 0..folio.blocks() {
+            folio.with_block(index, |destination| self.copy_into(first + index, destination));
+        }
     }
 }
 
@@ -299,7 +302,7 @@ impl Batch {
             unit.ok = status == 0 && unit.check(&self.uuid, self.object).is_ok();
         }
         let unit_of = |folio: &Folio| {
-            let block = folio.pos() / BLOCK_BYTES as u64;
+            let block = folio.first_block();
             let unit = self
                 .units
                 .iter()
@@ -309,8 +312,12 @@ impl Batch {
         for folio in self.folios.iter() {
             // SAFETY: The batch holds its folios locked.
             let folio = unsafe { Folio::from_raw(*folio) };
-            if let (Some(unit), block) = unit_of(folio) {
-                folio.with_bytes(|bytes| copy_block(&unit.pages, unit.valid, block, bytes));
+            if let (Some(unit), first) = unit_of(folio) {
+                for index in 0..folio.blocks() {
+                    folio.with_block(index, |bytes| {
+                        copy_block(&unit.pages, unit.valid, first + index, bytes)
+                    });
+                }
             }
         }
         if counted {
@@ -482,14 +489,13 @@ fn small_read(source: &Source<'_>, batch: &mut Batch) -> Option<()> {
 
 /// Fill `folio` from `unit`, reading it first unless it is the one given.
 fn fill(source: &Source<'_>, unit: &mut Option<Unit>, folio: &Folio) -> Result {
-    let block = folio.pos() / BLOCK_BYTES as u64;
-    let index = block / UNIT_BLOCKS;
+    let index = folio.first_block() / UNIT_BLOCKS;
     if unit.as_ref().is_none_or(|unit| unit.index != index) {
         *unit = None;
         *unit = Some(source.read(index)?);
     }
     if let Some(unit) = unit {
-        unit.copy_to((block % UNIT_BLOCKS) as usize, folio);
+        unit.copy_to(folio);
     }
     Ok(())
 }

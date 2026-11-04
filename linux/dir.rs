@@ -280,14 +280,8 @@ unsafe extern "C" fn iterate(file: *mut bindings::file, ctx: *mut bindings::dir_
             Ok(())
         }
         None => {
-            // SAFETY: Called from the caller's own syscall.
-            let boosted = unsafe { glue::carryfs_boost_caller() };
-            let listed = list(dir, context, &mut cursor, &prime);
-            if boosted {
-                // SAFETY: As above; undoes the boost just made.
-                unsafe { glue::carryfs_unboost_caller() };
-            }
-            listed
+            let _boost = glue::CallerBoost::new();
+            list(dir, context, &mut cursor, &prime)
         }
     };
     // SAFETY: As above; `release` frees the cursor with the file.

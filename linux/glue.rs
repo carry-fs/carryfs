@@ -7,6 +7,27 @@ use kernel::bindings::super_block;
 use kernel::bindings::{dentry, dir_context, file, folio, inode, page, qstr, readahead_control};
 use kernel::ffi::c_int;
 
+/// The calling task's utilization clamp raised to full while this lives,
+/// for driver work FUSE's daemon would do at full clock
+/// (`carryfs_boost_caller`).
+pub(crate) struct CallerBoost(bool);
+
+impl CallerBoost {
+    pub(crate) fn new() -> Self {
+        // SAFETY: Called in the caller's own context.
+        Self(unsafe { carryfs_boost_caller() })
+    }
+}
+
+impl Drop for CallerBoost {
+    fn drop(&mut self) {
+        if self.0 {
+            // SAFETY: Undoes the boost `new` made, on the same task.
+            unsafe { carryfs_unboost_caller() };
+        }
+    }
+}
+
 /// A `struct buffer_head`, which the Rust bindings leave out.
 #[repr(C)]
 pub(crate) struct BufferHead {

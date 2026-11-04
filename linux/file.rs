@@ -506,6 +506,9 @@ unsafe extern "C" fn read_folio(_file: *mut bindings::file, folio: *mut bindings
 }
 
 unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
+    // A FUSE read-ahead runs in the daemon, clamped to full clock; this one
+    // runs in the reader, and a cached reread right after inherits its clock.
+    let _boost = glue::CallerBoost::new();
     // SAFETY: The VFS passes a readahead request on a mapping of this
     // filesystem, whose host stays referenced while it has pages.
     let inode = unsafe { Inode::from_raw(glue::carryfs_readahead_inode(rac)) };

@@ -212,8 +212,9 @@ about 20,000.
   themselves, so schedutil runs the CPU fast while they list a directory,
   and the caller's next passes inherit that clock. A listing that reads
   the catalog raises the calling task's clamp the same way for the call
-  and returns it to the default after, and so does a file's readahead,
-  which FUSE also does in its daemon; a clamp the task set itself is left
+  and returns it to the default after, and so do a file's readahead and
+  an unmount's teardown, which FUSE also does in its daemon; a clamp the
+  task set itself is left
   alone, and kept listings, dcache hits and cached reads do not touch it.
   Under schedutil on a USB SSD, cold listings went from 1.8-3.1 GHz to
   3.3-3.6 GHz, and a warm interleaved listing of 1,000 entries from

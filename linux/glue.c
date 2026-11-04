@@ -106,14 +106,22 @@ static int carryfs_init_fs_context(struct fs_context *fc)
 	return 0;
 }
 
+/*
+ * The unmounting task tears the mount down: evicting inodes and dentries,
+ * then dropping the device's cached pages. FUSE does that in its clamped
+ * daemon threads, so the caller is boosted for it as for listings.
+ */
 static void carryfs_kill_sb(struct super_block *sb)
 {
+	bool boosted = carryfs_boost_caller();
 	void *volume;
 
 	carryfs_stop_timer(sb);
 	volume = sb->s_fs_info;
 	kill_block_super(sb);
 	carryfs_free_volume(volume);
+	if (boosted)
+		carryfs_unboost_caller();
 }
 
 /* Commit open transactions every few seconds, as ext4's default commit=5. */

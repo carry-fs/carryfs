@@ -80,6 +80,8 @@ void *carryfs_plug_start(void);
 void carryfs_plug_finish(void *plug);
 void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count);
 void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count);
+bool carryfs_boost_caller(void);
+void carryfs_unboost_caller(void);
 struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos);
 bool carryfs_folio_uptodate(struct folio *folio);
 void carryfs_folio_mark_uptodate(struct folio *folio);

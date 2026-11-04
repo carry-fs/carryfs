@@ -208,6 +208,15 @@ about 20,000.
   background walk, as FUSE runs, raced first listings and slowed the
   passes after them. On a disk that seeks, a workqueue reads the catalog
   ahead a level at a time, as ext4 prefetches block bitmaps.
+- **Clock.** FUSE's daemon threads set a full utilization clamp on
+  themselves, so schedutil runs the CPU fast while they list a directory,
+  and the caller's next passes inherit that clock. A listing that reads
+  the catalog raises the calling task's clamp the same way for the call
+  and returns it to the default after; a clamp the task set itself is
+  left alone, and kept listings and dcache hits do not touch it. Under
+  schedutil on a USB SSD, cold listings went from 1.8-3.1 GHz to
+  3.3-3.6 GHz, and a warm interleaved listing of 1,000 entries from
+  6.2 ms to 2.7 ms (FUSE 6.0 ms).
 - **Repeated listings.** FUSE keeps readdir output in the page cache. A
   directory listed whole keeps its entries on its inode, up to 2 MiB of
   names, until it changes or the inode is evicted; inode reclaim bounds the

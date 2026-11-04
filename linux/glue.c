@@ -814,6 +814,39 @@ void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count)
 	}
 }
 
+/*
+ * Raise the calling task's utilization clamp to full for a driver call that
+ * reads the catalog, so schedutil clocks the CPU up for it as it does for
+ * the FUSE adapter's daemon threads (fuse/src/fs.rs, run_at_full_speed),
+ * which do that work for FUSE callers. A clamp the task chose itself is
+ * left alone, as are kernel threads. True if raised: the caller then calls
+ * carryfs_unboost_caller(), which returns the clamp to the default.
+ */
+bool carryfs_boost_caller(void)
+{
+	struct sched_attr attr = {
+		.size = sizeof(attr),
+		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
+		.sched_util_min = SCHED_CAPACITY_SCALE,
+	};
+
+	if ((current->flags & PF_KTHREAD) || current->uclamp_req[UCLAMP_MIN].user_defined)
+		return false;
+	return sched_setattr_nocheck(current, &attr) == 0;
+}
+
+void carryfs_unboost_caller(void)
+{
+	struct sched_attr attr = {
+		.size = sizeof(attr),
+		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
+		/* -1 resets the clamp to the default, not user-defined. */
+		.sched_util_min = -1,
+	};
+
+	sched_setattr_nocheck(current, &attr);
+}
+
 /* A block plug for a batch of writes; NULL when out of memory. */
 void *carryfs_plug_start(void)
 {

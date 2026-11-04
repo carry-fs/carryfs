@@ -382,6 +382,42 @@ impl<'a> Tree<'a> {
         Ok(())
     }
 
+    /// Read and verify the first `leaves` leaves in key order, and the pages
+    /// above them, each level merged (`read_ahead_merged`): the root
+    /// directory and the oldest objects, which the FUSE adapter's read-ahead
+    /// also reads first.
+    pub(crate) fn read_first_leaves(&self, leaves: usize) -> Result {
+        let mut level = KVec::new();
+        level.push(self.root_position(), GFP_KERNEL)?;
+        loop {
+            if level[0].level == Some(0) {
+                let first = &level[..level.len().min(leaves)];
+                self.read_ahead_merged(first)?;
+                for at in first.iter() {
+                    self.load(*at, None)?;
+                }
+                return Ok(());
+            }
+            self.read_ahead_merged(&level)?;
+            let mut next = KVec::new();
+            'level: for at in level.iter() {
+                let page = self.load(*at, None)?;
+                let view = self.view(&page, *at)?;
+                if view.level == 0 {
+                    return Ok(());
+                }
+                for (_, value) in view.records() {
+                    // Leaves past the budget's are not needed: stop the level.
+                    if view.level == 1 && next.len() == leaves {
+                        break 'level;
+                    }
+                    next.push(self.child(*at, view.level, value), GFP_KERNEL)?;
+                }
+            }
+            level = next;
+        }
+    }
+
     /// Start reading the disk pages at `positions` in block order, short
     /// gaps included, so the block layer merges them into a few large reads
     /// instead of one random read per page. Cached pages are skipped.

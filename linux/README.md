@@ -182,10 +182,12 @@ without making the close wait.
   catalog before it returns, a level at a time in block order with short
   gaps filled, so that pages written by the same commits merge into a few
   large reads: about 28 ms for a 1,700-page catalog on a USB SSD, where a
-  writable FUSE mount takes 80 ms. A read-only mount returns in about 4 ms,
-  against 11 ms for FUSE, and a directory's first listing reads the leaves
-  of its entries, then of its children's records, merged; a background
-  walk, as FUSE's read-only mounts run, raced first listings and slowed the
+  writable FUSE mount takes 80 ms. A read-only mount reads the catalog's
+  first 256 leaves in key order, the root and the oldest directories, and
+  returns in 8-10 ms, against 11 ms for FUSE, whose read-only mount
+  starts a key-order read-ahead; a first listing elsewhere reads the
+  leaves of its entries, then of its children's records, merged. A
+  background walk, as FUSE runs, raced first listings and slowed the
   passes after them. On a disk that seeks, a workqueue reads the catalog
   ahead a level at a time, as ext4 prefetches block bitmaps.
 - **Repeated listings.** FUSE keeps readdir output in the page cache. A

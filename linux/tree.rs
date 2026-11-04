@@ -338,48 +338,22 @@ impl<'a> Tree<'a> {
         unsafe { glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), count as u32) };
     }
 
-    /// Read the tree's pages, a level at a time, until `budget` pages, and
-    /// verify them; leaves only if `verify_leaves`, as verifying costs CPU
-    /// a background walk should not take from the mount's users. Whether
-    /// the walk reached every page within the budget.
+    /// Read the tree's pages ahead, a level at a time, until `budget`
+    /// pages. Internal pages are verified on the way; leaves are only
+    /// started, as verifying them costs CPU a background walk should not
+    /// take from the mount's users, and use verifies them.
     ///
     /// A level's pages, written by the same commits into neighboring
-    /// workspace slots, cluster on the device: each level is read in block
-    /// order, short gaps included, so the block layer merges it into a few
-    /// large reads instead of one random read per page.
-    pub(crate) fn prefetch(&self, budget: usize, verify_leaves: bool) -> Result<bool> {
+    /// workspace slots, cluster on the device: each level is read merged
+    /// (`read_ahead_merged`) instead of one random read per page.
+    pub(crate) fn prefetch(&self, budget: usize) -> Result {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;
         let mut spent = 1;
-        let mut complete = true;
         while !level.is_empty() {
-            let mut blocks = KVec::with_capacity(level.len(), GFP_KERNEL)?;
-            for at in level.iter() {
-                if let Link::Disk(reference) = at.link {
-                    blocks.push(reference.block, GFP_KERNEL)?;
-                }
-            }
-            crate::commit::heapsort(&mut blocks);
-            let mut ahead = KVec::with_capacity(blocks.len(), GFP_KERNEL)?;
-            for (index, block) in blocks.iter().copied().enumerate() {
-                let from = match index.checked_sub(1).map(|previous| blocks[previous]) {
-                    Some(previous) if block - previous <= PREFETCH_GAP => previous + 1,
-                    _ => block,
-                };
-                for gap in from..=block {
-                    ahead.push(gap, GFP_KERNEL)?;
-                }
-            }
-            // SAFETY: `sb` is mounted; `ahead` holds block numbers.
-            unsafe { glue::carryfs_readahead_blocks(self.sb, ahead.as_ptr(), ahead.len() as u32) };
-            if level[0].level == Some(0) && !verify_leaves {
-                return Ok(complete);
-            }
-            for at in level.iter() {
-                self.load(*at, None)?;
-            }
+            self.read_ahead_merged(&level)?;
             if level[0].level == Some(0) {
-                return Ok(complete);
+                return Ok(());
             }
             // The next level, cut at the budget: a cut level is still read.
             let mut next = KVec::new();
@@ -387,11 +361,10 @@ impl<'a> Tree<'a> {
                 let page = self.load(*at, None)?;
                 let view = self.view(&page, *at)?;
                 if view.level == 0 {
-                    return Ok(complete);
+                    return Ok(());
                 }
                 for (_, value) in view.records() {
                     if spent == budget {
-                        complete = false;
                         break 'level;
                     }
                     next.push(self.child(*at, view.level, value), GFP_KERNEL)?;
@@ -400,7 +373,73 @@ impl<'a> Tree<'a> {
             }
             level = next;
         }
-        Ok(complete)
+        Ok(())
+    }
+
+    /// Start reading the disk pages at `positions` in block order, short
+    /// gaps included, so the block layer merges them into a few large reads
+    /// instead of one random read per page. Cached pages are skipped.
+    fn read_ahead_merged(&self, positions: &[Position]) -> Result {
+        let mut blocks = KVec::with_capacity(positions.len(), GFP_KERNEL)?;
+        for at in positions.iter() {
+            if let Link::Disk(reference) = at.link {
+                blocks.push(reference.block, GFP_KERNEL)?;
+            }
+        }
+        crate::commit::heapsort(&mut blocks);
+        let mut ahead = KVec::with_capacity(blocks.len(), GFP_KERNEL)?;
+        for (index, block) in blocks.iter().copied().enumerate() {
+            let from = match index.checked_sub(1).map(|previous| blocks[previous]) {
+                Some(previous) if block - previous <= PREFETCH_GAP => previous + 1,
+                _ => block,
+            };
+            for gap in from..=block {
+                ahead.push(gap, GFP_KERNEL)?;
+            }
+        }
+        // SAFETY: `sb` is mounted; `ahead` holds block numbers.
+        unsafe { glue::carryfs_readahead_blocks(self.sb, ahead.as_ptr(), ahead.len() as u32) };
+        Ok(())
+    }
+
+    /// Start reading the leaves that hold keys in `from..to`, merged as
+    /// `prefetch` reads a level, without waiting for them; the pages above
+    /// them are read on the way. A listing reads a directory's leaves this
+    /// way, rather than 16 scattered leaves at a time as searches do.
+    pub(crate) fn prefetch_range(&self, from: &[u8], to: &[u8]) -> Result {
+        let mut level = KVec::new();
+        level.push(self.root_position(), GFP_KERNEL)?;
+        loop {
+            let mut next = KVec::new();
+            let mut above_leaves = false;
+            for at in level.iter() {
+                let page = self.load(*at, None)?;
+                let view = self.view(&page, *at)?;
+                if view.level == 0 {
+                    return Ok(());
+                }
+                above_leaves = view.level == 1;
+                // Internal keys are subtree minimums: from the last child
+                // whose minimum is at most `from`, while minimums are below
+                // `to`.
+                let first = view
+                    .floor_record(from, compare, &mut [])
+                    .map_or(0, |(index, _)| index);
+                for (index, (key, value)) in view.records().enumerate() {
+                    if index < first {
+                        continue;
+                    }
+                    if index > first && compare(key, to) != Ordering::Less {
+                        break;
+                    }
+                    next.push(self.child(*at, view.level, value), GFP_KERNEL)?;
+                }
+            }
+            if above_leaves {
+                return self.read_ahead_merged(&next);
+            }
+            level = next;
+        }
     }
 
     /// Check the tree's root page, as opening a volume does.

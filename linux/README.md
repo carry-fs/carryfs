@@ -177,13 +177,15 @@ without making the close wait.
   one catalog walk in object order, as XFS bulkstat walks inode clusters,
   instead of a search per entry.
 - **Cold catalog.** The FUSE adapter reads the catalog at mount: a writable
-  open checks the whole forest first. The driver reads it a level at a
-  time, each level in block order with short gaps filled, so that pages
-  written by the same commits merge into a few large reads. On a
-  non-rotational device the mount reads and verifies up to 4,096 pages
-  before it returns, about 28 ms for a 1,700-page catalog on a USB SSD,
-  where a writable FUSE mount takes 85 ms; on a disk that seeks, or past
-  that budget, a workqueue reads ahead, as ext4 prefetches block bitmaps.
+  open checks the whole forest first. On a non-rotational device the
+  driver mounts without reading it, and a directory's first listing reads
+  the leaves of its entries, then those of its children's records, each in
+  block order with short gaps filled, so that pages written by the same
+  commits merge into a few large reads. A read-only mount on a USB SSD
+  takes about 5 ms, against 11 ms for FUSE, and a 1,000-entry directory is
+  listed without reading the rest of a 1,700-page catalog. On a disk that
+  seeks, a workqueue reads the catalog ahead a level at a time, as ext4
+  prefetches block bitmaps.
 - **Repeated listings.** FUSE keeps readdir output in the page cache. A
   directory listed whole keeps its entries on its inode, up to 2 MiB of
   names, until it changes or the inode is evicted; inode reclaim bounds the

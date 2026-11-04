@@ -52,6 +52,33 @@ const RECORDS_PER_ENTRY: usize = 16;
 /// object order rather than a search each, as XFS bulkstat walks inode
 /// clusters. Targets created together are neighbors; spread ones stop the
 /// walk, and priming searches for those.
+/// Start reading what a first listing of `dir` needs: the leaves of its
+/// entries, then those of its children's records, each in one merged pass
+/// (`Tree::prefetch_range`) rather than 16 scattered leaves at a time. The
+/// children's objects are found from the entries, which this waits for.
+fn prefetch_listing(
+    sb: *mut bindings::super_block,
+    state: &crate::volume::State,
+    prefix: &[u8],
+    dir: u64,
+) -> Result {
+    let tree = Tree::catalog(sb, state);
+    tree.prefetch_range(prefix, &tree::prefix(dir, tree::ENTRY + 1))?;
+    let (mut low, mut high) = (u64::MAX, 0);
+    tree.scan(prefix, &mut |key, value| {
+        if !key.starts_with(prefix) {
+            return Ok(false);
+        }
+        let target = le_u64(value, 0);
+        (low, high) = (low.min(target), high.max(target));
+        Ok(true)
+    })?;
+    if low <= high {
+        tree.prefetch_range(&low.to_be_bytes(), &high.saturating_add(1).to_be_bytes())?;
+    }
+    Ok(())
+}
+
 fn read_records(
     sb: *mut bindings::super_block,
     state: &crate::volume::State,
@@ -266,6 +293,9 @@ fn list(
     let mut emitted = 0;
     let sb = dir.super_block();
     let volume = sb.volume();
+    if pos == 2 && !resume {
+        prefetch_listing(sb.as_ptr(), &volume.lock(), &prefix, dir.object())?;
+    }
     // Entries are read under the volume lock in batches, then emitted and
     // primed without it: priming fills inodes, which takes the lock.
     // One buffer for the batch's keys and names, reused across batches.

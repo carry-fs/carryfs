@@ -463,21 +463,13 @@ unsafe extern "C" fn carryfs_volume_background(sb: *mut bindings::super_block) -
     of(sb).background as *mut c_void
 }
 
-/// Catalog pages read ahead after mounting: 16 MiB, the FUSE adapter's
-/// budget.
+/// Catalog pages read ahead after mounting a disk that seeks: 16 MiB, the
+/// FUSE adapter's budget.
 const PREFETCH_PAGES: usize = 4_096;
-/// Catalog pages a mount on a non-rotational device reads before it
-/// returns: 16 MiB, in reads that merge where commits clustered pages.
-const MOUNT_PREFETCH_PAGES: usize = 4_096;
 
 /// Read the committed catalog ahead; glue.c's background work queues it.
 #[no_mangle]
 unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
-    prefetch_catalog(sb, PREFETCH_PAGES, false);
-}
-
-/// Whether the walk read the whole catalog.
-fn prefetch_catalog(sb: *mut bindings::super_block, budget: usize, verify_leaves: bool) -> bool {
     let tree = {
         let state = of(sb).lock();
         Tree {
@@ -492,7 +484,7 @@ fn prefetch_catalog(sb: *mut bindings::super_block, budget: usize, verify_leaves
     };
     // Only a cache warms or not: a page a commit has since replaced or a
     // read failure ends the walk, and use reports real errors.
-    tree.prefetch(budget, verify_leaves).unwrap_or(false)
+    let _ = tree.prefetch(PREFETCH_PAGES);
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -629,13 +621,13 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         of(sb).lock().timer = timer as usize;
     }
 
-    // A small catalog is read before the mount returns, as the FUSE adapter
-    // reads it before mounting writable, so that first listings find it
-    // cached; on a disk that seeks, only in the background.
+    // On a disk that seeks, a background walk reads the catalog ahead. An
+    // SSD mounts without reading it: a first listing reads just its
+    // directory's leaves, in merged reads (`dir::prefetch_listing`). Reading
+    // the whole catalog first made a read-only mount 30 ms on a USB SSD,
+    // against FUSE's 11, and a 1,000-entry listing does not need it.
     // SAFETY: `sb` holds its block device.
-    let read = unsafe { glue::carryfs_bdev_nonrot(sb) }
-        && prefetch_catalog(sb, MOUNT_PREFETCH_PAGES, true);
-    if !read && of(sb).background != 0 {
+    if !unsafe { glue::carryfs_bdev_nonrot(sb) } && of(sb).background != 0 {
         // SAFETY: `kill_sb` stops the work before the volume goes away.
         unsafe { glue::carryfs_prefetch_queue(of(sb).background as *mut c_void) };
     }

@@ -106,6 +106,38 @@ def namespace(volume, count):
         print(f"  namespace phase {phase}: {volume.check()}")
 
 
+def case_names(volume):
+    """Names match ignoring case by their comparison keys, through the dcache
+    and through the catalog: `d_hash` must give a name and its key the same
+    hash, or a lookup by another spelling misses the cached dentry."""
+    pairs = [("A" * n, "a" * n) for n in (1, 7, 8, 9, 15, 16, 17)]
+    pairs += [("Straße-0123456789", "STRASSE-0123456789"), ("\u212aelvin", "kELVIN"),
+              ("Ärger", "äRGER")]
+    root = volume.mount()
+    for stored, other in pairs:
+        (root / stored).write_text(stored)
+    stored_names = sorted(os.listdir(root))
+    for cold in (False, True):
+        if cold:
+            volume.unmount()
+            root = volume.mount()
+        for stored, other in pairs:
+            fd = os.open(root / other, os.O_RDONLY)
+            try:
+                found = os.readlink(f"/proc/self/fd/{fd}").rsplit("/", 1)[1]
+                assert os.read(fd, 100).decode() == stored, (other, cold)
+            finally:
+                os.close(fd)
+            # A warm lookup finds the cached dentry, which carries the
+            # spelling it was created or listed under, not the one looked up.
+            assert cold or found in (stored, *stored_names), (other, found)
+        # Dotless i has no ASCII case partner.
+        assert not (root / "\u0131d").exists() and not (root / "ID").exists()
+    assert sorted(os.listdir(root)) == stored_names
+    volume.unmount()
+    print(f"  case names: {volume.check()}")
+
+
 def listings(volume):
     """Listings kept on directory inodes follow every change while mounted,
     including a change between the calls of one listing."""
@@ -401,6 +433,8 @@ def main():
 def checks(args, work):
     print("namespace")
     namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
+    print("case names")
+    case_names(Volume(args.cli, work, "case-names", 512))
     print("listings")
     listings(Volume(args.cli, work, "listings", 512))
     print("data")

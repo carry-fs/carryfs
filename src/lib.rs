@@ -21,7 +21,6 @@ mod device;
 mod error;
 mod format;
 mod name;
-mod name_tables;
 mod tree;
 mod volume;
 mod workspace;

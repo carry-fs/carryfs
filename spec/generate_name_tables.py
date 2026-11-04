@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 UNICODE = ROOT / "testdata" / "unicode" / "16.0.0"
-OUTPUT = ROOT / "src" / "name_tables.rs"
+OUTPUT = ROOT / "ondisk" / "src" / "name_tables.rs"
 
 
 def parse_unicode_data():

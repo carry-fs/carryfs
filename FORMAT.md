@@ -677,4 +677,4 @@ first, then review the regenerated files as a diff.
 `testdata/unicode/16.0.0/` holds the Unicode 16.0.0 source files with their
 license. `manifest.json` pins the length and SHA-256 of each, and `verify.py`
 fails when one changes. `spec/generate_name_tables.py` writes
-`src/name_tables.rs` from them.
+`ondisk/src/name_tables.rs` from them.

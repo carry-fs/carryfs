@@ -92,7 +92,7 @@ def main():
             def publish():
                 os.fsync(directory_fd)
                 started.set()
-                while not stopped.is_set():
+                while not stopped.wait(0.01):
                     os.fsync(directory_fd)
 
             with ThreadPoolExecutor(max_workers=1) as pool:

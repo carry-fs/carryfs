@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 from check import Volume, run
 from faults import Device
@@ -35,8 +36,65 @@ def check_prefix(cli, baseline, checkpoint, generation, initial_blocks, evidence
     blocks = int(re.search(r", (\d+) data blocks,", result)[1])
     if (max(generations) > int(generation) and re.search(r"passed: 2 objects,", result)
             and 0 < blocks < int(initial_blocks)):
+        if not Path(evidence).exists():
+            run("cp", "--sparse=always", checkpoint, Path(evidence).with_suffix(".img"))
         with open(evidence, "a") as output:
             output.write(f"{max(generations)}\n")
+
+
+def recover(cli, source, work, adapter):
+    volume = Volume.__new__(Volume)
+    volume.cli, volume.image = cli, work / f"recovery-{adapter}.img"
+    volume.point, volume.loop = work / f"mnt-{adapter}", None
+    volume.point.mkdir()
+    run("cp", "--sparse=always", source, volume.image)
+    daemon = None
+    try:
+        if adapter == "native":
+            volume.mount()
+        else:
+            run("modprobe", "fuse")
+            volume.loop = subprocess.check_output(["losetup", "-f", "--show", volume.image], text=True).strip()
+            daemon = subprocess.Popen([cli.with_name("carryfs-fuse"), "serve", volume.loop, volume.point, "rw"])
+            deadline = time.monotonic() + 30
+            while not os.path.ismount(volume.point):
+                assert daemon.poll() is None, "FUSE recovery mount exited"
+                assert time.monotonic() < deadline, "FUSE recovery mount timed out"
+                time.sleep(0.02)
+        assert list(volume.point.iterdir()) == [], "recovery exposed an unlinked file"
+        payload = b"recovered" * 1024
+        with (volume.point / "after-recovery").open("wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        if adapter == "fuse":
+            # FUSE recovers unpinned orphans through its background maintenance.
+            free = volume.image.stat().st_size // 4096 - 1024 - 64
+            deadline = time.monotonic() + 120
+            while os.statvfs(volume.point).f_bfree < free:
+                assert time.monotonic() < deadline, "FUSE did not reclaim the interrupted orphan"
+                time.sleep(0.1)
+    finally:
+        if os.path.ismount(volume.point):
+            volume.unmount()
+        elif volume.loop is not None:
+            run("losetup", "-d", volume.loop)
+        if daemon is not None:
+            try:
+                status = daemon.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                daemon.terminate()
+                daemon.wait(timeout=10)
+                raise
+            assert status == 0, "FUSE recovery daemon failed"
+    checked = subprocess.check_output([cli, "check", volume.image], text=True)
+    assert re.search(r"passed: 2 objects,", checked), "recovery retained the orphan inode"
+    root = volume.mount("ro")
+    try:
+        assert (root / "after-recovery").read_bytes() == payload
+    finally:
+        volume.unmount()
+    print(f"  {adapter} recovered the interrupted deletion and preserved a new durable file; {volume.check(scrub=True)}", flush=True)
 
 
 def main():
@@ -92,7 +150,7 @@ def main():
             def publish():
                 os.fsync(directory_fd)
                 started.set()
-                while not stopped.wait(0.01):
+                while not stopped.wait(0.001):
                     os.fsync(directory_fd)
 
             with ThreadPoolExecutor(max_workers=1) as pool:
@@ -132,6 +190,8 @@ def main():
             "--fsck", command, "--check", "flush", "--no-discard")
         run(cli, "check", baseline)
         assert evidence.exists(), "replay did not check a committed intermediate orphan state"
+        for adapter in ("native", "fuse"):
+            recover(cli, evidence.with_suffix(".img"), work, adapter)
         print(f"orphan deletion: all flush checkpoints passed across {final - generation} publications, including committed intermediate orphan states", flush=True)
 
 

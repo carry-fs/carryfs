@@ -97,6 +97,9 @@ test requires deletion to cross multiple publications. CI pins the replay
 tool to fstests commit `22348afe338c0f6d540c0d7ef0db749eaa51b218`.
 It also requires a checked generation with the orphan still present and its
 data-block count reduced, so a run cannot pass by checking only final cleanup.
+It reopens one such image through native and FUSE writable mounts, writes a
+new file, and verifies its contents after remount to check recovery through
+both adapters.
 
 `tests/roots.py` simulates interrupted root writes by combining old and new
 root sectors. It checks all seven partial-prefix lengths and a last-sector-only

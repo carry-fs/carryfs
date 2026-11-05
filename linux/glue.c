@@ -68,11 +68,19 @@ static int carryfs_fill_super_fc(struct super_block *sb, struct fs_context *fc)
 
 static int carryfs_get_tree(struct fs_context *fc)
 {
+	/* Page-cache indices and checksum units currently assume 4 KiB pages. */
+	if (PAGE_SIZE != 4096)
+		return -EOPNOTSUPP;
+	/* Check even when get_tree_bdev reuses an existing super block. */
+	if (fc->sb_flags & (SB_SYNCHRONOUS | SB_DIRSYNC))
+		return -EOPNOTSUPP;
 	return get_tree_bdev(fc, carryfs_fill_super_fc);
 }
 
 static int carryfs_reconfigure(struct fs_context *fc)
 {
+	if (fc->sb_flags & (SB_SYNCHRONOUS | SB_DIRSYNC))
+		return -EOPNOTSUPP;
 	/* Switching between read-only and read-write needs a remount. */
 	if ((fc->sb_flags ^ fc->root->d_sb->s_flags) & SB_RDONLY)
 		return -EBUSY;
@@ -832,6 +840,7 @@ void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count)
  */
 bool carryfs_boost_caller(void)
 {
+#ifdef CONFIG_UCLAMP_TASK
 	struct sched_attr attr = {
 		.size = sizeof(attr),
 		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
@@ -841,10 +850,14 @@ bool carryfs_boost_caller(void)
 	if ((current->flags & PF_KTHREAD) || current->uclamp_req[UCLAMP_MIN].user_defined)
 		return false;
 	return sched_setattr_nocheck(current, &attr) == 0;
+#else
+	return false;
+#endif
 }
 
 void carryfs_unboost_caller(void)
 {
+#ifdef CONFIG_UCLAMP_TASK
 	struct sched_attr attr = {
 		.size = sizeof(attr),
 		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
@@ -853,6 +866,7 @@ void carryfs_unboost_caller(void)
 	};
 
 	sched_setattr_nocheck(current, &attr);
+#endif
 }
 
 /* A block plug for a batch of writes; NULL when out of memory. */

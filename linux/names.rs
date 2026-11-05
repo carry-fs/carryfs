@@ -39,6 +39,10 @@ pub(crate) fn init() {
     unsafe { FOLD.init() };
 }
 
+pub(crate) fn validate_disk(stored: &[u8], folded: &[u8]) -> Result {
+    name::validate_disk_name(stored, folded, &mut FOLD.lock().scratch).map_err(crate::errno)
+}
+
 /// The comparison key of `name`, written to `out`; `None` when the name is
 /// not a valid stored name and so cannot exist on disk.
 fn fold_into(name: &[u8], out: &mut KVec<u8>) -> Result<Option<()>> {

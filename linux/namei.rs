@@ -359,6 +359,7 @@ fn remove_entry(dir: &Inode, dentry: &Dentry, directory: bool) -> Result {
     changed(dir);
     if let Some(victim) = dentry.inode() {
         victim.clear_nlink();
+        inode::refresh_times(victim);
     }
     inode::refresh_times(dir);
     Ok(())
@@ -480,7 +481,11 @@ fn rename_entry(
     if victim_unlinked {
         if let Some(replaced) = new_dentry.inode() {
             replaced.clear_nlink();
+            inode::refresh_times(replaced);
         }
+    }
+    if let Some(moved) = old_dentry.inode() {
+        inode::refresh_times(moved);
     }
     inode::refresh_times(old_dir);
     inode::refresh_times(new_dir);
@@ -492,43 +497,10 @@ fn rename_entry(
 pub(crate) fn remove_object(sb: *mut bindings::super_block, object: u64) -> Result {
     loop {
         let done = mutate(sb, |state, disk| {
-            // Collect a bounded batch of the object's keys, then delete them.
-            let prefix = &tree::prefix(object, 0)[..8];
-            let mut keys: KVec<KVec<u8>> = KVec::new();
-            let mut extents: KVec<(u64, u64)> = KVec::new();
-            Tree::catalog(sb, state).scan(prefix, &mut |key, value| {
-                if !key.starts_with(prefix) || keys.len() >= 256 {
-                    return Ok(false);
-                }
-                if key.get(8) == Some(&tree::EXTENT) {
-                    extents.push(
-                        (le_u64(value, 0), le_u64(value, 8) & u64::from(u32::MAX)),
-                        GFP_KERNEL,
-                    )?;
-                }
-                let mut copy = KVec::new();
-                copy.extend_from_slice(key, GFP_KERNEL)?;
-                keys.push(copy, GFP_KERNEL)?;
-                Ok(true)
-            })?;
-            let done = keys.len() < 256;
-            // The inode record goes last, with the marker.
-            for key in keys.iter().filter(|key| key.get(8) != Some(&tree::INODE)) {
-                txn(state).delete(disk, TreeKind::Catalog, key)?;
-            }
-            for (first, count) in extents.iter() {
-                txn(state).retire(disk, *first, *count)?;
-            }
+            let done = crate::write::remove_data_step(sb, state, disk, object)?;
             if done {
                 txn(state).delete(disk, TreeKind::Catalog, &tree::prefix(object, tree::INODE))?;
                 txn(state).delete(disk, TreeKind::Cleanup, &orphan_key(object))?;
-            } else {
-                // Keep the record's block count equal to its extents'.
-                let mut record = read_record(sb, state, object)?;
-                let removed: u64 = extents.iter().map(|(_, count)| count).sum();
-                let allocated = le_u64(&record, ALLOCATED).saturating_sub(removed);
-                set_u64(&mut record, ALLOCATED, allocated);
-                write_record(state, disk, object, &record)?;
             }
             Ok(done)
         })?;

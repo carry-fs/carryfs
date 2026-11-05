@@ -558,7 +558,15 @@ fn record(
     for (position, unit) in units.iter().enumerate() {
         let valid = unit_valid(size, unit.index);
         let first_block = unit.index * UNIT_BLOCKS;
-        allocated -= remove_extents(sb, state, disk, object, first_block, first_block + UNIT_BLOCKS)?;
+        let removed = remove_extents(sb, state, disk, object, first_block, first_block + UNIT_BLOCKS)?;
+        allocated = allocated.checked_sub(removed).ok_or_else(|| {
+            crate::corrupt(
+                state.root.catalog.block,
+                crate::ondisk::error::Error::Corrupt(
+                    "inode allocation count is smaller than its extents",
+                ),
+            )
+        })?;
         if valid == 0 {
             set_checksum(sb, state, disk, object, unit.index, None)?;
             continue;
@@ -1136,6 +1144,40 @@ fn change_size(inode: &Inode, old: u64, size: u64) -> Result {
 /// Extent records one shrink step removes.
 const SHRINK_BATCH: usize = 256;
 
+/// Remove at most sixteen whole checksum units from an orphan. Even with
+/// one extent per block this bounds the batch to 256 extent records.
+pub(crate) fn remove_data_step(
+    sb: *mut bindings::super_block,
+    state: &mut State,
+    disk: &Disk,
+    object: u64,
+) -> Result<bool> {
+    let prefix = tree::prefix(object, tree::EXTENT);
+    let mut first = None;
+    Tree::catalog(sb, state).scan(&prefix, &mut |key, _| {
+        if key.starts_with(&prefix) {
+            first = Some(be_u64(key, 9) / UNIT_BLOCKS * UNIT_BLOCKS);
+        }
+        Ok(false)
+    })?;
+    let Some(first) = first else {
+        return Ok(true);
+    };
+    let end = first + 16 * UNIT_BLOCKS;
+    let removed = remove_extents(sb, state, disk, object, first, end)?;
+    clear_checksums(sb, state, disk, object, first / UNIT_BLOCKS, end / UNIT_BLOCKS)?;
+    let mut record = read_record(sb, state, object)?;
+    let allocated = le_u64(&record, ALLOCATED).checked_sub(removed).ok_or_else(|| {
+        crate::corrupt(
+            state.root.catalog.block,
+            crate::ondisk::error::Error::Corrupt("orphan allocation count is smaller than its extents"),
+        )
+    })?;
+    set_u64(&mut record, ALLOCATED, allocated);
+    write_record(state, disk, object, &record)?;
+    Ok(false)
+}
+
 /// Remove a batch of `object`'s extents at or past logical block `keep`,
 /// with their units' checksums; whether none remain past `keep`, and the
 /// blocks the file still has. Once none do, the size becomes `size`
@@ -1258,8 +1300,17 @@ pub(crate) unsafe extern "C" fn fsync(
     // SAFETY: As above.
     let sb = unsafe { (*(*file).f_inode).i_sb };
     let volume = volume::of(sb);
-    if !volume.writable || volume.lock().txn.is_none() {
+    if !volume.writable {
         return 0;
+    }
+    {
+        let state = volume.lock();
+        if state.faulted {
+            return EIO.to_errno();
+        }
+        if state.txn.is_none() {
+            return 0;
+        }
     }
     // A commit publishes the whole volume, so write back every dirty file
     // first: the fsyncs that follow, as after copying many files, then find

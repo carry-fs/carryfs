@@ -10,6 +10,9 @@ upstream RFC: it uses the in-tree `kernel` crate, allocates fallibly, and
 treats every on-disk value as untrusted. [Upstreaming](#upstreaming) lists
 what a submission still needs.
 
+Performance measurements below describe earlier revisions. They predate full
+mount validation and synchronous root B publication.
+
 ## Build and load
 
 You need a kernel built with Rust support, its headers and Rust libraries,
@@ -39,9 +42,10 @@ sudo insmod linux/carryfs.ko
 sudo mount -i -t carryfs -o uid=1000,gid=1000 /dev/sdX1 /mnt/usb
 ```
 
-An installed `mount.carryfs`, the FUSE adapter's helper, hands the mount to
-this driver when the module is loaded or loadable, dropping the FUSE-only
-options; `CARRYFS_FUSE=1` keeps FUSE. `-i` skips the helper. The driver accepts `uid=` and `gid=`, defaulting to the
+An installed `mount.carryfs` continues to use FUSE. Select this experimental
+driver explicitly with `-i`, which skips the helper. The driver requires 4 KiB
+kernel pages and rejects `sync` and `dirsync` mounts because namespace changes
+do not yet publish synchronously. It accepts `uid=` and `gid=`, defaulting to the
 mounting user, as vfat and exfat do; files report mode 644, directories 755.
 `ro` mounts read-only and never writes, not even root mirroring.
 
@@ -57,10 +61,58 @@ while mounted, data writes, truncation, reclamation, and crash-orphan
 recovery, and judges each phase with the userspace `carryfs check` and
 `carryfs scrub`, comparing file contents after remount.
 
+`bash tests/vm.sh` runs the native checks in a disposable VM using the
+installed kernel image and module. Run it from `linux/`, or run
+`bash linux/tests/vm.sh` from the repository root. It requires `virtme-run`,
+QEMU, e2fsprogs, and release builds of the CLI and FUSE adapter. It creates a
+temporary 6 GiB disk for guest test images. This avoids filling the guest's
+`/var/tmp` tmpfs and mistaking backing-store errors for driver failures.
+`KERNEL_IMAGE` selects another matching
+kernel image. `CARRYFS_VM_TCG=1` uses software emulation when KVM is unavailable.
+Build the fstests log replay tool before running the VM suite. With an fstests
+checkout in `build/fstests`, run these commands from the repository root:
+
+```sh
+mkdir -p build/check-kernel
+cc -D_GNU_SOURCE -O2 build/fstests/src/log-writes/replay-log.c \
+  build/fstests/src/log-writes/log-writes.c -o build/check-kernel/replay-log
+```
+
+The VM also runs `tests/faults.py`, which uses device-mapper to fail metadata,
+root A, and root B writes separately. It checks the failed publication's root
+generations, repeated fsync errors after device recovery, and successful
+reopen. These cases do not inject flush-only errors or simulate torn writes.
+
+Run `python3 linux/tests/flush.py` from the repository root to test flush-only
+errors. It boots a separate VM with three QEMU blkdebug devices that fail the
+first, second, and third publication flush respectively. Each case must report
+persistent fsync errors, reopen cleanly, and accept a new durable change.
+The runtime CI job runs this test after the main VM suite.
+
+`tests/replay.py` records orphan deletion with `dm-log-writes` while another
+thread publishes changes. It replays the log into a baseline image and runs
+the userspace checker on an immutable snapshot at every logged flush. The
+test requires deletion to cross multiple publications. CI pins the replay
+tool to fstests commit `22348afe338c0f6d540c0d7ef0db749eaa51b218`.
+It also requires a checked generation with the orphan still present and its
+data-block count reduced, so a run cannot pass by checking only final cleanup.
+
+`tests/roots.py` simulates interrupted root writes by combining old and new
+root sectors. It checks all seven partial-prefix lengths and a last-sector-only
+write for both root A and root B. Each resulting image must pass the userspace
+checker and return the expected file bytes through a read-only native mount.
+
 `tests/fstests/run.sh FSTESTS_DIR [tests]` runs
 [fstests](https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git) against
 the driver on two loop images, with `mkfs`, `fsck`, and `mount` helpers in
 `tests/fstests/bin/`. See [fstests results](#fstests-results).
+
+To run fstests in the same disposable VM, use these commands from the
+repository root. The checkout must already have its helpers built.
+
+```sh
+bash linux/tests/vm.sh "$PWD/linux/tests/fstests/guest.sh" "$PWD/build/fstests" -g quick
+```
 
 `tests/fuzz.py` mounts corrupted copies of a populated image, read-only or
 read-write, walks and reads them, and fails on any kernel BUG, oops, or
@@ -95,6 +147,7 @@ written by the driver.
 | `edit.rs` | Copy-on-write B+tree edits in the open transaction |
 | `space.rs` | Allocation groups, data allocation, workspace refill, retirement, reclamation |
 | `commit.rs` | Sealing, workspace bank, two-root publication, mount-time mirroring |
+| `check.rs` | Structural, ownership, namespace, and checksum-coverage validation before writable mounts |
 | `inode.rs` | Inode loading, lookup, attributes, eviction |
 | `namei.rs` | Create, mkdir, symlink, unlink, rmdir, rename |
 | `dir.rs` | Directory listing and dentry priming |
@@ -154,8 +207,8 @@ A writable mount keeps one open transaction under the volume lock. The
 first change under a committed page copies it into a draft; later changes
 edit the draft. Commit seals drafts onto workspace slots, writes the
 successor workspace bank, and publishes with FORMAT.md's flush, root A,
-flush sequence; root B follows (see [Differences](#differences-from-the-userspace-core)). Sync, fsync, unmount, a five-second timer,
-and a transaction of 3,072 drafts commit.
+flush, root B, flush sequence before acknowledging success. Sync, fsync,
+unmount, a five-second timer, and a transaction of 3,072 drafts commit.
 
 Writeback copies each dirty unit whole, filling clean pages from the page
 cache or the verified old unit, writes it to new blocks, and replaces the
@@ -247,30 +300,20 @@ about 20,000.
   does not know the panic paths of `char::encode_utf8` and
   `slice::sort_unstable`, so the shared code encodes UTF-8 by hand and
   commit uses its own heapsort.
-- **Mount helpers.** `mount -t carryfs` runs `mount.carryfs` if installed.
-  Both adapters share the type name, as ntfs-3g and ntfs3 do not, so the
-  helper decides: it mounts through the driver when `carryfs` is in
-  `/proc/filesystems` after `modprobe`, and through FUSE otherwise.
+- **Mount helpers.** `mount -t carryfs` runs `mount.carryfs` if installed
+  and uses FUSE. Both adapters share the type name, so experimental native
+  mounts use `mount -i -t carryfs` to bypass the helper.
 - **Direct I/O.** `O_DIRECT` opens are accepted and served by the page
   cache, and a direct write is written back before it returns. True direct
   I/O would rewrite a whole 64 KiB checksum unit for a 512-byte write.
 
 ## Differences from the userspace core
 
-All of these produce images the userspace checker accepts.
+Writable mounts validate structure and block ownership before any root repair,
+allocation, or orphan cleanup. The check also reconciles directory links,
+inode counts, and checksum coverage. Bitmap windows bound memory use on large
+volumes. These remaining differences produce images the userspace checker accepts.
 
-- **Root B follows later.** FORMAT.md acknowledges a publication after
-  flush, root A, flush, root B, flush. The driver acknowledges after root
-  A's flush, which its crash table already makes durable ("G is durable in
-  A; select G and finish mirroring"), and writes root B with the next
-  publication's pages, whose first flush covers it before root A is
-  overwritten; sync and unmount write it at once. That saves one cache
-  flush per fsync. `tests/check.py` checks an image copied right after
-  fsync.
-- **Writable mounts check less.** FORMAT.md asks a writable reopen to
-  check all ownership before mirroring. The driver verifies every page it
-  reads and validates the workspace list, but leaves whole-volume checks to
-  `carryfs check`, as kernel filesystems leave them to fsck.
 - **Units are rewritten whole.** A partial overwrite copies the whole unit
   to new blocks. FORMAT.md allows keeping unchanged blocks but does not
   require it.
@@ -283,6 +326,8 @@ All of these produce images the userspace checker accepts.
 - **Unstored attributes.** Access times are not stored. Changes to mode or
   owner fail with `EPERM`. The volume label is not exposed.
 - **Hard links.** The format has none; `link(2)` fails with `EPERM`.
+- **Cgroup I/O accounting.** Writeback does not preserve cgroup ownership
+  across writers. fstests generic/563 exposes this limit.
 
 ## Benchmarks
 
@@ -314,24 +359,30 @@ what FUSE wrote during `write()`.
 
 ## fstests results
 
-The `quick` group from fstests at commit 22348afe: of 647 tests, 98 pass,
-539 do not run, and 10 fail; with `O_DIRECT` since accepted, generic/091,
-130, 263, and 704 also pass. Tests do not run when they need what the
-format lacks (hard links, extended attributes, reflink, fallocate,
-freezing, quota, owners and modes) or what the host lacks (a `fsgqa`
-user).
+On 2026-11-05, the `quick` group from fstests commit
+`22348afe338c0f6d540c0d7ef0db749eaa51b218` ran on Linux 7.2.8-9-omarchy in
+a disposable VM. Of 647 tests, 134 passed, 509 did not run, and four failed.
+The VM used two 2 GiB loop images on a dedicated 6 GiB ext4 disk.
+All six targeted regressions passed too: generic/006, 013, 014, 075, 112,
+and 127.
 
-Every failure comes from the format, the host, or a deliberate choice:
+Tests did not run when they needed unsupported operations, such as hard links,
+extended attributes, reflink, fallocate, freezing, quota, or owner and mode
+changes. Other skips depended on the test environment, including its missing
+`fsgqa` user. The remaining failures describe these compatibility limits:
 
 | Tests | Cause |
 |---|---|
 | generic/003 | Access times are not stored, and a ctime change through `chmod` is refused |
-| generic/029, generic/030 | The host's `od` prints hexadecimal in upper case |
 | generic/120, generic/452 | Programs run from the volume; the format stores no execute bit |
-| generic/441 | After a failed write, FORMAT.md keeps the volume faulted until remount, so fsync keeps failing after the device recovers |
-| generic/563 | Needs a device smaller than the format's 256 MiB minimum |
-| generic/634 | The host's `touch` cannot parse a date past 2038 |
-| generic/740 | The userspace `mkfs` helper overwrites other filesystems without `-f` |
+| generic/563 | Writeback does not preserve cgroup I/O ownership across writers |
+
+Earlier VM runs filled `/var/tmp` tmpfs while writing their loop images.
+The resulting backing-store errors invalidated those results. With the
+dedicated disk, generic/129, 411, 451, 460, and 676 all passed. The external
+`locktest` helper needed a declaration fix for the installed headers;
+generic/131 passed after that helper was built. generic/029, 030, 441, 634,
+and 740 also passed in the final run.
 
 fstests found five driver bugs, all fixed: incomplete kept listings
 (generic/006), growth past a partial tail unit (generic/014), reads racing

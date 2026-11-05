@@ -9,14 +9,17 @@ temporary directory on loop devices.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import errno
 import hashlib
 import itertools
 import mmap
 import os
 import random
+import resource
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -188,6 +191,243 @@ def listings(volume):
         assert sorted(os.listdir(root / "c")) == names
     volume.unmount()
     print(f"  listings: {volume.check()}")
+
+
+def namespace_times(volume):
+    """Open descriptors observe namespace ctime changes without inode eviction."""
+    root = volume.mount()
+    path = root / "before"
+    path.write_bytes(b"content")
+    with path.open("rb") as held:
+        before = os.fstat(held.fileno()).st_ctime_ns
+        time.sleep(0.02)
+        path.rename(root / "after")
+        renamed = os.fstat(held.fileno()).st_ctime_ns
+        assert renamed > before, "rename left cached ctime unchanged"
+        assert (root / "after").stat().st_ctime_ns == renamed
+        time.sleep(0.02)
+        (root / "after").unlink()
+        assert os.fstat(held.fileno()).st_ctime_ns > renamed, "unlink left cached ctime unchanged"
+    volume.unmount()
+    print(f"  namespace times: {volume.check()}")
+
+
+def concurrent_operations(volume):
+    """Concurrent namespace, mmap, size, and writeback operations survive remount."""
+    root = volume.mount()
+
+    def lane(index):
+        path = root / f"lane-{index}"
+        for iteration in range(24):
+            data = bytes([index, iteration]) * 4096
+            with path.open("w+b") as handle:
+                handle.write(data)
+                handle.flush()
+                handle.truncate(65536)
+                with mmap.mmap(handle.fileno(), 65536) as mapped:
+                    mapped[32768:32768 + len(data)] = data
+                os.fsync(handle.fileno())
+                moved = root / f"moved-{index}"
+                path.rename(moved)
+                moved.unlink()
+                handle.write(data)
+            with path.open("ab") as handle:
+                handle.write(data)
+        return path.name, data
+
+    # Hold a directory descriptor so unmount attempts must fail even if the
+    # worker threads finish before the mount utility reaches the syscall.
+    held = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(lane, index) for index in range(4)]
+            for _ in range(4):
+                result = subprocess.run(["umount", root], capture_output=True)
+                assert result.returncode != 0 and os.path.ismount(root), "unmounted a busy volume"
+                os.fsync(held)
+            expected = dict(future.result(timeout=120) for future in futures)
+    finally:
+        os.close(held)
+    volume.unmount()
+    root = volume.mount("ro")
+    for name, data in expected.items():
+        assert (root / name).read_bytes() == data, f"concurrent lane {name} differs after remount"
+    volume.unmount()
+    print(f"  concurrent operations: {volume.check(scrub=True)}")
+
+
+def fragmented_orphan(volume):
+    """Deletion spans batches of nonadjacent backed checksum units."""
+    root = volume.mount()
+    path = root / "fragmented"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        for index in range(600):
+            assert os.pwrite(fd, bytes([index % 256]) * 4096, index * 2 * 65536) == 4096
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    path.unlink()
+    os.sync()
+    volume.unmount()
+    print(f"  fragmented orphan: {volume.check(scrub=True)}")
+
+
+def unsupported_mount_options(volume):
+    """Reject unsupported durability flags on initial mounts and remounts."""
+    loop = subprocess.check_output(["losetup", "-f", "--show", volume.image], text=True).strip()
+    try:
+        for option in ("sync", "dirsync"):
+            result = subprocess.run(["mount", "-i", "-t", "carryfs", "-o", option, loop, volume.point],
+                                    capture_output=True)
+            if result.returncode == 0:
+                run("umount", volume.point)
+                raise AssertionError(f"unsupported {option} mount succeeded")
+    finally:
+        run("losetup", "-d", loop)
+    volume.mount()
+    for option in ("sync", "dirsync"):
+        result = subprocess.run(["mount", "-i", "-o", f"remount,{option}", volume.point], capture_output=True)
+        assert result.returncode != 0, f"unsupported {option} remount succeeded"
+    volume.unmount()
+    print(f"  unsupported mount options: {volume.check()}")
+
+
+def corrupt_records(volume):
+    """Refuse cross-record corruption before repairing an invalid root mirror."""
+    from fuzz import reseal
+
+    root = volume.mount()
+    for name in ("first", "second"):
+        (root / name).write_bytes(b"x" * 65536)
+    volume.unmount()
+
+    def records(page):
+        offset = 80
+        for _ in range(struct.unpack_from("<H", page, 32)[0]):
+            key_len, value_len = struct.unpack_from("<HH", page, offset)
+            value = offset + 4 + key_len
+            yield page[offset + 4:value], value, value_len
+            offset = value + value_len
+
+    baseline = volume.image.with_suffix(".baseline")
+    run("cp", "--sparse=always", volume.image, baseline)
+    for case in ("allocation count", "data cross-link", "directory cross-link", "allocation bitmap", "detached tree"):
+        run("cp", "--sparse=always", baseline, volume.image)
+        with volume.image.open("r+b") as image:
+            def read(block):
+                image.seek(block * 4096)
+                return bytearray(image.read(4096))
+
+            def write(block, page):
+                reseal(page)
+                image.seek(block * 4096)
+                image.write(page)
+
+            root = read(256)
+            catalog = struct.unpack_from("<Q", root, 64)[0]
+            page = read(catalog)
+            assert page[14] == 0, "fixture catalog must fit in one leaf"
+            inodes = [value for key, value, _ in records(page) if key[8] == 1 and page[value] == 1]
+            entries = [value for key, value, _ in records(page) if key[8] == 2]
+            extents = [value for key, value, _ in records(page) if key[8] == 3]
+            assert len(inodes) == len(entries) == len(extents) == 2
+            first = struct.unpack_from("<Q", page, extents[0])[0]
+            if case == "allocation count":
+                struct.pack_into("<Q", page, inodes[0] + 24, 0)
+                write(catalog, page)
+            elif case in ("data cross-link", "directory cross-link"):
+                values = extents if case == "data cross-link" else entries
+                page[values[1]:values[1] + 8] = page[values[0]:values[0] + 8]
+                write(catalog, page)
+            elif case == "allocation bitmap":
+                block = struct.unpack_from("<Q", root, 80)[0]
+                while True:
+                    page = read(block)
+                    candidates = [(key, value) for key, value, _ in records(page)
+                                  if int.from_bytes(key, "big") <= first // 16384]
+                    key, value = candidates[-1]
+                    if page[14] == 0:
+                        assert int.from_bytes(key, "big") == first // 16384
+                        page[value + first % 16384 // 8] ^= 1 << (first % 8)
+                        write(block, page)
+                        break
+                    block = struct.unpack_from("<Q", page, value)[0]
+            else:
+                block = struct.unpack_from("<Q", root, 96)[0]
+                page = read(block)
+                assert page[14] == 0, "fixture cleanup must fit in one leaf"
+                jobs = [(bytes(key), bytes(page[value:value + length])) for key, value, length in records(page)]
+                job = struct.unpack_from("<Q", root, 152)[0]
+                jobs.append((b"\x02" + job.to_bytes(8, "big"),
+                             struct.pack("<QBB6x", 2, 1, 4) + root[64:80]))
+                payload = b"".join(struct.pack("<HH", len(key), len(value)) + key + value
+                                   for key, value in sorted(jobs))
+                page[80:] = payload + bytes(4096 - 80 - len(payload))
+                struct.pack_into("<HH", page, 32, len(jobs), len(payload))
+                generation = struct.unpack_from("<Q", root, 48)[0]
+                struct.pack_into("<Q", page, 24, generation)
+                struct.pack_into("<Q", root, 104, generation)
+                write(block, page)
+                struct.pack_into("<Q", root, 152, job + 1)
+            write(256, root)
+            blocks = volume.image.stat().st_size // 4096
+            image.seek((blocks - 257) * 4096 + 4092)
+            crc = bytearray(image.read(4))
+            crc[0] ^= 1
+            image.seek((blocks - 257) * 4096 + 4092)
+            image.write(crc)
+        checked = subprocess.run([volume.cli, "check", volume.image], capture_output=True, text=True)
+        assert checked.returncode != 0, f"userspace checker accepted {case}"
+        with volume.image.open("rb") as image:
+            before = hashlib.file_digest(image, "sha256").digest()
+        loop = subprocess.check_output(["losetup", "-f", "--show", volume.image], text=True).strip()
+        try:
+            result = subprocess.run(["mount", "-i", "-t", "carryfs", loop, volume.point], capture_output=True)
+            if result.returncode == 0:
+                run("umount", volume.point)
+                raise AssertionError(f"native driver accepted {case}")
+        finally:
+            run("losetup", "-d", loop)
+        with volume.image.open("rb") as image:
+            assert hashlib.file_digest(image, "sha256").digest() == before, f"{case}: failed mount changed the image"
+        print(f"  {case}: rejected without writes or root repair; {checked.stderr.strip()}")
+
+
+def direct_append(volume):
+    """An O_DIRECT append writes back the EOF range before returning."""
+    root = volume.mount()
+    path = root / "append"
+    payload = os.urandom(2 << 20)
+    path.write_bytes(payload)
+    with path.open("rb") as held:
+        os.fsync(held.fileno())
+    before = path.stat().st_blocks
+    tail = os.urandom(65536)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_DIRECT)
+    try:
+        assert os.lseek(fd, 0, os.SEEK_CUR) == 0
+        assert os.write(fd, tail) == len(tail)
+        assert os.fstat(fd).st_blocks >= before + len(tail) // 512, "direct append was not written back"
+    finally:
+        os.close(fd)
+    limit = path.stat().st_size + 8192
+    previous_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+    try:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, previous_limit[1]))
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_DIRECT)
+        try:
+            assert os.write(fd, tail) == 8192, "expected a partial direct append at the file-size limit"
+            assert os.fstat(fd).st_blocks >= before + (len(tail) + 8192) // 512
+        finally:
+            os.close(fd)
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, previous_limit)
+    volume.unmount()
+    root = volume.mount("ro")
+    assert (root / "append").read_bytes() == payload + tail + tail[:8192]
+    volume.unmount()
+    print(f"  direct append: {volume.check(scrub=True)}")
 
 
 TRACING = Path("/sys/kernel/tracing")
@@ -527,9 +767,9 @@ def orphan(volume, work):
 
 
 def fsync_crash(volume, work):
-    """fsync is durable once root A is: an image copied right after it, as a
-    crash would leave the device with root B one publication behind, opens
-    with the synced file."""
+    """A snapshot after fsync contains the synced file.
+    This does not simulate interrupted device writes or flushes.
+    """
     root = volume.mount()
     (root / "before").write_bytes(b"b")
     os.sync()
@@ -539,6 +779,16 @@ def fsync_crash(volume, work):
         os.fsync(f.fileno())
     crashed = work / "fsync-crashed.img"
     run("cp", "--sparse=always", volume.image, crashed)
+    with crashed.open("rb") as image:
+        blocks = crashed.stat().st_size // 4096
+        image.seek(256 * 4096)
+        a = bytearray(image.read(4096))
+        image.seek((blocks - 257) * 4096)
+        b = bytearray(image.read(4096))
+        for page in (a, b):
+            page[40:48] = bytes(8)
+            page[4092:4096] = bytes(4)
+        assert a == b, "fsync returned before root B mirrored root A"
     volume.unmount()
     copy = Volume.__new__(Volume)
     copy.cli, copy.image, copy.point, copy.loop = volume.cli, crashed, volume.point, None
@@ -573,6 +823,18 @@ def checks(args, work):
     namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
     print("case names")
     case_names(Volume(args.cli, work, "case-names", 512))
+    print("namespace times")
+    namespace_times(Volume(args.cli, work, "namespace-times", 512))
+    print("concurrent operations")
+    concurrent_operations(Volume(args.cli, work, "concurrent", 512))
+    print("fragmented orphan")
+    fragmented_orphan(Volume(args.cli, work, "fragmented-orphan", 512))
+    print("corrupt records")
+    corrupt_records(Volume(args.cli, work, "corrupt-records", 256))
+    print("unsupported mount options")
+    unsupported_mount_options(Volume(args.cli, work, "unsupported-options", 256))
+    print("direct append")
+    direct_append(Volume(args.cli, work, "direct-append", 512))
     print("large folios")
     large_folios(Volume(args.cli, work, "large-folios", 512))
     print("fsx")

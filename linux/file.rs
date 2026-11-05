@@ -630,13 +630,13 @@ unsafe extern "C" fn write_iter(iocb: *mut bindings::kiocb, from: *mut bindings:
     unsafe {
         let direct = (*iocb).ki_flags & bindings::IOCB_DIRECT as c_int != 0;
         (*iocb).ki_flags &= !(bindings::IOCB_DIRECT as c_int);
-        let start = (*iocb).ki_pos;
         let written = bindings::generic_file_write_iter(iocb, from);
         if direct && written > 0 {
             // A direct write is on the device when it returns, and leaves
             // no cached copy behind.
             let mapping = (*(*(*iocb).ki_filp).f_inode).i_mapping;
-            let end = start + written as i64 - 1;
+            let start = (*iocb).ki_pos - written as i64;
+            let end = (*iocb).ki_pos - 1;
             let status = bindings::filemap_write_and_wait_range(mapping, start, end);
             if status != 0 {
                 return status as isize;

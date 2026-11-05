@@ -57,18 +57,6 @@ pub fn helper(args: &[OsString]) -> Result<()> {
     if fake {
         return Ok(());
     }
-    if env::var_os("CARRYFS_FUSE").is_none() && native_driver() {
-        // The kernel driver (linux/ in the source tree) serves the mount;
-        // -i keeps mount(8) from running this helper again.
-        let status = Command::new("mount")
-            .args(["-i", "-t", "carryfs", "-o", &native_options(text)])
-            .args([device, directory])
-            .status()?;
-        if !status.success() {
-            return Err("mount through the kernel driver failed; see dmesg".into());
-        }
-        return Ok(());
-    }
     let unit = unit_name(Path::new(device))?;
     let status = Command::new("systemd-run")
         .arg("--quiet")
@@ -86,42 +74,6 @@ pub fn helper(args: &[OsString]) -> Result<()> {
         return Err(format!("mount failed; see journalctl -u {unit}").into());
     }
     Ok(())
-}
-
-/// Whether the CarryFS kernel driver is registered, loading its module if
-/// one is installed.
-fn native_driver() -> bool {
-    let registered = || {
-        std::fs::read_to_string("/proc/filesystems")
-            .is_ok_and(|list| list.lines().any(|line| line == "\tcarryfs"))
-    };
-    registered()
-        || (Command::new("modprobe")
-            .args(["-q", "carryfs"])
-            .status()
-            .is_ok_and(|status| status.success())
-            && registered())
-}
-
-/// The mount options the kernel driver and mount(8) accept: everything
-/// except the FUSE adapter's own.
-fn native_options(options: &str) -> String {
-    let own = [
-        "strict",
-        "metadata-cache",
-        "owners",
-        "noowners",
-        "readdirplus=yes",
-    ];
-    let kept: Vec<&str> = options
-        .split(',')
-        .filter(|option| !option.is_empty() && !own.contains(option))
-        .collect();
-    if kept.is_empty() {
-        "defaults".into()
-    } else {
-        kept.join(",")
-    }
 }
 
 fn unit_name(device: &Path) -> Result<String> {
@@ -428,15 +380,6 @@ fn format_uuid(bytes: &[u8; 16]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn native_options_drop_fuse_only_options() {
-        assert_eq!(
-            super::native_options("rw,uhelper=udisks2,strict,uid=1000,metadata-cache,nosuid"),
-            "rw,uhelper=udisks2,uid=1000,nosuid"
-        );
-        assert_eq!(super::native_options("owners"), "defaults");
-    }
-
     use super::*;
 
     #[test]

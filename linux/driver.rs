@@ -2,7 +2,7 @@
 
 //! CarryFS: a native Linux driver for CarryFS volumes.
 //!
-//! This revision mounts volumes read-only. The on-disk encodings, checksums,
+//! This revision mounts volumes read-write. The on-disk encodings, checksums,
 //! and filename profile come from `ondisk/`, which the userspace tools build
 //! as the `carryfs-ondisk` crate; the module compiles the same files by path,
 //! as XFS shares `libxfs` with xfsprogs.
@@ -20,6 +20,7 @@ mod ondisk {
 }
 
 mod commit;
+mod check;
 mod dir;
 mod edit;
 mod file;

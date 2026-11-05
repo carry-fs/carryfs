@@ -12,12 +12,22 @@ what a submission still needs.
 
 ## Build and load
 
-You need the headers and Rust libraries of the running kernel, and the
-`rustc` that built them. On Ubuntu 26.04 with kernel 7.0:
+You need a kernel built with Rust support, its headers and Rust libraries,
+and the exact `rustc` build that compiled it. `scripts/kernel-build.sh`
+checks each of these, says which is missing, and builds the module. CI (the
+`kernel` workflow) builds it weekly against these distributions' kernels:
+
+| Distribution | Kernel | Packages |
+|---|---|---|
+| Ubuntu 26.04 | 7.0 | `linux-headers-$(uname -r) linux-lib-rust-$(uname -r) rustc-1.93` |
+| Fedora 45 | 7.2 | `kernel-devel rust` |
+| Arch | 7.2 | `linux-headers rust` |
+
+A rustup toolchain does not work even at the kernel's rustc version: it is a
+different build.
 
 ```sh
-sudo apt install linux-headers-$(uname -r) linux-lib-rust-$(uname -r) rustc-1.93
-make -C linux build
+scripts/kernel-build.sh
 sudo insmod linux/carryfs.ko
 ```
 

@@ -1,0 +1,79 @@
+name: ondisk
+
+# Miri and a short fuzz run for changes to the on-disk encodings, which the
+# userspace core and the kernel driver share; extended-checks runs both
+# weekly over everything.
+
+on:
+  push:
+    paths:
+      - ondisk/**
+      - fuzz/**
+      - scripts/check-miri.sh
+      - scripts/check-fuzz.sh
+      - .github/workflows/ondisk.yml
+  pull_request:
+    paths:
+      - ondisk/**
+      - fuzz/**
+      - scripts/check-miri.sh
+      - scripts/check-fuzz.sh
+      - .github/workflows/ondisk.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ondisk-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [miri, fuzz]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Nightly Rust
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustc +nightly --version
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            fuzz/target
+          key: ondisk-${{ runner.os }}-${{ matrix.check }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+      - name: Miri components
+        if: matrix.check == 'miri'
+        run: rustup component add --toolchain nightly miri rust-src
+      - name: cargo-fuzz
+        if: matrix.check == 'fuzz'
+        run: cargo install cargo-fuzz --locked
+      - name: Miri
+        if: matrix.check == 'miri'
+        run: bash scripts/check-miri.sh
+      # The targets that read on-disk bytes: through the core, and the
+      # entry points only the kernel driver calls.
+      - name: Fuzz
+        if: matrix.check == 'fuzz'
+        run: bash scripts/check-fuzz.sh parsers ondisk
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ondisk-${{ matrix.check }}
+          path: |
+            build/check-${{ matrix.check }}/
+            fuzz/artifacts/
+          retention-days: 7

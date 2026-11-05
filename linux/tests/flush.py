@@ -59,7 +59,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="flush-", dir=output) as directory:
         args = ["virtme-run", "--kimg", os.environ.get("KERNEL_IMAGE", f"/usr/lib/modules/{os.uname().release}/vmlinuz"),
-                "--mods", "auto", "--memory", "2G", "--cpus", "2", "--pwd", "--disable-microvm",
+                "--mods", "auto", "--memory", "2G", "--cpus", "2", "--pwd", "--force-9p", "--disable-microvm",
                 "--kopt", "panic=-1", "--script-sh", shlex.join(["python3", str(Path(__file__).resolve()), "--guest"])]
         if os.environ.get("CARRYFS_VM_TCG") == "1":
             args.append("--disable-kvm")

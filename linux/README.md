@@ -67,6 +67,7 @@ installed kernel image and module. Run it from `linux/`, or run
 QEMU, e2fsprogs, and release builds of the CLI and FUSE adapter. It creates a
 temporary 6 GiB disk for guest test images. This avoids filling the guest's
 `/var/tmp` tmpfs and mistaking backing-store errors for driver failures.
+The guest reads the host filesystem through 9p, including in CI containers.
 `KERNEL_IMAGE` selects another matching
 kernel image. `CARRYFS_VM_TCG=1` uses software emulation when KVM is unavailable.
 Build the fstests log replay tool before running the VM suite. With an fstests

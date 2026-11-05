@@ -20,7 +20,7 @@ truncate -s 6G "$work/store.img"
 guest=${1:-"$repo/linux/tests/guest.sh"}
 [[ $# == 0 ]] || shift
 printf -v command '%q ' "$guest" "$@"
-args=(--kimg "$kernel_image" --mods auto --memory 4G --cpus 4 --pwd
+args=(--kimg "$kernel_image" --mods auto --memory 4G --cpus 4 --pwd --force-9p
       --disable-microvm --kopt panic=-1 --script-sh
       "set -eu; mkfs.ext4 -q -F /dev/disk/by-id/virtio-carryfs-test-store; mount /dev/disk/by-id/virtio-carryfs-test-store /var/tmp; exec $command")
 if [[ ${CARRYFS_VM_TCG:-0} == 1 ]]; then

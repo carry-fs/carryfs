@@ -23,8 +23,8 @@ checks each of these, says which is missing, and builds the module. CI (the
 | Fedora 45 | 7.2 | `kernel-devel rust` |
 | Arch | 7.2 | `linux-headers rust` |
 
-A rustup toolchain does not work even at the kernel's rustc version: it is a
-different build.
+A rustup toolchain does not work, even at the kernel's rustc version,
+because it is a different build.
 
 ```sh
 scripts/kernel-build.sh

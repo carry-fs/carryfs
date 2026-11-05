@@ -94,9 +94,12 @@ def exercise(point, writable):
                 if os.path.islink(path):
                     os.readlink(path)
                 else:
+                    # A corrupted size can make a file a legal sparse file of
+                    # petabytes; past what populate wrote, reads return holes.
                     with open(path, "rb") as handle:
-                        while handle.read(1 << 20):
-                            pass
+                        for _ in range(16):
+                            if not handle.read(1 << 20):
+                                break
             except OSError:
                 pass
     if writable:

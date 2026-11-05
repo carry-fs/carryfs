@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 carryfs-core = { path = "..", features = ["fuzzing"] }
+carryfs-ondisk = { path = "../ondisk", features = ["std"] }
 
 [[bin]]
 name = "parsers"
@@ -38,6 +39,13 @@ bench = false
 [[bin]]
 name = "storage"
 path = "fuzz_targets/storage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ondisk"
+path = "fuzz_targets/ondisk.rs"
 test = false
 doc = false
 bench = false

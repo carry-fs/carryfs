@@ -92,10 +92,12 @@ jobs:
             image: ubuntu:26.04
             install: |
               apt-get update
-              apt-get install -y --no-install-recommends ca-certificates make gcc libc6-dev kmod linux-headers-generic
-              version=$(ls -d /usr/src/linux-headers-*-generic | sort -V | tail -1)
-              version=${version#/usr/src/linux-headers-}
-              apt-get install -y --no-install-recommends "linux-lib-rust-$version"
+              # Metapackages can reach mirrors before their versioned dependencies.
+              version=$(apt-cache search --names-only '^linux-headers-[0-9].*-generic$' |
+                awk '{print $1}' | sed 's/^linux-headers-//' | sort -V | tail -1)
+              test -n "$version"
+              apt-get install -y --no-install-recommends ca-certificates make gcc libc6-dev kmod \
+                "linux-headers-$version" "linux-lib-rust-$version"
               # The rustc that built the kernel, which Ubuntu versions as rustc-1.NN.
               rust=$(sed -n 's/^CONFIG_RUSTC_VERSION_TEXT="\{0,1\}rustc \([0-9]*\.[0-9]*\).*/\1/p' \
                 "/usr/src/linux-headers-$version/include/config/auto.conf")

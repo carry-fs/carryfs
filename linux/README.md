@@ -99,9 +99,11 @@ buffers would be reclaimed. It also checks reference release and allocation
 failure. Runtime CI runs this check before booting the guest.
 
 `tests/replay.py` records orphan deletion with `dm-log-writes` while another
-thread publishes changes. It replays the log into a baseline image and runs
-the userspace checker on an immutable snapshot at every logged flush. The
-test requires deletion to cross multiple publications. CI pins the replay
+thread publishes changes. It starts with cold metadata caches so cleanup must
+perform I/O, and stops concurrent publication after observing a partial commit.
+It replays the log into a baseline image and checks an immutable snapshot at
+every logged flush with the userspace checker. The test requires deletion to
+cross multiple publications. CI pins the replay
 tool to fstests commit `22348afe338c0f6d540c0d7ef0db749eaa51b218`.
 It also requires a checked generation with the orphan still present and its
 data-block count reduced, so a run cannot pass by checking only final cleanup.

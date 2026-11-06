@@ -17,6 +17,19 @@ from check import Volume, run
 from faults import Device
 
 
+def published_blocks(image):
+    """Read a stable committed catalog total as a hint for stopping fsyncs."""
+    with image.open("rb", buffering=0) as source:
+        root = os.pread(source.fileno(), 80, 256 * 4096)
+        catalog = struct.unpack_from("<Q", root, 64)[0]
+        page = os.pread(source.fileno(), 80, catalog * 4096)
+        # COW keeps this page immutable while root A stays unchanged.
+        if (os.pread(source.fileno(), 80, 256 * 4096) != root
+                or page[16:32] != root[64:80]):
+            return None
+    return struct.unpack_from("<Q", page, 56)[0]
+
+
 def check_prefix(cli, baseline, checkpoint, generation, initial_blocks, evidence):
     from fuzz import crc32c
 
@@ -144,14 +157,22 @@ def main():
             with baseline.open("rb") as image:
                 image.seek(256 * 4096 + 48)
                 generation = struct.unpack("<Q", image.read(8))[0]
+            # Evict metadata so cleanup performs I/O between batches.
+            os.sync()
+            Path("/proc/sys/vm/drop_caches").write_text("3")
             stopped = threading.Event()
             started = threading.Event()
 
             def publish():
                 os.fsync(directory_fd)
                 started.set()
-                while not stopped.wait(0.001):
+                while not stopped.is_set():
                     os.fsync(directory_fd)
+                    blocks = published_blocks(volume.image)
+                    if blocks is not None and 0 < blocks < int(initial_blocks):
+                        # Replay below must independently prove a valid partial state.
+                        print(f"publisher observed a partial commit with {blocks} data blocks", flush=True)
+                        return
 
             with ThreadPoolExecutor(max_workers=1) as pool:
                 publishing = pool.submit(publish)

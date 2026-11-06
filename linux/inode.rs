@@ -101,16 +101,14 @@ unsafe fn set_inode_times(inode: *mut bindings::inode, record: &[u8]) {
     }
 }
 
-/// Reload `inode`'s times after a change to its record; the caller holds
-/// it locked.
-pub(crate) fn refresh_times(inode: &Inode) {
+/// Reload `inode`'s times while the caller still holds the volume lock
+/// that changed its record, so writeback cannot copy stale times over it.
+pub(crate) fn refresh_times(inode: &Inode, state: &volume::State) -> Result {
     let sb = inode.super_block();
-    let state = sb.volume().lock();
-    if let Ok(record) = namei::read_record(sb.as_ptr(), &state, inode.object()) {
-        // SAFETY: The caller holds the inode locked, so no other writer
-        // changes its times.
-        unsafe { set_inode_times(inode.as_ptr(), &record) };
-    }
+    let record = namei::read_record(sb.as_ptr(), state, inode.object())?;
+    // SAFETY: The caller holds the inode and volume locked.
+    unsafe { set_inode_times(inode.as_ptr(), &record) };
+    Ok(())
 }
 
 /// # Safety
@@ -283,12 +281,27 @@ unsafe fn change_attributes(
             crate::write::set_size(Inode::from_raw(inode), (*attr).ia_size as u64)?;
         }
         if valid & (bindings::ATTR_MTIME | bindings::ATTR_CTIME) != 0 {
-            let modified = (valid & bindings::ATTR_MTIME != 0)
-                .then(|| ((*attr).ia_mtime.tv_sec, (*attr).ia_mtime.tv_nsec as u32));
-            namei::set_times((*inode).i_sb, (*inode).i_ino as u64, modified)?;
+            namei::mutate((*inode).i_sb, |state, disk| {
+                let object = (*inode).i_ino as u64;
+                let mut record = namei::read_record((*inode).i_sb, state, object)?;
+                if valid & bindings::ATTR_MTIME != 0 {
+                    namei::set_time(
+                        &mut record,
+                        56,
+                        ((*attr).ia_mtime.tv_sec, (*attr).ia_mtime.tv_nsec as u32),
+                    );
+                }
+                namei::set_time(&mut record, 72, namei::now());
+                namei::write_record(state, disk, object, &record)?;
+                bindings::setattr_copy(idmap, inode, attr);
+                set_inode_times(inode, &record);
+                Ok(())
+            })?;
+        } else {
+            let state = volume::of((*inode).i_sb).lock();
+            bindings::setattr_copy(idmap, inode, attr);
+            refresh_times(Inode::from_raw(inode), &state)?;
         }
-        bindings::setattr_copy(idmap, inode, attr);
-        refresh_times(Inode::from_raw(inode));
     }
     Ok(())
 }

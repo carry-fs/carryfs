@@ -60,6 +60,8 @@ sudo make -C linux test
 while mounted, data writes, truncation, reclamation, and crash-orphan
 recovery, and judges each phase with the userspace `carryfs check` and
 `carryfs scrub`, comparing file contents after remount.
+It also overlaps data writeback with rename, unlink, replacement, and explicit
+mtime changes, then checks that the timestamps survive completion and remount.
 
 `bash tests/vm.sh` runs the native checks in a disposable VM using the
 installed kernel image and module. Run it from `linux/`, or run
@@ -230,6 +232,10 @@ sees blocks allocated but unowned. Each file has one writer or size change
 at a time, so its writes record in order. A write that finds no space
 writes back dirty data and retries once, as btrfs flushes delalloc and
 ext4 retries allocation before ENOSPC.
+
+Namespace and explicit timestamp changes update the cached inode times under
+the same volume lock as their catalog records. A data completion therefore
+cannot copy stale cached times over a newer metadata change.
 
 fsync starts writeback of every dirty file under one plug, so their data
 merges into large writes, then waits for all of it. The last close of a

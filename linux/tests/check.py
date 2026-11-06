@@ -212,6 +212,65 @@ def namespace_times(volume):
     print(f"  namespace times: {volume.check()}")
 
 
+def writeback_times(volume, iterations=100):
+    """Metadata timestamps survive completion of an already-started data write."""
+    root = volume.mount()
+    expected = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for iteration in range(iterations):
+            for action in ("rename", "unlink", "replace", "mtime"):
+                path = root / "source"
+                fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o644)
+                victim = None
+                try:
+                    assert os.write(fd, b"x" * 65536) == 65536
+                    before = os.fstat(fd).st_ctime_ns
+                    syncing = pool.submit(os.fsync, fd)
+                    if action == "rename":
+                        destination = root / f"renamed-{iteration}"
+                        path.rename(destination)
+                    elif action == "unlink":
+                        path.unlink()
+                        destination = None
+                    elif action == "replace":
+                        destination = root / "destination"
+                        destination.write_bytes(b"old")
+                        victim = os.open(destination, os.O_RDONLY)
+                        victim_before = os.fstat(victim).st_ctime_ns
+                        victim_syncing = pool.submit(os.fsync, victim)
+                        path.replace(destination)
+                    else:
+                        destination = root / f"mtime-{iteration}"
+                        # A backdated mtime must not be replaced by the write's time.
+                        mtime = 946684800_000000000 + iteration
+                        os.utime(path, ns=(mtime, mtime))
+                    syncing.result(timeout=30)
+                    os.fsync(fd)
+                    if victim is not None:
+                        victim_syncing.result(timeout=30)
+                        os.fsync(victim)
+                        assert os.fstat(victim).st_ctime_ns > victim_before, "writeback lost victim ctime"
+                    after = os.fstat(fd)
+                    assert after.st_ctime_ns > before, f"{action}: writeback lost ctime"
+                    if action == "mtime":
+                        assert after.st_mtime_ns == mtime, "writeback lost explicit mtime"
+                        path.rename(destination)
+                        after = os.fstat(fd)
+                    if destination is not None:
+                        expected[destination.name] = (after.st_mtime_ns, after.st_ctime_ns)
+                finally:
+                    if victim is not None:
+                        os.close(victim)
+                    os.close(fd)
+    volume.unmount()
+    root = volume.mount("ro")
+    for name, times in expected.items():
+        observed = (root / name).stat()
+        assert (observed.st_mtime_ns, observed.st_ctime_ns) == times, name
+    volume.unmount()
+    print(f"  writeback times: {iterations} iterations of rename, unlink, replacement, and mtime; {volume.check(scrub=True)}")
+
+
 def concurrent_operations(volume):
     """Concurrent namespace, mmap, size, and writeback operations survive remount."""
     root = volume.mount()
@@ -825,6 +884,8 @@ def checks(args, work):
     case_names(Volume(args.cli, work, "case-names", 512))
     print("namespace times")
     namespace_times(Volume(args.cli, work, "namespace-times", 512))
+    print("writeback times")
+    writeback_times(Volume(args.cli, work, "writeback-times", 512))
     print("concurrent operations")
     concurrent_operations(Volume(args.cli, work, "concurrent", 512))
     print("fragmented orphan")

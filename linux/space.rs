@@ -2,11 +2,9 @@
 
 //! Allocation within a transaction (FORMAT.md section 6).
 //!
-//! Each allocation group a transaction touches keeps its committed bitmap
-//! and its current one. A block is allocatable only when free in both: the
-//! committed bitmap is the mirrored state allocations must come from, and
-//! the current one excludes what this transaction already took. Blocks this
-//! transaction retires or reclaims stay unavailable to it.
+//! Allocate only blocks free in both the committed and current bitmaps.
+//! The current bitmap excludes new allocations. The committed bitmap prevents
+//! reuse of committed blocks retired or reclaimed in this transaction.
 
 use kernel::prelude::*;
 
@@ -216,15 +214,10 @@ impl Txn {
         Ok(())
     }
 
-    /// Reclaim retired data from generations both roots already hold,
-    /// removing the records and clearing the blocks' bits; whether the batch
-    /// filled, so that more may remain.
-    ///
-    /// FORMAT.md section 6 sets an initial batch of 64 records and 1,024
-    /// blocks. Bitmaps live in memory here, so a batch takes 64 records and
-    /// `RECLAIM_BLOCKS`: rewrites retire faster than 1,024 blocks a commit
-    /// would return. A record past the block budget is split: its prefix is
-    /// reclaimed and the rest stays, so a range of any size drains.
+    /// Reclaim data from generations both roots hold, up to 64 records and
+    /// `RECLAIM_BLOCKS`. The larger block budget keeps pace with rewrites;
+    /// FORMAT.md section 6 initially specifies 1,024 blocks. Split oversized
+    /// ranges so none can stall reclamation. Return whether the batch filled.
     pub(crate) fn reclaim(
         &mut self,
         disk: &Disk,

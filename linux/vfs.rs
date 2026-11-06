@@ -2,12 +2,9 @@
 
 //! Typed views of the VFS objects the driver uses.
 //!
-//! Linux 7.0's `kernel` crate has no filesystem abstractions, so these
-//! wrappers stand in for the `kernel::fs` an upstream series would add:
-//! each is `#[repr(transparent)]` over `Opaque<T>`, as `kernel::fs::File`
-//! is, and states once the invariants that make its methods safe. The
-//! VFS callbacks turn raw pointers into these references at the boundary;
-//! filesystem logic works with references.
+//! Linux 7.0 lacks Rust filesystem abstractions. These transparent wrappers
+//! over `Opaque<T>` define the required lifetimes and locking rules. VFS
+//! callbacks convert raw pointers to references under those invariants.
 
 use core::ffi::c_void;
 
@@ -220,7 +217,7 @@ impl Dentry {
     }
 }
 
-/// A locked, order-0 page-cache folio.
+/// A page-cache folio locked or under writeback.
 ///
 /// # Invariants
 ///

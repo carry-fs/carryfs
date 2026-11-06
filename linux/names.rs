@@ -2,11 +2,9 @@
 
 //! Case-insensitive names: comparison keys and dentry operations.
 //!
-//! Names match when their filename-profile-2 comparison keys match
-//! (FORMAT.md section 7), so `d_hash` and `d_compare` use those keys rather
-//! than the kernel's utf8 casefolding, which differs from the profile (NFD
-//! output, other Unicode version). ASCII names, the common case, fold
-//! without the shared scratch buffer.
+//! `d_hash` and `d_compare` use filename-profile-2 keys from FORMAT.md section 7.
+//! Kernel casefolding uses a different Unicode version and NFD normalization.
+//! ASCII folding avoids the shared scratch lock.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -31,8 +29,7 @@ kernel::sync::global_lock! {
     };
 }
 
-// one global lock serializes non-ASCII folding; switch to per-CPU
-// scratch if Unicode-heavy lookups contend on it.
+// Non-ASCII folding shares one scratch lock.
 
 pub(crate) fn init() {
     // SAFETY: Called once from module init.

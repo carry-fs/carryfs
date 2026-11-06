@@ -383,15 +383,9 @@ impl<'a> Tree<'a> {
         unsafe { glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), count as u32) };
     }
 
-    /// Read the tree's pages ahead, a level at a time, until `budget`
-    /// pages. Internal pages are verified on the way; leaves are read and
-    /// verified too if `load_leaves`, as a writable mount waits for them,
-    /// and otherwise only started, as verifying them costs CPU a background
-    /// walk should not take from the mount's users, and use verifies them.
-    ///
-    /// A level's pages, written by the same commits into neighboring
-    /// workspace slots, cluster on the device: each level is read merged
-    /// (`read_ahead_merged`) instead of one random read per page.
+    /// Prefetch up to `budget` pages by level, merging reads in block order.
+    /// Verify internal pages; wait for and verify leaves only if `load_leaves`.
+    /// Background walks defer leaf verification to readers to avoid CPU contention.
     pub(crate) fn prefetch(&self, budget: usize, load_leaves: bool) -> Result {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;

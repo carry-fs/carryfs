@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 
-//! CarryFS: a native Linux driver for CarryFS volumes.
+//! Native Linux driver for CarryFS volumes.
 //!
-//! This revision mounts volumes read-write. The on-disk encodings, checksums,
-//! and filename profile come from `ondisk/`, which the userspace tools build
-//! as the `carryfs-ondisk` crate; the module compiles the same files by path,
-//! as XFS shares `libxfs` with xfsprogs.
+//! The module compiles `ondisk/` by path, sharing encodings, checksums, and
+//! filename rules with the userspace `carryfs-ondisk` crate.
 
 use kernel::prelude::*;
 

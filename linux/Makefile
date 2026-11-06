@@ -6,11 +6,9 @@ KDIR  ?= /lib/modules/$(shell uname -r)/build
 # Ubuntu ships it as rustc-1.93 for its 7.0 kernels.
 RUSTC ?= rustc-1.93
 
-# Largest stack frame allowed per function, in bytes. A kernel stack is 16
-# KiB for the whole call chain: a 15.9 KiB carryfs_fill_super frame
-# overflowed it on mount and crashed the host (2026-11-03). C code has
-# -Wframe-larger-than; nothing checks Rust code, so `build` scans the module
-# (x86-64 `sub $N,%rsp`) and deletes it if a frame is larger.
+# Largest stack frame, in bytes. A 15.9 KiB Rust frame overflowed the 16 KiB
+# kernel stack on mount. Scan x86-64 stack adjustments because the C frame
+# warning does not cover Rust, and delete modules that exceed this limit.
 MAX_FRAME ?= 4096
 
 .PHONY: help build test clean

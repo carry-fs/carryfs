@@ -3,20 +3,16 @@
 //! Buffered writes, writeback, and size changes (FORMAT.md section 5,
 //! "Read, write, and truncate rules").
 //!
-//! Writeback copies each dirty 64 KiB unit whole, filling clean pages from
-//! the page cache or the verified old unit, writes it to new blocks, and
-//! then replaces the unit's extents and checksum under the volume lock. The
-//! old blocks are retired. A unit is always rewritten whole: FORMAT.md lets
-//! a writer keep unchanged blocks, but does not require it.
+//! Rewrite dirty 64 KiB units to new blocks, filling missing pages from the
+//! cache or verified old data. Replace extents and checksums under the volume
+//! lock, retiring old blocks. FORMAT.md permits whole-unit replacement.
 //!
-//! The volume lock is held to allocate and to record, not while the data is
-//! written; commits wait for writes in between (`State::writing`), so no
-//! publication sees blocks allocated but unowned. Writeback returns once
-//! the writes are submitted, and the I/O workqueue records them
-//! (`carryfs_write_done`). One writer per file at a time prepares and
-//! allocates a batch; up to `volume::PIPELINE` batches of a file are then in
-//! flight, and they record in the order they were allocated. A size change
-//! holds the file alone.
+//! Hold the volume lock for allocation and recording, but release it during
+//! data I/O. Commits wait for `State::writing` so no publication sees unowned
+//! allocations. `carryfs_write_done` records submitted writes on a workqueue.
+//! One writer prepares each file's batches. Up to `volume::PIPELINE` batches
+//! stay in flight and record in allocation order. Size changes hold the file
+//! exclusively.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -328,14 +324,10 @@ impl<'a> Writer<'a> {
                 Some(planned) => planned,
                 None => record_size(&read_record(sb, state, object)?),
             };
-            // A smaller i_size is a truncate in progress, or one whose tail
-            // rewrite failed: extents past it remain until truncate removes
-            // them, so keep the stored size (fstests generic/476).
-            // Record no further than this batch's last unit: an appender's
-            // i_size past it ends in a unit not yet written, a hole, which
-            // the next batch would rewrite as a grown partial tail. So a
-            // stored partial tail is always a unit a batch wrote, the backed
-            // tail FORMAT.md section 5 rewrites on growth.
+            // Preserve the stored size during an unfinished truncate; shrinking
+            // it early leaves extents past EOF (fstests generic/476).
+            // Limit growth to this batch's last unit so the next batch never
+            // treats an unwritten hole as a backed partial tail.
             let end = units
                 .last()
                 .map_or(0, |unit| (unit.index + 1) * UNIT_BYTES as u64);
@@ -636,10 +628,8 @@ fn queue_units(
     bio
 }
 
-/// Forget the buffer cache's copies of the blocks `allocation` was written
-/// to, once the write ended and before it is recorded: small-file reads
-/// (`file::small_read`) read data through that cache, and none can find
-/// these blocks before the record does. Without the volume lock, as it
+/// Invalidate buffer-cache copies after writing, before recording exposes
+/// them to `file::small_read`. Call without the volume lock because invalidation
 /// waits for reads in flight.
 fn forget_cached(sb: *mut bindings::super_block, allocation: &Allocation) {
     for (_, first, count) in allocation.runs.iter().copied() {
@@ -869,14 +859,9 @@ pub(crate) unsafe extern "C" fn writepages(
     let _nofs = crate::volume::NoFs::new();
     // SAFETY: The VFS passes a mapping of a referenced regular file.
     let inode = unsafe { Inode::from_raw(glue::carryfs_mapping_host(mapping)) };
-    // A unit's write locks its clean folios while the dirty ones it took
-    // are under writeback. A second writeback of the same file, which
-    // fsync and the flusher can start together, may hold one of those
-    // locks while waiting for that writeback in WB_SYNC_ALL mode: a
-    // deadlock (fstests generic/127). One writeback at a time cannot.
-    // serializes writeback of all files on the volume; per-inode
-    // locks, or unit-sized folios as LBS XFS uses, if parallel writeback
-    // matters.
+    // Serialize writeback across the volume. Concurrent WB_SYNC_ALL calls can
+    // hold folio locks while waiting for each other's writeback; filling a
+    // unit's clean folios would then deadlock (fstests generic/127).
     let _writeback = inode.super_block().volume().writeback.lock();
     let mut writer = Writer::new(inode);
     writer.asynchronous = true;
@@ -1004,10 +989,8 @@ pub(crate) unsafe extern "C" fn write_begin(
         // is held.
         unsafe { glue::carryfs_write_dirty_inodes(sb) };
     };
-    // A write that does not cover a folio not in the cache reads its old
-    // content: a large folio's other blocks too. The write may be longer
-    // than a smaller folio the cache had to fall back to; it is then cut to
-    // that folio, which it covers.
+    // Partial writes need the old contents of the whole folio. If allocation
+    // falls back to a smaller folio, the write may cover it without a read.
     // SAFETY: The folio is locked and referenced.
     let covered = unsafe {
         let held = Folio::from_raw(folio);
@@ -1178,12 +1161,9 @@ pub(crate) fn remove_data_step(
     Ok(false)
 }
 
-/// Remove a batch of `object`'s extents at or past logical block `keep`,
-/// with their units' checksums; whether none remain past `keep`, and the
-/// blocks the file still has. Once none do, the size becomes `size`
-/// rounded up to a whole unit, so that the kept
-/// tail unit stays consistent until it is rewritten. Each step leaves a
-/// valid file: removed units read as holes.
+/// Remove extents and checksums past `keep`. Return whether removal finished
+/// and the remaining block count. Keep EOF rounded to a whole unit until the
+/// tail rewrite, so every intermediate state is valid and removed units are holes.
 fn shrink_step(
     sb: *mut bindings::super_block,
     state: &mut State,
@@ -1312,10 +1292,8 @@ pub(crate) unsafe extern "C" fn fsync(
             return 0;
         }
     }
-    // A commit publishes the whole volume, so write back every dirty file
-    // first: the fsyncs that follow, as after copying many files, then find
-    // nothing left to commit. The FUSE adapter publishes all pending changes
-    // on fsync too.
+    // Write back all dirty files before the volume-wide commit so subsequent
+    // fsyncs can share this publication.
     // SAFETY: `sb` is the super block of an open file.
     let status = unsafe { glue::carryfs_write_dirty_inodes(sb) };
     if status != 0 {

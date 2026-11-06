@@ -55,6 +55,7 @@ jobs:
           scripts/kernel-build.sh
           cargo build --release --locked -p carryfs-core -p carryfs-fuse
           python3 linux/tests/mount_guards.py
+          python3 linux/tests/metadata_writes.py
       - name: Build pinned fstests log replay tool
         run: |
           mkdir -p build/check-kernel

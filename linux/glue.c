@@ -535,14 +535,20 @@ void carryfs_bh_set_verified(struct buffer_head *bh)
 int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *const *pages,
 			 unsigned int count)
 {
+	struct buffer_head **buffers;
 	struct blk_plug plug;
 	unsigned int i;
 	int error = 0;
 
+	buffers = kcalloc(count, sizeof(*buffers), GFP_NOFS);
+	if (!buffers)
+		return -ENOMEM;
 	blk_start_plug(&plug);
 	for (i = 0; i < count; i++) {
 		struct buffer_head *bh = sb_getblk(sb, blocks[i]);
 
+		/* Keep the write result alive until the completion check. */
+		buffers[i] = bh;
 		lock_buffer(bh);
 		memcpy(bh->b_data, pages[i], sb->s_blocksize);
 		set_buffer_uptodate(bh);
@@ -550,19 +556,17 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
 		mark_buffer_dirty(bh);
 		unlock_buffer(bh);
 		write_dirty_buffer(bh, REQ_SYNC);
-		brelse(bh);
 	}
 	blk_finish_plug(&plug);
 	for (i = 0; i < count; i++) {
-		struct buffer_head *bh = sb_find_get_block(sb, blocks[i]);
+		struct buffer_head *bh = buffers[i];
 
-		if (!bh)
-			continue;
 		wait_on_buffer(bh);
 		if (buffer_write_io_error(bh) || !buffer_uptodate(bh))
 			error = -EIO;
 		brelse(bh);
 	}
+	kfree(buffers);
 	return error;
 }
 

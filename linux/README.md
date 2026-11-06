@@ -90,6 +90,12 @@ first, second, and third publication flush respectively. Each case must report
 persistent fsync errors, reopen cleanly, and accept a new durable change.
 The runtime CI job runs this test after the main VM suite.
 
+`python3 linux/tests/metadata_writes.py` compiles the C metadata-write helper
+with controlled I/O completion and cache reclamation. Failed writes must
+remain visible until their results are checked, even when unreferenced
+buffers would be reclaimed. It also checks reference release and allocation
+failure. Runtime CI runs this check before booting the guest.
+
 `tests/replay.py` records orphan deletion with `dm-log-writes` while another
 thread publishes changes. It replays the log into a baseline image and runs
 the userspace checker on an immutable snapshot at every logged flush. The

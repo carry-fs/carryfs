@@ -20,6 +20,10 @@ mkdir /var/run/carryfs-install.lock || die 'Another installation is running, or 
 backup=
 changed=0
 committed=0
+native_kernel=
+native_stage=
+cli_stage=
+native_directory_created=0
 finish() {
     status=$?
     trap - EXIT
@@ -35,12 +39,18 @@ finish() {
             fi
         done
         if [ "$platform" = linux-x86_64 ]; then
+            if [ -n "$native_kernel" ]; then depmod -a "$native_kernel" || restored=0; fi
             udevadm control --reload || restored=0
         fi
         if [ "$restored" = 0 ]; then
             printf 'Restoration failed. Keep the backup at %s and restore it before mounting CarryFS.\n' "$backup" >&2
             backup=
         fi
+    fi
+    [ -z "$native_stage" ] || rm -f "$native_stage"
+    [ -z "$cli_stage" ] || rm -f "$cli_stage"
+    if [ "$native_directory_created" = 1 ] && [ "$committed" = 0 ] && [ -d "/lib/modules/$native_kernel/updates" ]; then
+        rmdir --ignore-fail-on-non-empty "/lib/modules/$native_kernel/updates"
     fi
     [ -z "$backup" ] || rm -rf "$backup"
     rmdir /var/run/carryfs-install.lock
@@ -61,6 +71,45 @@ for process in carryfs-fuse mount_carryfs; do
         *) die 'Cannot check for running CarryFS daemons.' ;;
     esac
 done
+if [ "$platform" = linux-x86_64 ]; then
+    [ ! -d /sys/module/carryfs ] || die 'Unload the native module with modprobe -r carryfs before installing.'
+    if [ -e "$payload/carryfs.ko" ] || [ -e "$payload/KERNEL_RELEASE" ]; then
+        [ -f "$payload/carryfs.ko" ] && [ -f "$payload/KERNEL_RELEASE" ] || die 'Incomplete native module package.'
+        native_kernel=$(cat "$payload/KERNEL_RELEASE")
+        case $native_kernel in ''|.*|*[!a-zA-Z0-9._+~-]*) die 'Invalid native kernel release.' ;; esac
+        [ "$native_kernel" = "$(uname -r)" ] || die 'The native module was not built for the running kernel.'
+        [ -d "/lib/modules/$native_kernel" ] || die 'The running kernel module directory is missing.'
+        command -v depmod >/dev/null 2>&1 || die 'Missing depmod for native installation.'
+        vermagic=$(modinfo -F vermagic "$payload/carryfs.ko")
+        [ "${vermagic%% *}" = "$native_kernel" ] || die 'The native module vermagic does not match the running kernel.'
+        kernel_config=/lib/modules/$native_kernel/build/include/config/auto.conf
+        [ -r "$kernel_config" ] || die 'Cannot verify the kernel module-signing configuration.'
+        if grep -q '^CONFIG_MODULE_SIG_FORCE=y$' "$kernel_config"; then
+            die 'This installer builds unsigned modules, but this kernel requires trusted signatures.'
+        fi
+        if [ -e /sys/module/module/parameters/sig_enforce ]; then
+            [ "$(cat /sys/module/module/parameters/sig_enforce)" = N ] || die 'This installer builds unsigned modules, but this kernel requires trusted signatures.'
+        fi
+        if [ -e /sys/kernel/security/lockdown ]; then
+            grep -Fq '[none]' /sys/kernel/security/lockdown || die 'Kernel lockdown requires a signed native module; this installer builds unsigned modules.'
+        fi
+        native_module=/lib/modules/$native_kernel/updates/carryfs.ko
+        native_manifest=/usr/libexec/carryfs/native-kernels
+        native_owned=0
+        [ ! -L "$native_manifest" ] || die 'The native module record must not be a symlink.'
+        if [ -f "$native_manifest" ]; then
+            while IFS= read -r kernel || [ -n "$kernel" ]; do
+                case $kernel in ''|.*|*[!a-zA-Z0-9._+~-]*) die 'Invalid kernel release in the native module record.' ;; esac
+                if [ "$kernel" = "$native_kernel" ]; then native_owned=1; fi
+            done < "$native_manifest"
+        fi
+        [ ! -L "$native_module" ] || die 'The native module destination must not be a symlink.'
+        if [ -e "$native_module" ]; then
+            [ "$native_owned" = 1 ] || die 'The native module destination belongs to another installation.'
+        fi
+        paths="$paths $native_module"
+    fi
+fi
 umask 022
 backup=$(mktemp -d /var/tmp/carryfs-install.XXXXXXXX)
 index=0
@@ -109,6 +158,16 @@ case $platform in
             install -m 644 "$payload/mount_options.conf" /etc/udisks2/mount_options.conf
         fi
         install -m 644 "$payload/VERSION" "$marker"
+        if [ -n "$native_kernel" ]; then
+            if [ ! -d "/lib/modules/$native_kernel/updates" ]; then native_directory_created=1; fi
+            mkdir -p "/lib/modules/$native_kernel/updates"
+            native_stage=$(mktemp "/lib/modules/$native_kernel/updates/.carryfs.XXXXXXXX")
+            install -m 644 "$payload/carryfs.ko" "$native_stage"
+            mv -f "$native_stage" "$native_module"
+            native_stage=
+            if [ "$native_owned" = 0 ]; then printf '%s\n' "$native_kernel" >> "$native_manifest"; fi
+            depmod -a "$native_kernel"
+        fi
         udevadm control --reload
         ;;
     macos-arm64)
@@ -122,7 +181,12 @@ case $platform in
         cp -R "$backup/carryfs.fs" /Library/Filesystems/carryfs.fs
         ;;
 esac
-install -m 755 "$backup/carryfs" /usr/local/bin/carryfs.new
-mv -f /usr/local/bin/carryfs.new /usr/local/bin/carryfs
+cli_stage=$(mktemp /usr/local/bin/.carryfs.XXXXXXXX)
+install -m 755 "$backup/carryfs" "$cli_stage"
+mv -f "$cli_stage" /usr/local/bin/carryfs
+cli_stage=
 committed=1
 printf 'System files installed. Reconnect an ejected CarryFS disk to mount it.\n'
+if [ -n "$native_kernel" ]; then
+    printf 'Native module installed for %s, but not loaded. Use modprobe carryfs and mount -i -t carryfs for deliberate native mounts.\n' "$native_kernel"
+fi

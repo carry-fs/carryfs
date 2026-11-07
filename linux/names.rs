@@ -12,9 +12,9 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
-use crate::glue::{self, qstr_bytes};
+use crate::glue::qstr_bytes;
 use crate::inode::Ops;
-use crate::ondisk::name::{self, MAX_FOLDED_BYTES, MAX_STORED_BYTES, Scratch};
+use crate::ondisk::name::{self, Scratch, MAX_FOLDED_BYTES, MAX_STORED_BYTES};
 use crate::tree;
 
 /// Scratch for non-ASCII names and the first key of a comparison.
@@ -65,14 +65,22 @@ fn fold_into(name: &[u8], out: &mut KVec<u8>) -> Result<Option<()>> {
 }
 
 /// `name`'s stored spelling and comparison key, for creating it.
-pub(crate) fn parse(name: &[u8]) -> core::result::Result<(KVec<u8>, KVec<u8>), crate::ondisk::error::Error> {
+pub(crate) fn parse(
+    name: &[u8],
+) -> core::result::Result<(KVec<u8>, KVec<u8>), crate::ondisk::error::Error> {
     use crate::ondisk::error::Error as E;
     let text = core::str::from_utf8(name).map_err(|_| E::InvalidName("name is not UTF-8"))?;
     let copy = |parsed: name::ParsedName<'_>| -> core::result::Result<(KVec<u8>, KVec<u8>), E> {
-        let mut stored = KVec::with_capacity(parsed.stored.len(), GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
-        stored.extend_from_slice(parsed.stored, GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
-        let mut folded = KVec::with_capacity(parsed.folded.len(), GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
-        folded.extend_from_slice(parsed.folded, GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
+        let mut stored = KVec::with_capacity(parsed.stored.len(), GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
+        stored
+            .extend_from_slice(parsed.stored, GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
+        let mut folded = KVec::with_capacity(parsed.folded.len(), GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
+        folded
+            .extend_from_slice(parsed.folded, GFP_NOWAIT)
+            .map_err(|_| E::TooLong("out of memory"))?;
         Ok((stored, folded))
     };
     if text.is_ascii() {
@@ -93,30 +101,39 @@ pub(crate) fn entry_key(dir: u64, name: &[u8]) -> Result<Option<KVec<u8>>> {
 /// Calls `f` with the comparison key of `name`, or with `name` itself when
 /// it cannot be stored, which then matches only identical bytes.
 fn with_key<T>(name: &[u8], scratch: &mut Scratch, f: impl FnOnce(&[u8]) -> T) -> T {
-    match core::str::from_utf8(name).ok().map(|text| name::parse_unicode(text, scratch)) {
+    match core::str::from_utf8(name)
+        .ok()
+        .map(|text| name::parse_unicode(text, scratch))
+    {
         Some(Ok(parsed)) => f(parsed.folded),
         _ => f(name),
     }
 }
 
+/// A dcache hash of a comparison key: FNV-1a seeded with the parent. Any
+/// hash works if equal keys hash equally; this one streams, so an ASCII
+/// name hashes without a lowercase copy.
+fn hash(parent: *const bindings::dentry, key: impl Iterator<Item = u8>) -> u32 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64 ^ parent as usize as u64;
+    for byte in key {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    (hash ^ hash >> 32) as u32
+}
+
 unsafe extern "C" fn d_hash(dentry: *const bindings::dentry, name: *mut bindings::qstr) -> c_int {
     // SAFETY: The VFS passes a valid name for the duration of the call.
     let bytes = unsafe { qstr_bytes(name) };
-    // SAFETY: `full_name_hash` reads `len` bytes; the salt is the parent.
-    let hash = |key: &[u8]| unsafe {
-        bindings::full_name_hash(dentry.cast(), key.as_ptr().cast(), key.len() as u32)
-    };
     let value = if bytes.is_ascii() && bytes.len() <= MAX_STORED_BYTES {
-        let mut lower = [0; MAX_STORED_BYTES];
-        let lower = &mut lower[..bytes.len()];
-        lower.copy_from_slice(bytes);
-        lower.make_ascii_lowercase();
-        hash(lower)
+        // An ASCII name's comparison key is its lowercase form.
+        hash(dentry, bytes.iter().map(u8::to_ascii_lowercase))
     } else {
-        with_key(bytes, &mut FOLD.lock().scratch, hash)
+        with_key(bytes, &mut FOLD.lock().scratch, |key| {
+            hash(dentry, key.iter().copied())
+        })
     };
     // SAFETY: `d_hash` may set the hash of the name it was given.
-    unsafe { glue::carryfs_qstr_set_hash(name, value) };
+    unsafe { (*name).__bindgen_anon_1.__bindgen_anon_1.hash = value };
     0
 }
 
@@ -138,7 +155,10 @@ unsafe extern "C" fn d_compare(
         first.eq_ignore_ascii_case(second)
     } else {
         let mut fold = FOLD.lock();
-        let Fold { scratch, first: copy } = &mut *fold;
+        let Fold {
+            scratch,
+            first: copy,
+        } = &mut *fold;
         let len = with_key(first, scratch, |key| {
             let len = key.len().min(copy.len());
             copy[..len].copy_from_slice(&key[..len]);

@@ -15,6 +15,7 @@
 #include <linux/fs_parser.h>
 #include <linux/highmem.h>
 #include <linux/iversion.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
@@ -307,6 +308,41 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
 	return error;
 }
 
+/*
+ * Write back and wait for every inode of @sb with dirty pages, walking the
+ * inode list as drop_pagecache_sb() does; sync_inodes_sb() would need
+ * s_umount. Returns the first error.
+ */
+int carryfs_write_dirty_inodes(struct super_block *sb)
+{
+	struct inode *inode, *toput = NULL;
+	int error = 0;
+
+	spin_lock(&sb->s_inode_list_lock);
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+		spin_lock(&inode->i_lock);
+		if ((inode_state_read(inode) & (I_FREEING | I_WILL_FREE | I_NEW)) ||
+		    !mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY)) {
+			spin_unlock(&inode->i_lock);
+			continue;
+		}
+		__iget(inode);
+		spin_unlock(&inode->i_lock);
+		spin_unlock(&sb->s_inode_list_lock);
+
+		if (!error)
+			error = filemap_write_and_wait(inode->i_mapping);
+		iput(toput);
+		toput = inode;
+
+		cond_resched();
+		spin_lock(&sb->s_inode_list_lock);
+	}
+	spin_unlock(&sb->s_inode_list_lock);
+	iput(toput);
+	return error;
+}
+
 /* A durable cache flush: earlier writes reach media before later ones. */
 int carryfs_flush(struct super_block *sb)
 {
@@ -333,53 +369,6 @@ bool carryfs_inode_is_new(struct inode *inode)
 void carryfs_i_size_write(struct inode *inode, loff_t size)
 {
 	i_size_write(inode, size);
-}
-
-void carryfs_inode_set_ops(struct inode *inode, const struct inode_operations *iop,
-			   const struct file_operations *fop,
-			   const struct address_space_operations *aops)
-{
-	inode->i_op = iop;
-	if (fop)
-		inode->i_fop = fop;
-	if (aops)
-		inode->i_mapping->a_ops = aops;
-}
-
-void carryfs_inode_set_link(struct inode *inode, char *link)
-{
-	inode->i_link = link;
-}
-
-char *carryfs_inode_link(struct inode *inode)
-{
-	return inode->i_link;
-}
-
-const struct qstr *carryfs_dentry_name(const struct dentry *dentry)
-{
-	return &dentry->d_name;
-}
-
-const unsigned char *carryfs_qstr_name(const struct qstr *name)
-{
-	return name->name;
-}
-
-u32 carryfs_qstr_len(const struct qstr *name)
-{
-	return name->len;
-}
-
-void carryfs_qstr_set_hash(struct qstr *name, u32 hash)
-{
-	name->hash = hash;
-}
-
-bool carryfs_dir_emit(struct dir_context *ctx, const char *name, int len, u64 ino,
-		      unsigned int type)
-{
-	return dir_emit(ctx, name, len, ino, type);
 }
 
 /*
@@ -426,18 +415,14 @@ out:
 	dput(dentry);
 }
 
-/*
- * A directory inode's i_private marks a listing that primed every entry;
- * readers race only to set it.
- */
-bool carryfs_dir_primed(struct inode *dir)
+u64 carryfs_inode_query_iversion(struct inode *inode)
 {
-	return READ_ONCE(dir->i_private);
+	return inode_query_iversion(inode);
 }
 
-void carryfs_set_dir_primed(struct inode *dir)
+bool carryfs_inode_eq_iversion(struct inode *inode, u64 version)
 {
-	WRITE_ONCE(dir->i_private, (void *)1);
+	return inode_eq_iversion(inode, version);
 }
 
 void carryfs_inode_inc_iversion(struct inode *dir)
@@ -445,21 +430,14 @@ void carryfs_inode_inc_iversion(struct inode *dir)
 	inode_inc_iversion(dir);
 }
 
-/* Remember the directory version a negative lookup saw, as exfat does. */
-void carryfs_set_dentry_version(struct dentry *dentry, struct inode *dir)
-{
-	dentry->d_time = inode_query_iversion(dir);
-}
-
 /*
  * Positive dentries stay valid. A negative one stays valid while its
  * directory is unchanged, so a later case-insensitive create is seen, and
- * never for creation, so the new name keeps the caller's spelling.
+ * never for creation, so the new name keeps the caller's spelling. Nothing
+ * here sleeps, so RCU path walks keep their fast path.
  */
 int carryfs_revalidate_negative(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
-	if (flags & LOOKUP_RCU)
-		return -ECHILD;
 	if (d_really_is_positive(dentry))
 		return 1;
 	if (flags & (LOOKUP_CREATE | LOOKUP_RENAME_TARGET))
@@ -467,17 +445,7 @@ int carryfs_revalidate_negative(struct inode *dir, struct dentry *dentry, unsign
 	return inode_eq_iversion(dir, dentry->d_time);
 }
 
-unsigned int carryfs_inode_nlink(struct inode *inode)
-{
-	return inode->i_nlink;
-}
-
-struct dentry *carryfs_file_dentry(struct file *file)
-{
-	return file->f_path.dentry;
-}
-
-bool carryfs_dir_emit_dots(struct file *file, struct dir_context *ctx)
+  bool carryfs_dir_emit_dots(struct file *file, struct dir_context *ctx)
 {
 	return dir_emit_dots(file, ctx);
 }
@@ -504,6 +472,29 @@ struct bio *carryfs_bio_alloc_write(struct super_block *sb, u64 sector, unsigned
 void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count)
 {
 	clean_bdev_aliases(sb->s_bdev, block, count);
+}
+
+/* A block plug for a batch of writes; NULL when out of memory. */
+void *carryfs_plug_start(void)
+{
+	struct blk_plug *plug = kmalloc(sizeof(*plug), GFP_NOFS);
+
+	if (plug)
+		blk_start_plug(plug);
+	return plug;
+}
+
+void carryfs_plug_finish(void *plug)
+{
+	if (plug) {
+		blk_finish_plug(plug);
+		kfree(plug);
+	}
+}
+
+void carryfs_file_allow_direct(struct file *file)
+{
+	file->f_mode |= FMODE_CAN_ODIRECT;
 }
 
 /* Page cache. */
@@ -564,6 +555,76 @@ struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index)
 		return NULL;
 	}
 	return folio;
+}
+
+/*
+ * Whether a folio of @mapping in [@first, @last] is dirty, or locked: a
+ * write holds its folio locked from reserving space until dirtying it.
+ */
+bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last)
+{
+	XA_STATE(xas, &mapping->i_pages, first);
+	struct folio *folio;
+	bool busy = false;
+
+	rcu_read_lock();
+	xas_for_each(&xas, folio, last) {
+		if (xas_retry(&xas, folio) || xa_is_value(folio))
+			continue;
+		if (folio_test_dirty(folio) || folio_test_locked(folio)) {
+			busy = true;
+			break;
+		}
+	}
+	rcu_read_unlock();
+	return busy;
+}
+
+/*
+ * filemap_page_mkwrite() from mm/filemap.c, reserving space for the folio's
+ * unit while it is locked, before a shared mapping dirties it.
+ */
+static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
+{
+	struct address_space *mapping = vmf->vma->vm_file->f_mapping;
+	struct folio *folio = page_folio(vmf->page);
+	vm_fault_t ret = VM_FAULT_LOCKED;
+	int error;
+
+	sb_start_pagefault(mapping->host->i_sb);
+	file_update_time(vmf->vma->vm_file);
+	folio_lock(folio);
+	if (folio->mapping != mapping) {
+		folio_unlock(folio);
+		ret = VM_FAULT_NOPAGE;
+		goto out;
+	}
+	error = carryfs_reserve_folio(mapping->host, folio->index);
+	if (error) {
+		folio_unlock(folio);
+		ret = vmf_error(error);
+		goto out;
+	}
+	folio_mark_dirty(folio);
+	folio_wait_stable(folio);
+out:
+	sb_end_pagefault(mapping->host->i_sb);
+	return ret;
+}
+
+static const struct vm_operations_struct carryfs_file_vm_ops = {
+	.fault = filemap_fault,
+	.map_pages = filemap_map_pages,
+	.page_mkwrite = carryfs_page_mkwrite,
+};
+
+int carryfs_file_mmap_prepare(struct vm_area_desc *desc)
+{
+	int error = generic_file_mmap_prepare(desc);
+
+	if (!error)
+		desc->vm_ops = &carryfs_file_vm_ops;
+	return error;
 }
 
 void carryfs_folio_unlock_put(struct folio *folio)

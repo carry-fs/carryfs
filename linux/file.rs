@@ -16,10 +16,11 @@ use crate::glue;
 use crate::inode::Ops;
 use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::error::Error as Encoding;
-use crate::ondisk::format::{BLOCK_BYTES, checksum_slot};
-use crate::tree::{self, Tree, le_u64};
-use crate::volume::{self, Volume};
-use crate::{corrupt, errno};
+use crate::ondisk::format::{checksum_slot, BLOCK_BYTES};
+use crate::tree::{self, le_u64, Tree};
+use crate::vfs::{Folio, Inode};
+use crate::volume::{self, State, Volume};
+use crate::{corrupt, errno, namei};
 
 pub(crate) const UNIT_BLOCKS: u64 = (UNIT_BYTES / BLOCK_BYTES) as u64;
 const SECTORS_PER_BLOCK: u64 = (BLOCK_BYTES / 512) as u64;
@@ -40,7 +41,10 @@ impl Unit {
         if let Some(page) = self.pages.get(block).filter(|_| len > 0) {
             // SAFETY: The bounce page holds `BLOCK_BYTES` bytes.
             let source = unsafe {
-                core::slice::from_raw_parts(glue::carryfs_page_address(page.as_ptr()).cast::<u8>(), len)
+                core::slice::from_raw_parts(
+                    glue::carryfs_page_address(page.as_ptr()).cast::<u8>(),
+                    len,
+                )
             };
             destination[..len].copy_from_slice(source);
         }
@@ -49,24 +53,13 @@ impl Unit {
 
     /// Copy page `block` of this unit into `folio`, zero past the valid
     /// bytes; a hole reads as zeros.
-    fn copy_to(&self, block: usize, folio: *mut bindings::folio) {
-        let start = block * BLOCK_BYTES;
-        let len = self.valid.saturating_sub(start).min(BLOCK_BYTES);
-        // SAFETY: A locked order-0 folio maps one page; the bounce page holds
-        // `BLOCK_BYTES` bytes.
-        unsafe {
-            let destination = glue::carryfs_kmap_local_folio(folio, 0).cast::<u8>();
-            if let Some(page) = self.pages.get(block).filter(|_| len > 0) {
-                let source = glue::carryfs_page_address(page.as_ptr()).cast::<u8>();
-                core::ptr::copy_nonoverlapping(source, destination, len);
-            }
-            core::ptr::write_bytes(destination.add(len), 0, BLOCK_BYTES - len);
-            glue::carryfs_kunmap_local(destination.cast());
-        }
+    fn copy_to(&self, block: usize, folio: &Folio) {
+        folio.with_bytes(|destination| self.copy_into(block, destination));
     }
 }
 
-/// The file being read: its object and size.
+/// The file being read: its object, and its size in the page cache, which
+/// bounds readahead.
 struct Source<'a> {
     sb: *mut bindings::super_block,
     volume: &'a Volume,
@@ -74,65 +67,67 @@ struct Source<'a> {
     size: u64,
 }
 
-impl Source<'_> {
-    /// # Safety
-    ///
-    /// `inode` must be a referenced regular-file inode of this filesystem.
-    unsafe fn new(inode: *mut bindings::inode) -> Self {
-        // SAFETY: The caller guarantees the inode is valid; a read-only
-        // inode's size never changes.
-        unsafe {
-            let sb = (*inode).i_sb;
-            Self {
-                sb,
-                volume: volume::of(sb),
-                object: (*inode).i_ino as u64,
-                size: (*inode).i_size as u64,
-            }
+impl<'a> Source<'a> {
+    fn new(inode: &'a Inode) -> Self {
+        let sb = inode.super_block();
+        Self {
+            sb: sb.as_ptr(),
+            volume: sb.volume(),
+            object: inode.object(),
+            size: inode.size(),
         }
     }
 
     /// The stored checksum of `unit`, or `None` for a hole.
-    fn checksum(&self, unit: u64) -> Result<Option<u32>> {
+    fn checksum(&self, state: &State, unit: u64) -> Result<Option<u32>> {
         let key = tree::numbered_key(self.object, tree::CHECKSUMS, unit / 256);
         let slot = (unit % 256) as usize;
-        let state = self.volume.lock();
-        Ok(Tree::catalog(self.sb, &state)
+        Ok(Tree::catalog(self.sb, state)
             .get(&key, |group| checksum_slot(group, slot).map_err(errno))?
             .flatten())
     }
 
     /// The physical block of logical `block` and how many blocks after it
     /// stay contiguous in its extent.
-    fn map(&self, block: u64) -> Result<(u64, u64)> {
+    fn map(&self, state: &State, block: u64) -> Result<(u64, u64)> {
         let key = tree::numbered_key(self.object, tree::EXTENT, block);
-        let state = self.volume.lock();
-        let catalog = state.root.catalog.block;
-        let found = Tree::catalog(self.sb, &state).floor(&key, |found, value| {
+        let found = Tree::catalog(self.sb, state).floor(&key, |found, value| {
             let owner = found.get(..9) == Some(&tree::prefix(self.object, tree::EXTENT)[..]);
             let start = found
                 .get(9..17)
                 .and_then(|bytes| bytes.try_into().ok())
                 .map_or(0, u64::from_be_bytes);
             let count = le_u64(value, 8) & u64::from(u32::MAX);
-            Ok((owner && block >= start && block - start < count).then(|| {
-                (le_u64(value, 0) + (block - start), count - (block - start))
-            }))
+            Ok((owner && block >= start && block - start < count)
+                .then(|| (le_u64(value, 0) + (block - start), count - (block - start))))
         })?;
         found.flatten().ok_or_else(|| {
             corrupt(
-                catalog,
+                state.root.catalog.block,
                 Encoding::Corrupt("backed checksum unit has unmapped blocks"),
             )
         })
     }
 
     /// Read and verify `unit`.
+    ///
+    /// The unit's size, checksum, and extents come from one hold of the
+    /// volume lock, and its valid length from the stored size: the page
+    /// cache may already hold a larger one. A writable mount keeps the lock
+    /// through the I/O, so that no writeback, truncation, or reclamation
+    /// reuses the blocks mid-read; read-only mounts reuse none.
     fn read(&self, unit: u64) -> Result<Unit> {
+        let state = self.volume.lock();
+        let size = le_u64(&namei::read_record(self.sb, &state, self.object)?, 16);
         let start = unit * UNIT_BYTES as u64;
-        let valid = self.size.saturating_sub(start).min(UNIT_BYTES as u64) as usize;
+        let valid = size.saturating_sub(start).min(UNIT_BYTES as u64) as usize;
         let mut pages = KVec::new();
-        let Some(expected) = (if valid == 0 { None } else { self.checksum(unit)? }) else {
+        let expected = if valid == 0 {
+            None
+        } else {
+            self.checksum(&state, unit)?
+        };
+        let Some(expected) = expected else {
             return Ok(Unit {
                 index: unit,
                 pages,
@@ -144,16 +139,33 @@ impl Source<'_> {
         for _ in 0..blocks {
             pages.push(Page::alloc_page(GFP_KERNEL)?, GFP_KERNEL)?;
         }
-        self.read_blocks(unit * UNIT_BLOCKS, &pages)?;
+        let mut runs: KVec<(u64, usize)> = KVec::new();
+        let mut done = 0;
+        while done < blocks {
+            let (physical, run) = self.map(&state, unit * UNIT_BLOCKS + done as u64)?;
+            let run = (run as usize).min(blocks - done);
+            runs.push((physical, run), GFP_KERNEL)?;
+            done += run;
+        }
+        let uuid = state.root.uuid;
+        let held = if self.volume.writable {
+            Some(state)
+        } else {
+            drop(state);
+            None
+        };
+        self.read_blocks(&runs, &pages)?;
+        drop(held);
 
-        let uuid = self.volume.lock().root.uuid;
-        let mut crc = DataUnitCrc::new(&uuid, self.object, unit, valid)
-            .map_err(errno)?;
+        let mut crc = DataUnitCrc::new(&uuid, self.object, unit, valid).map_err(errno)?;
         for (index, page) in pages.iter().enumerate() {
             let len = (valid - index * BLOCK_BYTES).min(BLOCK_BYTES);
             // SAFETY: The page is ours and holds `BLOCK_BYTES` bytes.
             let bytes = unsafe {
-                core::slice::from_raw_parts(glue::carryfs_page_address(page.as_ptr()).cast::<u8>(), len)
+                core::slice::from_raw_parts(
+                    glue::carryfs_page_address(page.as_ptr()).cast::<u8>(),
+                    len,
+                )
             };
             crc.update(bytes);
         }
@@ -171,14 +183,12 @@ impl Source<'_> {
         })
     }
 
-    /// Read logical blocks from `first` into `pages`, one bio per
-    /// contiguous run, chained so that one wait covers them all.
-    fn read_blocks(&self, first: u64, pages: &[Page]) -> Result {
+    /// Read `runs` of physical blocks into `pages`, one bio per run,
+    /// chained so that one wait covers them all.
+    fn read_blocks(&self, runs: &[(u64, usize)], pages: &[Page]) -> Result {
         let mut bio: *mut bindings::bio = core::ptr::null_mut();
         let mut done = 0;
-        while done < pages.len() {
-            let (physical, run) = self.map(first + done as u64)?;
-            let run = (run as usize).min(pages.len() - done);
+        for (physical, run) in runs.iter().copied() {
             // SAFETY: `sb` holds its block device; GFP_NOIO bio allocation
             // does not fail.
             let next = unsafe {
@@ -217,15 +227,9 @@ impl Source<'_> {
     }
 }
 
-/// The page index of a locked folio.
-fn folio_block(folio: *mut bindings::folio) -> u64 {
-    // SAFETY: The caller passes a locked page-cache folio.
-    unsafe { glue::carryfs_folio_pos(folio) as u64 / BLOCK_BYTES as u64 }
-}
-
 /// Fill `folio` from `unit`, reading it first unless it is the one given.
-fn fill(source: &Source<'_>, unit: &mut Option<Unit>, folio: *mut bindings::folio) -> Result {
-    let block = folio_block(folio);
+fn fill(source: &Source<'_>, unit: &mut Option<Unit>, folio: &Folio) -> Result {
+    let block = folio.pos() / BLOCK_BYTES as u64;
     let index = block / UNIT_BLOCKS;
     if unit.as_ref().is_none_or(|unit| unit.index != index) {
         *unit = None;
@@ -239,10 +243,9 @@ fn fill(source: &Source<'_>, unit: &mut Option<Unit>, folio: *mut bindings::foli
 
 unsafe extern "C" fn read_folio(_file: *mut bindings::file, folio: *mut bindings::folio) -> c_int {
     // SAFETY: The VFS passes a locked folio of a mapping of this filesystem.
-    let source = unsafe { Source::new(glue::carryfs_folio_inode(folio)) };
-    let result = fill(&source, &mut None, folio);
-    // SAFETY: Unlocks the folio, marking it uptodate on success.
-    unsafe { bindings::folio_end_read(folio, result.is_ok()) };
+    let folio = unsafe { Folio::from_raw(folio) };
+    let result = fill(&Source::new(folio.inode()), &mut None, folio);
+    folio.end_read(result.is_ok());
     match result {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
@@ -251,8 +254,9 @@ unsafe extern "C" fn read_folio(_file: *mut bindings::file, folio: *mut bindings
 
 unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
     // SAFETY: The VFS passes a readahead request on a mapping of this
-    // filesystem.
-    let source = unsafe { Source::new(glue::carryfs_readahead_inode(rac)) };
+    // filesystem, whose host stays referenced while it has pages.
+    let inode = unsafe { Inode::from_raw(glue::carryfs_readahead_inode(rac)) };
+    let source = Source::new(inode);
     // Widen the window to whole units, so no unit is read twice.
     // SAFETY: As above.
     let (start, len) = unsafe {
@@ -285,16 +289,22 @@ unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
         if folio.is_null() {
             break;
         }
+        // SAFETY: Readahead folios are locked page-cache folios.
+        let folio = unsafe { Folio::from_raw(folio) };
         // After a failure, leave the rest to `read_folio`, which reports it.
         let ok = !failed && fill(&source, &mut unit, folio).is_ok();
         failed |= !ok;
-        // SAFETY: Unlocks the folio, marking it uptodate on success.
-        unsafe { bindings::folio_end_read(folio, ok) };
+        folio.end_read(ok);
     }
 }
 
 /// Read and verify `unit` of `object`, a file of `size` bytes.
-pub(crate) fn read_unit(sb: *mut bindings::super_block, object: u64, size: u64, unit: u64) -> Result<Unit> {
+pub(crate) fn read_unit(
+    sb: *mut bindings::super_block,
+    object: u64,
+    size: u64,
+    unit: u64,
+) -> Result<Unit> {
     Source {
         sb,
         volume: volume::of(sb),
@@ -306,10 +316,8 @@ pub(crate) fn read_unit(sb: *mut bindings::super_block, object: u64, size: u64, 
 
 /// Fill a locked, not uptodate folio of `inode` from disk, for a partial
 /// write into it.
-pub(crate) fn fill_folio(inode: *mut bindings::inode, folio: *mut bindings::folio) -> Result {
-    // SAFETY: The VFS holds the inode and the folio.
-    let source = unsafe { Source::new(inode) };
-    fill(&source, &mut None, folio)
+pub(crate) fn fill_folio(inode: &Inode, folio: &Folio) -> Result {
+    fill(&Source::new(inode), &mut None, folio)
 }
 
 pub(crate) static ADDRESS_SPACE_OPERATIONS: Ops<bindings::address_space_operations> =
@@ -318,20 +326,71 @@ pub(crate) static ADDRESS_SPACE_OPERATIONS: Ops<bindings::address_space_operatio
         readahead: Some(readahead),
         writepages: Some(crate::write::writepages),
         dirty_folio: Some(bindings::filemap_dirty_folio),
+        // Folios carry no private data, so memory compaction may move them.
+        migrate_folio: Some(bindings::filemap_migrate_folio),
         write_begin: Some(crate::write::write_begin),
         write_end: Some(crate::write::write_end),
         // SAFETY: All-zero entries are absent operations.
         ..unsafe { core::mem::zeroed() }
     });
 
+/// Open a regular file, accepting `O_DIRECT`: `read_iter` and `write_iter`
+/// serve direct I/O through the page cache, since a direct write smaller
+/// than a 64 KiB checksum unit would rewrite the unit anyway.
+unsafe extern "C" fn open(inode: *mut bindings::inode, file: *mut bindings::file) -> c_int {
+    // SAFETY: The VFS passes the inode and the file it is opening.
+    unsafe {
+        glue::carryfs_file_allow_direct(file);
+        bindings::generic_file_open(inode, file)
+    }
+}
+
+unsafe extern "C" fn read_iter(iocb: *mut bindings::kiocb, to: *mut bindings::iov_iter) -> isize {
+    // SAFETY: The VFS passes a request on an open file; a direct read is
+    // served from the page cache, which is coherent with it.
+    unsafe {
+        (*iocb).ki_flags &= !(bindings::IOCB_DIRECT as c_int);
+        bindings::generic_file_read_iter(iocb, to)
+    }
+}
+
+unsafe extern "C" fn write_iter(iocb: *mut bindings::kiocb, from: *mut bindings::iov_iter) -> isize {
+    // SAFETY: The VFS passes a request on an open file of this filesystem.
+    unsafe {
+        let direct = (*iocb).ki_flags & bindings::IOCB_DIRECT as c_int != 0;
+        (*iocb).ki_flags &= !(bindings::IOCB_DIRECT as c_int);
+        let start = (*iocb).ki_pos;
+        let written = bindings::generic_file_write_iter(iocb, from);
+        if direct && written > 0 {
+            // A direct write is on the device when it returns, and leaves
+            // no cached copy behind.
+            let mapping = (*(*(*iocb).ki_filp).f_inode).i_mapping;
+            let end = start + written as i64 - 1;
+            let status = bindings::filemap_write_and_wait_range(mapping, start, end);
+            if status != 0 {
+                return status as isize;
+            }
+            bindings::invalidate_mapping_pages(
+                mapping,
+                (start / BLOCK_BYTES as i64) as _,
+                (end / BLOCK_BYTES as i64) as _,
+            );
+        }
+        written
+    }
+}
+
 pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
     Ops(bindings::file_operations {
         llseek: Some(bindings::generic_file_llseek),
-        read_iter: Some(bindings::generic_file_read_iter),
-        write_iter: Some(bindings::generic_file_write_iter),
+        open: Some(open),
+        read_iter: Some(read_iter),
+        write_iter: Some(write_iter),
         fsync: Some(crate::write::fsync),
-        mmap_prepare: Some(bindings::generic_file_mmap_prepare),
+        mmap_prepare: Some(glue::carryfs_file_mmap_prepare),
         splice_read: Some(bindings::filemap_splice_read),
+        // copy_file_range and splice write through the page cache.
+        splice_write: Some(bindings::iter_file_splice_write),
         // SAFETY: All-zero entries are absent operations.
         ..unsafe { core::mem::zeroed() }
     });

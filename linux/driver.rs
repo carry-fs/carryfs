@@ -25,10 +25,12 @@ mod edit;
 mod file;
 mod glue;
 mod inode;
-mod names;
 mod namei;
+mod names;
+mod reserve;
 mod space;
 mod tree;
+mod vfs;
 mod volume;
 mod write;
 

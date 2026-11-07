@@ -10,10 +10,11 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
-use crate::glue::{self, qstr_bytes};
+use crate::glue;
 use crate::namei::{self, DIRECTORY, FILE, SYMLINK};
 use crate::ondisk::error::Error as Encoding;
-use crate::tree::{Tree, le_u64};
+use crate::tree::{le_u64, Tree};
+use crate::vfs::{Dentry, Inode};
 use crate::{corrupt, dir, file, names, volume};
 
 /// The root directory's object ID.
@@ -84,18 +85,15 @@ unsafe fn set_inode_times(inode: *mut bindings::inode, record: &[u8]) {
     }
 }
 
-/// Reload `inode`'s times after a change to its record.
-///
-/// # Safety
-///
-/// `inode` must be a referenced inode of this filesystem, held locked.
-pub(crate) unsafe fn refresh_times(inode: *mut bindings::inode) {
-    // SAFETY: The caller guarantees the inode is valid.
-    let (sb, object) = unsafe { ((*inode).i_sb, (*inode).i_ino as u64) };
-    let state = volume::of(sb).lock();
-    if let Ok(record) = namei::read_record(sb, &state, object) {
-        // SAFETY: As above.
-        unsafe { set_inode_times(inode, &record) };
+/// Reload `inode`'s times after a change to its record; the caller holds
+/// it locked.
+pub(crate) fn refresh_times(inode: &Inode) {
+    let sb = inode.super_block();
+    let state = sb.volume().lock();
+    if let Ok(record) = namei::read_record(sb.as_ptr(), &state, inode.object()) {
+        // SAFETY: The caller holds the inode locked, so no other writer
+        // changes its times.
+        unsafe { set_inode_times(inode.as_ptr(), &record) };
     }
 }
 
@@ -108,7 +106,10 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
         let state = volume.lock();
         namei::read_record(sb, &state, object).map_err(|error| {
             if error == ENOENT {
-                corrupt(state.root.catalog.block, Encoding::Corrupt("missing inode record"))
+                corrupt(
+                    state.root.catalog.block,
+                    Encoding::Corrupt("missing inode record"),
+                )
             } else {
                 error
             }
@@ -117,7 +118,12 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
     // `decode_page` validated the record: its type, length, flags, and
     // timestamp ranges.
     let kind = record.first().copied().unwrap_or(0);
-    let (mode, iop, fop, aops): (u32, _, _, _) = match kind {
+    let (mode, iop, fop, aops): (
+        u32,
+        *const bindings::inode_operations,
+        *const bindings::file_operations,
+        *const bindings::address_space_operations,
+    ) = match kind {
         FILE => (
             bindings::S_IFREG | 0o644,
             &FILE_INODE_OPERATIONS.0 as *const _,
@@ -147,7 +153,13 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
         glue::carryfs_i_size_write(inode, le_u64(&record, 16) as i64);
         (*inode).i_blocks = le_u64(&record, namei::ALLOCATED).saturating_mul(8) as _;
         set_inode_times(inode, &record);
-        glue::carryfs_inode_set_ops(inode, iop, fop, aops);
+        (*inode).i_op = iop;
+        if !fop.is_null() {
+            (*inode).__bindgen_anon_3.i_fop = fop;
+        }
+        if !aops.is_null() {
+            (*(*inode).i_mapping).a_ops = aops;
+        }
     }
     if kind == SYMLINK {
         let target = record.get(128..).unwrap_or_default();
@@ -156,7 +168,7 @@ unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, obje
         link.push(0, GFP_KERNEL)?;
         let (link, _, _) = link.into_raw_parts();
         // SAFETY: `free_inode` frees the NUL-terminated target.
-        unsafe { glue::carryfs_inode_set_link(inode, link) };
+        unsafe { (*inode).__bindgen_anon_5.i_link = link.cast() };
     }
     Ok(())
 }
@@ -166,25 +178,38 @@ pub(crate) unsafe extern "C" fn free_inode(inode: *mut bindings::inode) {
     // SAFETY: The VFS passes an inode of this filesystem with no users left.
     unsafe {
         if (*inode).i_mode as u32 & bindings::S_IFMT == bindings::S_IFLNK {
-            bindings::kfree(glue::carryfs_inode_link(inode) as *const c_void);
+            bindings::kfree((*inode).__bindgen_anon_5.i_link as *const c_void);
         }
         bindings::free_inode_nonrcu(inode);
     }
 }
 
 /// Drop an inode's pages; remove the object if it was unlinked.
-pub(crate) unsafe extern "C" fn evict_inode(inode: *mut bindings::inode) {
-    // SAFETY: The VFS passes an inode it is evicting.
-    unsafe {
-        bindings::truncate_inode_pages_final(&mut (*inode).i_data);
-        let sb = (*inode).i_sb;
-        if glue::carryfs_inode_nlink(inode) == 0 && volume::of(sb).writable {
-            if let Err(error) = namei::remove_object(sb, (*inode).i_ino as u64) {
-                pr_err!("cannot remove object {}: {:?}\n", (*inode).i_ino, error);
-            }
-        }
-        bindings::clear_inode(inode);
+pub(crate) unsafe extern "C" fn evict_inode(raw: *mut bindings::inode) {
+    // SAFETY: The VFS passes an inode it is evicting, which no one else
+    // uses.
+    let inode = unsafe {
+        bindings::truncate_inode_pages_final(&mut (*raw).i_data);
+        Inode::from_raw(raw)
+    };
+    if inode.is_dir() {
+        dir::forget(inode);
     }
+    let sb = inode.super_block();
+    if !inode.is_dir() {
+        // Its pages are gone, dirty ones too.
+        sb.volume()
+            .lock()
+            .reservations
+            .release_from(inode.object(), 0);
+    }
+    if inode.unlinked() && sb.volume().writable {
+        if let Err(error) = namei::remove_object(sb.as_ptr(), inode.object()) {
+            pr_err!("cannot remove object {}: {:?}\n", inode.object(), error);
+        }
+    }
+    // SAFETY: Eviction ends here.
+    unsafe { bindings::clear_inode(raw) };
 }
 
 pub(crate) unsafe extern "C" fn setattr(
@@ -214,13 +239,15 @@ unsafe fn change_attributes(
         let valid = (*attr).ia_valid;
         // Owners and permissions are not stored; only no-op changes pass.
         if (valid & bindings::ATTR_MODE != 0 && (*attr).ia_mode != (*inode).i_mode)
-            || (valid & bindings::ATTR_UID != 0 && (*attr).__bindgen_anon_1.ia_uid.val != (*inode).i_uid.val)
-            || (valid & bindings::ATTR_GID != 0 && (*attr).__bindgen_anon_2.ia_gid.val != (*inode).i_gid.val)
+            || (valid & bindings::ATTR_UID != 0
+                && (*attr).__bindgen_anon_1.ia_uid.val != (*inode).i_uid.val)
+            || (valid & bindings::ATTR_GID != 0
+                && (*attr).__bindgen_anon_2.ia_gid.val != (*inode).i_gid.val)
         {
             return Err(EPERM);
         }
         if valid & bindings::ATTR_SIZE != 0 {
-            crate::write::set_size(inode, (*attr).ia_size as u64)?;
+            crate::write::set_size(Inode::from_raw(inode), (*attr).ia_size as u64)?;
         }
         if valid & (bindings::ATTR_MTIME | bindings::ATTR_CTIME) != 0 {
             let modified = (valid & bindings::ATTR_MTIME != 0)
@@ -228,7 +255,7 @@ unsafe fn change_attributes(
             namei::set_times((*inode).i_sb, (*inode).i_ino as u64, modified)?;
         }
         bindings::setattr_copy(idmap, inode, attr);
-        refresh_times(inode);
+        refresh_times(Inode::from_raw(inode));
     }
     Ok(())
 }
@@ -239,12 +266,13 @@ pub(crate) unsafe extern "C" fn lookup(
     _flags: u32,
 ) -> *mut bindings::dentry {
     // SAFETY: The VFS holds `dir` locked and `dentry` referenced.
-    match unsafe { lookup_inode(dir, dentry) } {
+    let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
+    match lookup_inode(dir_ref, dentry_ref) {
         Ok(inode) => {
             if inode.is_null() {
                 // SAFETY: As above; negative dentries remember the directory
                 // version they saw.
-                unsafe { glue::carryfs_set_dentry_version(dentry, dir) };
+                unsafe { (*dentry).d_time = glue::carryfs_inode_query_iversion(dir) as _ };
             }
             // SAFETY: `inode` is referenced or null; `d_splice_alias`
             // consumes it.
@@ -254,23 +282,10 @@ pub(crate) unsafe extern "C" fn lookup(
     }
 }
 
-/// The inode `dentry` names in `dir`, or null when there is none.
-///
-/// # Safety
-///
-/// `dir` and `dentry` must be valid for the duration of the call.
-unsafe fn lookup_inode(
-    dir: *mut bindings::inode,
-    dentry: *mut bindings::dentry,
-) -> Result<*mut bindings::inode> {
-    // SAFETY: The caller guarantees both are valid.
-    let (sb, parent, name) = unsafe {
-        (
-            (*dir).i_sb,
-            (*dir).i_ino as u64,
-            qstr_bytes(glue::carryfs_dentry_name(dentry)),
-        )
-    };
+/// The inode `dentry` names in `dir`, referenced, or null when there is
+/// none.
+fn lookup_inode(dir: &Inode, dentry: &Dentry) -> Result<*mut bindings::inode> {
+    let (sb, parent, name) = (dir.super_block().as_ptr(), dir.object(), dentry.name());
     let Some(key) = names::entry_key(parent, name)? else {
         // No stored name folds to this one, so it cannot exist.
         return Ok(ptr::null_mut());
@@ -300,7 +315,11 @@ pub(crate) fn kind_mode(kind: u8) -> u32 {
 
 /// `get`, failing as corruption unless the inode has file type `mode`, as
 /// the directory entry naming it records.
-fn get_typed(sb: *mut bindings::super_block, object: u64, mode: u32) -> Result<*mut bindings::inode> {
+fn get_typed(
+    sb: *mut bindings::super_block,
+    object: u64,
+    mode: u32,
+) -> Result<*mut bindings::inode> {
     let inode = get(sb, object)?;
     // SAFETY: `get` returned a referenced inode.
     if unsafe { (*inode).i_mode } as u32 & bindings::S_IFMT != mode {

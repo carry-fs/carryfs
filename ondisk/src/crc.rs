@@ -118,8 +118,13 @@ mod hardware {
             0 => false,
             1 => true,
             _ => {
-                // Miri does not run the intrinsics, so it takes the software path.
-                let detected = !cfg!(miri) && is_x86_feature_detected!("sse4.2");
+                // Miri cannot query the processor, but runs the intrinsics:
+                // a build with SSE4.2 enabled checks the path below under it.
+                let detected = if cfg!(miri) {
+                    cfg!(target_feature = "sse4.2")
+                } else {
+                    is_x86_feature_detected!("sse4.2")
+                };
                 SUPPORTED.store(u8::from(detected), Ordering::Relaxed);
                 detected
             }
@@ -411,14 +416,24 @@ mod tests {
     #[cfg(all(feature = "std", any(target_arch = "aarch64", target_arch = "x86_64")))]
     fn hardware_crc32c_matches_the_software_tables() {
         if !hardware::available() {
+            // scripts/check-miri.sh enables SSE4.2 for this test, so that Miri
+            // checks the intrinsics rather than skip them.
+            if cfg!(miri) {
+                panic!("run Miri with -C target-feature=+sse4.2,+pclmulqdq");
+            }
             eprintln!("CRC instructions are unavailable; the software path is the only one");
             return;
         }
         let bytes: Vec<u8> = (0..UNIT_BYTES as u32 + 4_200)
             .map(|index| (index.wrapping_mul(2_654_435_761) >> 11) as u8)
             .collect();
-        for start in [0, 1, 7, 8, 9, 4093] {
-            for len in (0..=71).chain([
+        // Miri interprets every instruction: under it, short lengths and each
+        // length where the hardware loop changes stride still reach every path.
+        let short = if cfg!(miri) { 17 } else { 71 };
+        let long: &[usize] = if cfg!(miri) {
+            &[255, 256, 767, 768, 769, 1543, 2304]
+        } else {
+            &[
                 255,
                 256,
                 767,
@@ -429,7 +444,10 @@ mod tests {
                 BLOCK_BYTES - 1,
                 BLOCK_BYTES,
                 UNIT_BYTES,
-            ]) {
+            ]
+        };
+        for start in [0, 1, 7, 8, 9, 4093] {
+            for len in (0..=short).chain(long.iter().copied()) {
                 let input = &bytes[start..start + len];
                 for seed in [0, 0xFFFF_FFFF, 0x1234_5678] {
                     // SAFETY: `available` reported support.

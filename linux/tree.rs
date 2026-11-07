@@ -213,6 +213,12 @@ pub(crate) struct Position {
     pub(crate) level: Option<u8>,
 }
 
+pub(crate) struct Summary {
+    first: KVec<u8>,
+    last: KVec<u8>,
+    data: u64,
+}
+
 /// One tree of the current state: the committed root, or the open
 /// transaction's root and drafts.
 pub(crate) struct Tree<'a> {
@@ -226,6 +232,45 @@ pub(crate) struct Tree<'a> {
 }
 
 impl<'a> Tree<'a> {
+    /// Validate subtree ranges and totals, visiting every reachable page.
+    pub(crate) fn walk(
+        &self,
+        at: Position,
+        visits: &mut u64,
+        visitor: &mut dyn FnMut(Position, &PageView<'_>) -> Result,
+    ) -> Result<Summary> {
+        *visits += 1;
+        if *visits > self.blocks - 1024 {
+            return Err(corrupt(0, crate::ondisk::error::Error::Corrupt("too many tree pages")));
+        }
+        let page = self.load(at, None)?;
+        let view = self.view(&page, at)?;
+        visitor(at, &view)?;
+        let mut first = KVec::new();
+        let mut last = KVec::new();
+        let mut total = 0u64;
+        for (index, (key, value)) in view.records().enumerate() {
+            if index == 0 {
+                append(&mut first, key)?;
+            }
+            if view.level == 0 {
+                last.clear();
+                append(&mut last, key)?;
+            } else {
+                let child = self.walk(self.child(at, view.level, value), visits, visitor)?;
+                if child.first[..] != *key || (!last.is_empty() && last[..] >= child.first[..]) {
+                    return Err(corrupt(0, crate::ondisk::error::Error::Corrupt("child key range mismatch")));
+                }
+                total = total.checked_add(child.data).ok_or(EIO)?;
+                last = child.last;
+            }
+        }
+        if (view.is_empty() && at.level.is_some()) || (view.level > 0 && total != view.data_blocks) {
+            return Err(corrupt(0, crate::ondisk::error::Error::Corrupt("empty child or subtree total mismatch")));
+        }
+        Ok(Summary { first, last, data: view.data_blocks })
+    }
+
     pub(crate) fn new(sb: *mut super_block, state: &'a State, kind: TreeKind) -> Self {
         let (root, drafts) = match &state.txn {
             Some(txn) => (txn.root(kind), &txn.drafts[..]),
@@ -338,15 +383,9 @@ impl<'a> Tree<'a> {
         unsafe { glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), count as u32) };
     }
 
-    /// Read the tree's pages ahead, a level at a time, until `budget`
-    /// pages. Internal pages are verified on the way; leaves are read and
-    /// verified too if `load_leaves`, as a writable mount waits for them,
-    /// and otherwise only started, as verifying them costs CPU a background
-    /// walk should not take from the mount's users, and use verifies them.
-    ///
-    /// A level's pages, written by the same commits into neighboring
-    /// workspace slots, cluster on the device: each level is read merged
-    /// (`read_ahead_merged`) instead of one random read per page.
+    /// Prefetch up to `budget` pages by level, merging reads in block order.
+    /// Verify internal pages; wait for and verify leaves only if `load_leaves`.
+    /// Background walks defer leaf verification to readers to avoid CPU contention.
     pub(crate) fn prefetch(&self, budget: usize, load_leaves: bool) -> Result {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;

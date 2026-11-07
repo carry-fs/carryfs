@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
 /*
- * C helpers for the CarryFS Rust driver: the fs_context mount API, buffer
- * heads, and static inline VFS functions that the kernel's Rust bindings do
- * not cover. Each stands in for a helper that in-tree Rust VFS abstractions
- * would provide; no filesystem logic lives here.
+ * VFS and block-device helpers missing from the kernel's Rust bindings.
  */
 
 #include <linux/blkdev.h>
@@ -68,17 +65,19 @@ static int carryfs_fill_super_fc(struct super_block *sb, struct fs_context *fc)
 
 static int carryfs_get_tree(struct fs_context *fc)
 {
+	/* Page-cache indices and checksum units currently assume 4 KiB pages. */
 	if (PAGE_SIZE != 4096)
 		return -EOPNOTSUPP;
-	if (!(fc->sb_flags & SB_RDONLY))
-		return -EROFS;
+	/* Check even when get_tree_bdev reuses an existing super block. */
+	if (fc->sb_flags & (SB_SYNCHRONOUS | SB_DIRSYNC))
+		return -EOPNOTSUPP;
 	return get_tree_bdev(fc, carryfs_fill_super_fc);
 }
 
 static int carryfs_reconfigure(struct fs_context *fc)
 {
-	if (!(fc->sb_flags & SB_RDONLY))
-		return -EROFS;
+	if (fc->sb_flags & (SB_SYNCHRONOUS | SB_DIRSYNC))
+		return -EOPNOTSUPP;
 	/* Switching between read-only and read-write needs a remount. */
 	if ((fc->sb_flags ^ fc->root->d_sb->s_flags) & SB_RDONLY)
 		return -EBUSY;
@@ -113,9 +112,7 @@ static int carryfs_init_fs_context(struct fs_context *fc)
 }
 
 /*
- * The unmounting task tears the mount down: evicting inodes and dentries,
- * then dropping the device's cached pages. FUSE does that in its clamped
- * daemon threads, so the caller is boosted for it as for listings.
+ * Boost the unmounting task while it evicts inodes and drops cached pages.
  */
 static void carryfs_kill_sb(struct super_block *sb)
 {
@@ -173,10 +170,7 @@ void carryfs_timer_stop(void *timer)
 #define CARRYFS_FLUSH_BATCH 64
 
 /*
- * A mount's background work: reading the catalog ahead after mounting, as
- * the FUSE adapter does and as ext4 prefetches block bitmaps, so that
- * first listings find it cached; and starting writeback of files closed
- * after writing.
+ * Per-mount catalog prefetch and close-time writeback.
  */
 struct carryfs_background {
 	struct super_block *sb;
@@ -197,12 +191,9 @@ static void carryfs_prefetch_fn(struct work_struct *work)
 }
 
 /*
- * Starts close-time writeback for every mount. A writer waits for it while
- * it holds the volume lock, so it runs on a thread of its own with the
- * utilization clamp FUSE's daemon gives its threads (fuse/src/fs.rs,
- * run_at_full_speed): schedutil then clocks the CPU up while it works, as
- * it does for the daemon. Kworkers of a workqueue take no clamp.
- * one thread for all mounts; one per mount if volumes contend.
+ * One close-time writeback thread serves all mounts. A dedicated thread
+ * accepts a utilization clamp, avoiding low CPU frequency while writers
+ * wait for it under the volume lock. Workqueue workers have no such clamp.
  */
 static struct kthread_worker *carryfs_flush_worker;
 
@@ -271,10 +262,8 @@ void carryfs_background_stop(void *background)
 }
 
 /*
- * At the last close of a file written through it, have a worker start its
- * writeback, so its data is on its way before an fsync of it or its
- * directory, as the FUSE adapter writes data before fsync and NFS writes
- * back on close. The close itself does not wait.
+ * Queue writeback on the last close of a written file. The close does not
+ * wait, but a later fsync can find the data already submitted.
  */
 int carryfs_file_release(struct inode *inode, struct file *file)
 {
@@ -310,9 +299,7 @@ static struct file_system_type carryfs_fs_type = {
 MODULE_ALIAS_FS("carryfs");
 
 /*
- * Verifies readahead units once their reads complete, and records data
- * units once their writes do, outside interrupt context, as erofs and
- * btrfs verify data and iomap completes ioends in work.
+ * Verify completed reads and record completed writes outside interrupt context.
  */
 static struct workqueue_struct *carryfs_read_wq;
 
@@ -389,9 +376,8 @@ static void carryfs_write_work(struct work_struct *work)
 }
 
 /*
- * Submit @bio, the last of a chain of data writes, and call
- * carryfs_write_done(@batch) from the I/O workqueue once all complete, as
- * iomap completes ioends. Fails only before submitting.
+ * Submit the last bio in a write chain. Completion calls carryfs_write_done
+ * on the I/O workqueue. Errors occur only before submission.
  */
 int carryfs_submit_write(struct bio *bio, void *batch)
 {
@@ -526,21 +512,27 @@ void carryfs_bh_set_verified(struct buffer_head *bh)
 }
 
 /*
- * Write @count pages, @pages[i] to block @blocks[i], through the buffer
- * cache, and wait for them. The written buffers stay cached and verified:
- * the caller validated each page. Returns 0 or -EIO.
+ * Write pages[i] to blocks[i] and retain each buffer through status inspection.
+ * The caller validated the pages, so mark cached copies verified.
+ * Return 0 or a negative errno.
  */
 int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *const *pages,
 			 unsigned int count)
 {
+	struct buffer_head **buffers;
 	struct blk_plug plug;
 	unsigned int i;
 	int error = 0;
 
+	buffers = kcalloc(count, sizeof(*buffers), GFP_NOFS);
+	if (!buffers)
+		return -ENOMEM;
 	blk_start_plug(&plug);
 	for (i = 0; i < count; i++) {
 		struct buffer_head *bh = sb_getblk(sb, blocks[i]);
 
+		/* Keep the write result alive until the completion check. */
+		buffers[i] = bh;
 		lock_buffer(bh);
 		memcpy(bh->b_data, pages[i], sb->s_blocksize);
 		set_buffer_uptodate(bh);
@@ -548,19 +540,17 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
 		mark_buffer_dirty(bh);
 		unlock_buffer(bh);
 		write_dirty_buffer(bh, REQ_SYNC);
-		brelse(bh);
 	}
 	blk_finish_plug(&plug);
 	for (i = 0; i < count; i++) {
-		struct buffer_head *bh = sb_find_get_block(sb, blocks[i]);
+		struct buffer_head *bh = buffers[i];
 
-		if (!bh)
-			continue;
 		wait_on_buffer(bh);
 		if (buffer_write_io_error(bh) || !buffer_uptodate(bh))
 			error = -EIO;
 		brelse(bh);
 	}
+	kfree(buffers);
 	return error;
 }
 
@@ -681,9 +671,8 @@ void carryfs_i_size_write(struct inode *inode, loff_t size)
 }
 
 /*
- * Instantiate a dentry for an entry readdir just returned, as NFS and CIFS
- * do for readdirplus, so stats after a listing find it in the dcache.
- * Entries already cached are left alone; failures only skip the priming.
+ * Prime dentries from readdir for later stat calls. Skip cached entries and
+ * priming failures without failing the listing.
  * @known, if not NULL, is the entry's inode record as readdir read it.
  */
 void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 ino,
@@ -786,10 +775,8 @@ void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count)
 }
 
 /*
- * Forget cached copies of @count blocks from @block, just written with bios
- * that bypassed the buffer cache: small-file reads read data through it.
- * Waits for a read in flight, which may have fetched the old contents.
- * Walks the folios as clean_bdev_aliases() does, cheap when none are cached.
+ * Invalidate buffer-cache copies after bio writes, before small-file readers
+ * can find stale data. Wait for reads in flight before invalidating their buffers.
  */
 void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count)
 {
@@ -829,15 +816,14 @@ void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count)
 }
 
 /*
- * Raise the calling task's utilization clamp to full for a driver call that
- * reads the catalog, so schedutil clocks the CPU up for it as it does for
- * the FUSE adapter's daemon threads (fuse/src/fs.rs, run_at_full_speed),
- * which do that work for FUSE callers. A clamp the task chose itself is
- * left alone, as are kernel threads. True if raised: the caller then calls
- * carryfs_unboost_caller(), which returns the clamp to the default.
+ * Raise the caller's utilization clamp while it reads the catalog so
+ * schedutil increases CPU frequency. Leave user-defined clamps and kernel
+ * threads alone. Return true if raised; the caller must then restore the
+ * default with carryfs_unboost_caller().
  */
 bool carryfs_boost_caller(void)
 {
+#ifdef CONFIG_UCLAMP_TASK
 	struct sched_attr attr = {
 		.size = sizeof(attr),
 		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
@@ -847,10 +833,14 @@ bool carryfs_boost_caller(void)
 	if ((current->flags & PF_KTHREAD) || current->uclamp_req[UCLAMP_MIN].user_defined)
 		return false;
 	return sched_setattr_nocheck(current, &attr) == 0;
+#else
+	return false;
+#endif
 }
 
 void carryfs_unboost_caller(void)
 {
+#ifdef CONFIG_UCLAMP_TASK
 	struct sched_attr attr = {
 		.size = sizeof(attr),
 		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
@@ -859,6 +849,7 @@ void carryfs_unboost_caller(void)
 	};
 
 	sched_setattr_nocheck(current, &attr);
+#endif
 }
 
 /* A block plug for a batch of writes; NULL when out of memory. */

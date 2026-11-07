@@ -2,13 +2,10 @@
 
 //! Regular-file reads.
 //!
-//! Data is checksummed per 64 KiB unit (FORMAT.md section 5), so a unit is
-//! read and verified whole before any of its bytes reach the page cache.
-//! Readahead windows are widened to unit boundaries, so sequential reads
-//! fetch each unit once, and read in batches whose I/O overlaps: a batch
-//! is verified and its folios unlocked on the read workqueue. Small files
-//! read in a run are read through the buffer cache, with read-ahead across
-//! files (`small_read`).
+//! Verify each 64 KiB checksum unit before copying it into the page cache.
+//! Readahead aligns to unit boundaries and overlaps batches; a workqueue
+//! verifies completed reads and unlocks their folios. `small_read` uses the
+//! buffer cache to read ahead across nearby small files. See FORMAT.md section 5.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -166,11 +163,9 @@ impl<'a> Source<'a> {
 
     /// Read and verify `unit`.
     ///
-    /// The unit's size, checksum, and extents come from one hold of the
-    /// volume lock, and its valid length from the stored size: the page
-    /// cache may already hold a larger one. A writable mount keeps the lock
-    /// through the I/O, so that no writeback, truncation, or reclamation
-    /// reuses the blocks mid-read; read-only mounts reuse none.
+    /// Read size, checksum, and extents under one volume-lock hold. Use the
+    /// stored size because the page cache may already be larger. Writable
+    /// mounts hold the lock through I/O to prevent block reuse mid-read.
     fn read(&self, unit: u64) -> Result<Unit> {
         let state = self.volume.lock();
         let size = self.stored_size(&state)?;
@@ -419,23 +414,12 @@ const SMALL_BLOCKS: usize = 16;
 /// Blocks `small_read` reads ahead at a time: 256 KiB.
 const CHUNK_BLOCKS: u64 = 64;
 
-/// Fill a small batch through the block device's buffer cache, reading
-/// ahead there when the read follows on from the last small one.
+/// Read nearby small files through the buffer cache to merge device requests.
+/// Start prefetch on the third consecutive nearby read, covering two aligned chunks.
+/// `write::forget_cached` invalidates reused blocks before readers can find them.
 ///
-/// A file of a few blocks otherwise costs a device request of its own,
-/// about 80 µs on a USB SSD whatever its size, and files written together
-/// lie together: reading 10,000 4 KiB files in directory order took 10,082
-/// requests and 670 ms of device time, against about 245 requests and 200
-/// ms this way (FUSE, which reads through this cache too, 336 ms). Read ahead are
-/// the aligned chunk holding the batch's first block and the next chunk,
-/// so each chunk is one request when first touched. Only the third of a
-/// run of reads that each follow on from the last reads ahead, so random
-/// small reads cost what they did.
-/// Data writes forget the cached copies of their blocks before they are
-/// recorded (`write::forget_cached`), so no reader finds a stale one.
-///
-/// `None` if the batch is not small, is not part of such a run, or a block
-/// could not be read: the caller reads it with bios, which report the error.
+/// Return `None` for other batches or cache-read failures; the caller falls
+/// back to bios, which report I/O errors.
 fn small_read(source: &Source<'_>, batch: &mut Batch) -> Option<()> {
     let blocks: usize = batch.units.iter().map(|unit| unit.pages.len()).sum();
     if blocks == 0 || blocks > SMALL_BLOCKS {
@@ -443,8 +427,6 @@ fn small_read(source: &Source<'_>, batch: &mut Batch) -> Option<()> {
     }
     let (first, _) = batch.units.iter().find_map(|unit| unit.runs.first().copied())?;
     let (last, run) = batch.units.iter().rev().find_map(|unit| unit.runs.last().copied())?;
-    // one stream per volume; concurrent streams defeat it and read
-    // with bios, per-file or per-directory state if that matters.
     let volume = source.volume;
     let previous = volume.next_small.load(Relaxed);
     volume.next_small.store(last + run as u64, Relaxed);
@@ -630,13 +612,13 @@ unsafe extern "C" fn write_iter(iocb: *mut bindings::kiocb, from: *mut bindings:
     unsafe {
         let direct = (*iocb).ki_flags & bindings::IOCB_DIRECT as c_int != 0;
         (*iocb).ki_flags &= !(bindings::IOCB_DIRECT as c_int);
-        let start = (*iocb).ki_pos;
         let written = bindings::generic_file_write_iter(iocb, from);
         if direct && written > 0 {
             // A direct write is on the device when it returns, and leaves
             // no cached copy behind.
             let mapping = (*(*(*iocb).ki_filp).f_inode).i_mapping;
-            let end = start + written as i64 - 1;
+            let start = (*iocb).ki_pos - written as i64;
+            let end = (*iocb).ki_pos - 1;
             let status = bindings::filemap_write_and_wait_range(mapping, start, end);
             if status != 0 {
                 return status as isize;

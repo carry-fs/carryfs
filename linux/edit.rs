@@ -2,14 +2,11 @@
 
 //! The open transaction's copy-on-write B+tree edits.
 //!
-//! The first edit under a committed page copies it into a draft; later edits
-//! change the draft in place. Drafts stay unsealed until commit, which gives
-//! them blocks and writes them. Every draft keeps its subtree's data-block
-//! total in its header, so commit need not read unchanged children to sum
-//! them.
+//! The first edit copies a committed page into a draft; later edits reuse it.
+//! Commit assigns blocks and seals drafts. Subtree data-block totals in each
+//! draft avoid rereading unchanged children during publication.
 //!
-//! An edit that fails part-way leaves its drafts inconsistent, so callers
-//! fault the volume on any error after an edit has started.
+//! A failed partial edit faults the volume because its drafts may be inconsistent.
 
 use core::cmp::Ordering;
 

@@ -2,18 +2,14 @@
 
 //! Space for dirty page-cache data.
 //!
-//! Writeback rewrites a whole 64 KiB unit to new blocks, so the write that
-//! first dirties a unit reserves the unit's blocks. A write that finds no
-//! space fails with ENOSPC, as the FUSE adapter's does, instead of losing
-//! its data when writeback cannot allocate.
+//! Reserve a whole 64 KiB unit before dirtying it, so writes report ENOSPC
+//! before accepting data that writeback cannot allocate.
 //!
-//! A reservation is taken with the dirtying folio locked, in `write_begin`
-//! and `page_mkwrite`, and released only when none of the unit's folios is
-//! dirty or locked. So a folio a write is about to dirty keeps its unit's
-//! reservation. Writeback counts its own units' reservations as free, and
-//! releases them once the unit is clean; truncate and eviction release
-//! units past the end. A reservation that outlives its write, as after a
-//! failed copy, is swept before a reservation fails.
+//! `write_begin` and `page_mkwrite` reserve with the folio locked. Dirty or
+//! locked folios keep the reservation so an unfinished write cannot lose it.
+//! Writeback allocates against its own reservations and releases clean units.
+//! Truncation and eviction release reservations past EOF. Sweep idle
+//! reservations before reporting ENOSPC, including those left by failed copies.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -35,8 +31,7 @@ struct Entry {
 }
 
 /// Every unit holding a reservation, by inode.
-// sorted vectors, O(n) inserts; an rbtree or xarray if many
-// files hold many scattered dirty units at once.
+// Sorted vectors make insertion linear in reserved files and units.
 #[derive(Default)]
 pub(crate) struct Reservations {
     entries: KVec<Entry>,

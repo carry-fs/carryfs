@@ -104,6 +104,20 @@ pub(crate) fn mutate<T>(
         let txn = Txn::new(&state.root, state.hint)?;
         state.txn = Some(txn);
     }
+    edit(sb, &mut state, f)
+}
+
+/// Run `f` on the open transaction without committing first, as a data
+/// write recording blocks it allocated must: the commit would wait for it.
+/// Faults the volume if `f` fails after its first edit.
+pub(crate) fn edit<T>(
+    sb: *mut bindings::super_block,
+    state: &mut State,
+    f: impl FnOnce(&mut State, &Disk) -> Result<T>,
+) -> Result<T> {
+    if state.faulted || state.txn.is_none() {
+        return Err(EIO);
+    }
     let disk = Disk {
         sb,
         uuid: state.root.uuid,
@@ -111,7 +125,7 @@ pub(crate) fn mutate<T>(
         generation: state.root.generation,
     };
     let before = state.txn.as_ref().map_or(0, |txn| txn.edits);
-    let result = f(&mut state, &disk);
+    let result = f(state, &disk);
     if result.is_err() && state.txn.as_ref().map_or(0, |txn| txn.edits) != before {
         pr_err!("a change failed part-way; the volume is read-only until remounted\n");
         state.faulted = true;

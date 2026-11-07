@@ -11,7 +11,7 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
-use kernel::sync::{new_mutex, Mutex, MutexGuard};
+use kernel::sync::{new_condvar, new_mutex, CondVar, Mutex, MutexGuard};
 
 use crate::edit::Txn;
 use crate::glue;
@@ -50,11 +50,30 @@ pub(crate) struct State {
     pub(crate) hint: u64,
     /// The periodic-commit timer of a writable mount, from glue.c.
     pub(crate) timer: usize,
+    /// The catalog prefetch started at mount, from glue.c.
+    prefetch: usize,
     /// Retired data may be reclaimable by a later commit.
     pub(crate) reclaim_pending: bool,
     /// Space held for dirty page-cache units.
     pub(crate) reservations: crate::reserve::Reservations,
+    /// Data writes whose blocks the open transaction allocated but no
+    /// record owns yet; commit waits for them (`Locked::quiesce`).
+    pub(crate) writing: u32,
+    /// Data reads in flight without the lock; commit waits for them, so no
+    /// block they read is reclaimed and reused under them.
+    reading: u32,
+    /// Commits waiting for I/O; new reads wait for them, so that a stream
+    /// of reads cannot starve a commit.
+    committing: u32,
+    /// Objects whose data a writer is writing or a size change is changing,
+    /// one at a time each (`Locked::claim`).
+    claimed: [u64; CLAIMS],
+    claims: usize,
 }
+
+/// Objects written at once; more writers wait, which bounds the data
+/// writes in flight.
+const CLAIMS: usize = 64;
 
 impl State {
     pub(crate) fn tree_root(&self, kind: TreeKind) -> TreeRef {
@@ -63,6 +82,21 @@ impl State {
             TreeKind::Allocation => self.root.allocation,
             _ => self.root.cleanup,
         }
+    }
+
+    /// Whether a commit may free blocks: retired data, committed or in the
+    /// open transaction, awaits reclamation.
+    pub(crate) fn reclaimable(&self) -> bool {
+        self.reclaim_pending || self.txn.as_ref().is_some_and(|txn| !txn.retired.is_empty())
+    }
+
+    /// Changes whenever a record may have: identifies the state a record
+    /// was read in.
+    pub(crate) fn stamp(&self) -> (u64, u64) {
+        (
+            self.root.generation,
+            self.txn.as_ref().map_or(0, |txn| txn.edits),
+        )
     }
 
     /// Free blocks, counting the open transaction's changes.
@@ -84,6 +118,9 @@ pub(crate) struct Volume {
     /// Held through each `writepages` call; see there.
     #[pin]
     pub(crate) writeback: Mutex<()>,
+    /// Signalled when `State::writing`, `reading`, or `committing` drops.
+    #[pin]
+    written: CondVar,
 }
 
 impl Volume {
@@ -95,6 +132,7 @@ impl Volume {
         let nofs = NoFs::new();
         Locked {
             state: self.state.lock(),
+            volume: self,
             _nofs: nofs,
         }
     }
@@ -120,7 +158,76 @@ impl Drop for NoFs {
 /// The locked volume state. The lock is released before the scope ends.
 pub(crate) struct Locked<'a> {
     state: MutexGuard<'a, State>,
+    volume: &'a Volume,
     _nofs: NoFs,
+}
+
+impl Locked<'_> {
+    /// Wait until no data write holds unrecorded blocks, releasing the lock
+    /// meanwhile, so a publication never sees blocks allocated but unowned.
+    pub(crate) fn wait_for_writes(&mut self) {
+        while self.state.writing > 0 {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    /// End a data write counted in `State::writing`.
+    pub(crate) fn end_write(&mut self) {
+        self.state.writing -= 1;
+        self.volume.written.notify_all();
+    }
+
+    /// Wait for data writes and reads in flight before a commit, holding
+    /// new reads back meanwhile; `end_quiesce` lets them go.
+    pub(crate) fn quiesce(&mut self) {
+        self.state.committing += 1;
+        while self.state.writing > 0 || self.state.reading > 0 {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    pub(crate) fn end_quiesce(&mut self) {
+        self.state.committing -= 1;
+        self.volume.written.notify_all();
+    }
+
+    /// Count a data read that continues without the lock.
+    pub(crate) fn start_read(&mut self) {
+        while self.state.committing > 0 {
+            self.volume.written.wait(&mut self.state);
+        }
+        self.state.reading += 1;
+    }
+
+    pub(crate) fn end_read(&mut self) {
+        self.state.reading -= 1;
+        self.volume.written.notify_all();
+    }
+
+    /// Take `object` for one data write or size change, waiting for the
+    /// one in progress: an object's writes must record in order.
+    pub(crate) fn claim(&mut self, object: u64) {
+        loop {
+            let state = &*self.state;
+            let held = state.claimed[..state.claims].contains(&object);
+            if !held && state.claims < CLAIMS {
+                break;
+            }
+            self.volume.written.wait(&mut self.state);
+        }
+        let claims = self.state.claims;
+        self.state.claimed[claims] = object;
+        self.state.claims += 1;
+    }
+
+    pub(crate) fn unclaim(&mut self, object: u64) {
+        let state = &mut *self.state;
+        if let Some(at) = state.claimed[..state.claims].iter().position(|held| *held == object) {
+            state.claims -= 1;
+            state.claimed[at] = state.claimed[state.claims];
+        }
+        self.volume.written.notify_all();
+    }
 }
 
 impl Deref for Locked<'_> {
@@ -169,10 +276,39 @@ unsafe extern "C" fn carryfs_stop_timer(sb: *mut bindings::super_block) {
     if unsafe { (*sb).s_fs_info }.is_null() {
         return;
     }
-    let timer = core::mem::take(&mut of(sb).lock().timer);
-    // SAFETY: The timer was started by `fill_super` and is stopped once;
-    // the lock is not held, since the timer's work takes it.
-    unsafe { glue::carryfs_timer_stop(timer as *mut c_void) };
+    let (timer, prefetch) = {
+        let mut state = of(sb).lock();
+        (core::mem::take(&mut state.timer), core::mem::take(&mut state.prefetch))
+    };
+    // SAFETY: The timer and prefetch were started by `fill_super` and are
+    // stopped once; the lock is not held, since their work takes it.
+    unsafe {
+        glue::carryfs_timer_stop(timer as *mut c_void);
+        glue::carryfs_prefetch_stop(prefetch as *mut c_void);
+    }
+}
+
+/// Catalog pages read ahead at mount: 16 MiB, the FUSE adapter's budget.
+const PREFETCH_PAGES: usize = 4_096;
+
+/// Read the committed catalog ahead; `carryfs_prefetch_start` queues it.
+#[no_mangle]
+unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
+    let tree = {
+        let state = of(sb).lock();
+        Tree {
+            sb,
+            uuid: state.root.uuid,
+            blocks: state.root.blocks,
+            kind: TreeKind::Catalog,
+            root: crate::tree::Link::Disk(state.root.catalog),
+            generation: state.root.generation,
+            drafts: &[],
+        }
+    };
+    // Only a cache warms or not: a page a commit has since replaced or a
+    // read failure ends the walk, and use reports real errors.
+    let _ = tree.prefetch(PREFETCH_PAGES);
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -245,6 +381,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
             gid: bindings::kgid_t { val: gid },
             writable,
             writeback <- new_mutex!(()),
+            written <- new_condvar!(),
             state <- new_mutex!(State {
                 root,
                 txn: None,
@@ -252,8 +389,14 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 faulted: false,
                 hint: 0,
                 timer: 0,
+                prefetch: 0,
                 reclaim_pending: true,
                 reservations: Default::default(),
+                writing: 0,
+                reading: 0,
+                committing: 0,
+                claimed: [0; CLAIMS],
+                claims: 0,
             }),
         }),
         GFP_KERNEL,
@@ -293,6 +436,10 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         of(sb).lock().timer = timer as usize;
     }
+
+    // SAFETY: `kill_sb` stops the prefetch before the volume goes away.
+    let prefetch = unsafe { glue::carryfs_prefetch_start(sb) };
+    of(sb).lock().prefetch = prefetch as usize;
 
     let root_inode = inode::get(sb, inode::ROOT)?;
     // SAFETY: `get` returned a referenced inode.

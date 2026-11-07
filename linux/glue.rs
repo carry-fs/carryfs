@@ -55,6 +55,9 @@ unsafe extern "C" {
     pub(crate) fn carryfs_write_dirty_inodes(sb: *mut super_block) -> c_int;
     pub(crate) fn carryfs_timer_start(sb: *mut super_block) -> *mut c_void;
     pub(crate) fn carryfs_timer_stop(timer: *mut c_void);
+    pub(crate) fn carryfs_file_release(inode: *mut inode, file: *mut file) -> c_int;
+    pub(crate) fn carryfs_prefetch_start(sb: *mut super_block) -> *mut c_void;
+    pub(crate) fn carryfs_prefetch_stop(prefetch: *mut c_void);
     pub(crate) fn carryfs_nofs_save() -> u32;
     pub(crate) fn carryfs_nofs_restore(flags: u32);
     pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;
@@ -65,6 +68,7 @@ unsafe extern "C" {
         len: c_int,
         ino: u64,
         kind: u16,
+        known: *const c_void,
     );
     pub(crate) fn carryfs_inode_query_iversion(inode: *mut inode) -> u64;
     pub(crate) fn carryfs_inode_eq_iversion(inode: *mut inode, version: u64) -> bool;
@@ -76,6 +80,14 @@ unsafe extern "C" {
     ) -> c_int;
     pub(crate) fn carryfs_dir_emit_dots(file: *mut file, ctx: *mut dir_context) -> bool;
 
+    pub(crate) fn carryfs_submit_write(
+        bio: *mut kernel::bindings::bio,
+        batch: *mut core::ffi::c_void,
+    ) -> c_int;
+    pub(crate) fn carryfs_submit_read(
+        bio: *mut kernel::bindings::bio,
+        batch: *mut core::ffi::c_void,
+    ) -> c_int;
     pub(crate) fn carryfs_bio_alloc_read(
         sb: *mut super_block,
         sector: u64,
@@ -115,6 +127,7 @@ unsafe extern "C" {
         mapping: *mut kernel::bindings::address_space,
         first: u64,
         last: u64,
+        writeback: bool,
     ) -> bool;
     pub(crate) fn carryfs_file_mmap_prepare(desc: *mut kernel::bindings::vm_area_desc) -> c_int;
     pub(crate) fn carryfs_folio_start_writeback(folio: *mut folio);

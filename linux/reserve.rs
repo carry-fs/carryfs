@@ -22,7 +22,7 @@ use kernel::prelude::*;
 use crate::file::UNIT_BLOCKS;
 use crate::glue;
 use crate::vfs::Inode;
-use crate::volume::State;
+use crate::volume::{Locked, State};
 use crate::{commit, write};
 
 /// One inode's reserved units, sorted.
@@ -105,29 +105,32 @@ impl Reservations {
         self.retain(object, |_, unit| unit < first);
     }
 
-    /// Release `object`'s `published` units that are clean and unlocked.
+    /// Release `object`'s `published` units that are clean and unlocked:
+    /// the writeback writing them took their folios.
     pub(crate) fn release_clean(&mut self, object: u64, published: impl Fn(u64) -> bool) {
         self.retain(object, |mapping, unit| {
-            !published(unit) || busy(mapping, unit)
+            !published(unit) || busy(mapping, unit, false)
         });
     }
 
-    /// Release every unit that is clean and unlocked.
+    /// Release every unit that is clean, unlocked, and not under writeback:
+    /// a writeback that took a unit's folios has not allocated it yet.
     fn sweep(&mut self) {
         // Backwards: releasing an inode's last unit drops its entry.
         for at in (0..self.entries.len()).rev() {
             let object = self.entries[at].object;
-            self.retain(object, busy);
+            self.retain(object, |mapping, unit| busy(mapping, unit, true));
         }
     }
 }
 
-/// Whether a folio of the unit is dirty, or locked by a write about to
-/// dirty it.
-fn busy(mapping: usize, unit: u64) -> bool {
+/// Whether a folio of the unit is dirty, locked by a write about to dirty
+/// it, or, if `writeback`, under writeback.
+fn busy(mapping: usize, unit: u64, writeback: bool) -> bool {
     let mapping = core::ptr::with_exposed_provenance_mut::<bindings::address_space>(mapping);
+    let (first, last) = (unit * UNIT_BLOCKS, (unit + 1) * UNIT_BLOCKS - 1);
     // SAFETY: An inode holding reservations is live, and so is its mapping.
-    unsafe { glue::carryfs_range_busy(mapping, unit * UNIT_BLOCKS, (unit + 1) * UNIT_BLOCKS - 1) }
+    unsafe { glue::carryfs_range_busy(mapping, first, last, writeback) }
 }
 
 /// Free blocks no reservation holds.
@@ -145,11 +148,11 @@ pub(crate) fn available_to(state: &State, object: u64, units: impl Iterator<Item
 }
 
 /// Reserve `units` of `inode` that hold no reservation, with a folio in one
-/// of them locked. Commits to reclaim retired data, then sweeps idle
-/// reservations, before failing with ENOSPC.
+/// of them locked. Waits for data writes in flight, commits to reclaim
+/// retired data, then sweeps idle reservations, before failing with ENOSPC.
 pub(crate) fn reserve(
     sb: *mut bindings::super_block,
-    state: &mut State,
+    state: &mut Locked<'_>,
     inode: &Inode,
     units: &[u64],
 ) -> Result {
@@ -163,7 +166,11 @@ pub(crate) fn reserve(
     }
     let mut swept = false;
     while available(state) < needed + write::HEADROOM {
-        if state.reclaim_pending {
+        if state.writing > 0 {
+            // A unit dirtied again during its data write is counted twice
+            // until the write is recorded and its old blocks reclaimed.
+            state.wait_for_writes();
+        } else if state.reclaimable() {
             commit::commit(sb, state)?;
         } else if !swept {
             state.reservations.sweep();

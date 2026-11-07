@@ -5,7 +5,8 @@
 //! Data is checksummed per 64 KiB unit (FORMAT.md section 5), so a unit is
 //! read and verified whole before any of its bytes reach the page cache.
 //! Readahead windows are widened to unit boundaries, so sequential reads
-//! fetch each unit once.
+//! fetch each unit once, and read in batches whose I/O overlaps: a batch
+//! is verified and its folios unlocked on the read workqueue.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -25,6 +26,21 @@ use crate::{corrupt, errno, namei};
 pub(crate) const UNIT_BLOCKS: u64 = (UNIT_BYTES / BLOCK_BYTES) as u64;
 const SECTORS_PER_BLOCK: u64 = (BLOCK_BYTES / 512) as u64;
 
+/// Copy page `block` of a unit with `valid` bytes in `pages` into
+/// `destination`, zero past the valid bytes.
+fn copy_block(pages: &[Page], valid: usize, block: usize, destination: &mut [u8]) {
+    let start = block * BLOCK_BYTES;
+    let len = valid.saturating_sub(start).min(BLOCK_BYTES);
+    if let Some(page) = pages.get(block).filter(|_| len > 0) {
+        // SAFETY: The bounce page holds `BLOCK_BYTES` bytes.
+        let source = unsafe {
+            core::slice::from_raw_parts(glue::carryfs_page_address(page.as_ptr()).cast::<u8>(), len)
+        };
+        destination[..len].copy_from_slice(source);
+    }
+    destination[len..BLOCK_BYTES].fill(0);
+}
+
 /// A verified unit: its valid bytes in up to 16 pages, or a hole.
 pub(crate) struct Unit {
     index: u64,
@@ -36,19 +52,7 @@ impl Unit {
     /// Copy page `block` of this unit into `destination`, zero past the
     /// valid bytes; a hole reads as zeros.
     pub(crate) fn copy_into(&self, block: usize, destination: &mut [u8]) {
-        let start = block * BLOCK_BYTES;
-        let len = self.valid.saturating_sub(start).min(BLOCK_BYTES);
-        if let Some(page) = self.pages.get(block).filter(|_| len > 0) {
-            // SAFETY: The bounce page holds `BLOCK_BYTES` bytes.
-            let source = unsafe {
-                core::slice::from_raw_parts(
-                    glue::carryfs_page_address(page.as_ptr()).cast::<u8>(),
-                    len,
-                )
-            };
-            destination[..len].copy_from_slice(source);
-        }
-        destination[len..BLOCK_BYTES].fill(0);
+        copy_block(&self.pages, self.valid, block, destination);
     }
 
     /// Copy page `block` of this unit into `folio`, zero past the valid
@@ -109,6 +113,51 @@ impl<'a> Source<'a> {
         })
     }
 
+    /// Where `unit`'s blocks are, for a file whose stored size is `size`,
+    /// with bounce pages to read them into. Called under the volume lock.
+    fn locate(&self, state: &State, size: u64, unit: u64) -> Result<Located> {
+        let start = unit * UNIT_BYTES as u64;
+        let valid = size.saturating_sub(start).min(UNIT_BYTES as u64) as usize;
+        let mut located = Located {
+            index: unit,
+            valid: 0,
+            expected: 0,
+            ok: false,
+            runs: KVec::new(),
+            pages: KVec::new(),
+        };
+        let expected = if valid == 0 {
+            None
+        } else {
+            self.checksum(state, unit)?
+        };
+        let Some(expected) = expected else {
+            return Ok(located);
+        };
+        let blocks = valid.div_ceil(BLOCK_BYTES);
+        located.pages.reserve(blocks, GFP_KERNEL)?;
+        for _ in 0..blocks {
+            located
+                .pages
+                .push(Page::alloc_page(GFP_KERNEL)?, GFP_KERNEL)?;
+        }
+        let mut done = 0;
+        while done < blocks {
+            let (physical, run) = self.map(state, unit * UNIT_BLOCKS + done as u64)?;
+            let run = (run as usize).min(blocks - done);
+            located.runs.push((physical, run), GFP_KERNEL)?;
+            done += run;
+        }
+        located.valid = valid;
+        located.expected = expected;
+        Ok(located)
+    }
+
+    /// The stored size of the file.
+    fn stored_size(&self, state: &State) -> Result<u64> {
+        Ok(le_u64(&namei::read_record(self.sb, state, self.object)?, 16))
+    }
+
     /// Read and verify `unit`.
     ///
     /// The unit's size, checksum, and extents come from one hold of the
@@ -118,35 +167,8 @@ impl<'a> Source<'a> {
     /// reuses the blocks mid-read; read-only mounts reuse none.
     fn read(&self, unit: u64) -> Result<Unit> {
         let state = self.volume.lock();
-        let size = le_u64(&namei::read_record(self.sb, &state, self.object)?, 16);
-        let start = unit * UNIT_BYTES as u64;
-        let valid = size.saturating_sub(start).min(UNIT_BYTES as u64) as usize;
-        let mut pages = KVec::new();
-        let expected = if valid == 0 {
-            None
-        } else {
-            self.checksum(&state, unit)?
-        };
-        let Some(expected) = expected else {
-            return Ok(Unit {
-                index: unit,
-                pages,
-                valid: 0,
-            });
-        };
-        let blocks = valid.div_ceil(BLOCK_BYTES);
-        pages.reserve(blocks, GFP_KERNEL)?;
-        for _ in 0..blocks {
-            pages.push(Page::alloc_page(GFP_KERNEL)?, GFP_KERNEL)?;
-        }
-        let mut runs: KVec<(u64, usize)> = KVec::new();
-        let mut done = 0;
-        while done < blocks {
-            let (physical, run) = self.map(&state, unit * UNIT_BLOCKS + done as u64)?;
-            let run = (run as usize).min(blocks - done);
-            runs.push((physical, run), GFP_KERNEL)?;
-            done += run;
-        }
+        let size = self.stored_size(&state)?;
+        let located = self.locate(&state, size, unit)?;
         let uuid = state.root.uuid;
         let held = if self.volume.writable {
             Some(state)
@@ -154,76 +176,227 @@ impl<'a> Source<'a> {
             drop(state);
             None
         };
-        self.read_blocks(&runs, &pages)?;
-        drop(held);
-
-        let mut crc = DataUnitCrc::new(&uuid, self.object, unit, valid).map_err(errno)?;
-        for (index, page) in pages.iter().enumerate() {
-            let len = (valid - index * BLOCK_BYTES).min(BLOCK_BYTES);
-            // SAFETY: The page is ours and holds `BLOCK_BYTES` bytes.
-            let bytes = unsafe {
-                core::slice::from_raw_parts(
-                    glue::carryfs_page_address(page.as_ptr()).cast::<u8>(),
-                    len,
-                )
+        let mut bio = core::ptr::null_mut();
+        located.queue(self.sb, &mut bio);
+        if !bio.is_null() {
+            // SAFETY: `bio` is the last of the chain, not yet submitted.
+            let status = unsafe {
+                let status = bindings::submit_bio_wait(bio);
+                bindings::bio_put(bio);
+                status
             };
-            crc.update(bytes);
+            if status != 0 {
+                pr_err!("read error in object {}\n", self.object);
+                return Err(EIO);
+            }
         }
-        if crc.finish().map_err(errno)? != expected {
-            pr_err!(
-                "data checksum mismatch in object {} unit {unit}\n",
-                self.object
-            );
-            return Err(EIO);
-        }
-        Ok(Unit {
-            index: unit,
-            pages,
-            valid,
-        })
+        drop(held);
+        located.verify(&uuid, self.object)
     }
+}
 
-    /// Read `runs` of physical blocks into `pages`, one bio per run,
-    /// chained so that one wait covers them all.
-    fn read_blocks(&self, runs: &[(u64, usize)], pages: &[Page]) -> Result {
-        let mut bio: *mut bindings::bio = core::ptr::null_mut();
+/// A unit located for reading: its blocks and bounce pages, or a hole when
+/// `valid` is 0.
+struct Located {
+    index: u64,
+    valid: usize,
+    expected: u32,
+    /// Read and verified, for a readahead batch.
+    ok: bool,
+    runs: KVec<(u64, usize)>,
+    pages: KVec<Page>,
+}
+
+impl Located {
+    /// Queue reads of the unit's runs, one bio per run, chained after `bio`,
+    /// which is submitted; `bio` becomes the new last, unsubmitted bio.
+    fn queue(&self, sb: *mut bindings::super_block, bio: &mut *mut bindings::bio) {
         let mut done = 0;
-        for (physical, run) in runs.iter().copied() {
+        for (physical, run) in self.runs.iter().copied() {
             // SAFETY: `sb` holds its block device; GFP_NOIO bio allocation
             // does not fail.
-            let next = unsafe {
-                glue::carryfs_bio_alloc_read(self.sb, physical * SECTORS_PER_BLOCK, run as u32)
-            };
-            for page in &pages[done..done + run] {
+            let next =
+                unsafe { glue::carryfs_bio_alloc_read(sb, physical * SECTORS_PER_BLOCK, run as u32) };
+            for page in &self.pages[done..done + run] {
                 // SAFETY: The bio was sized for `run` pages, so each fits.
                 let added =
                     unsafe { bindings::bio_add_page(next, page.as_ptr(), BLOCK_BYTES as u32, 0) };
                 debug_assert_eq!(added, BLOCK_BYTES as i32);
             }
-            bio = if bio.is_null() {
-                next
-            } else {
-                // SAFETY: `next` completes only after `bio`, which is
-                // submitted here.
+            if !bio.is_null() {
+                // SAFETY: `next` completes only after `*bio`, submitted here.
                 unsafe {
-                    bindings::bio_chain(bio, next);
-                    bindings::submit_bio(bio);
+                    bindings::bio_chain(*bio, next);
+                    bindings::submit_bio(*bio);
                 }
-                next
-            };
+            }
+            *bio = next;
             done += run;
         }
-        // SAFETY: `bio` is the last of the chain, not yet submitted.
+    }
+
+    /// Check the read unit against its stored checksum.
+    fn verify(self, uuid: &[u8; 16], object: u64) -> Result<Unit> {
+        self.check(uuid, object)?;
+        Ok(Unit {
+            index: self.index,
+            pages: self.pages,
+            valid: self.valid,
+        })
+    }
+
+    fn check(&self, uuid: &[u8; 16], object: u64) -> Result {
+        if self.valid > 0 {
+            let mut crc = DataUnitCrc::new(uuid, object, self.index, self.valid).map_err(errno)?;
+            for (index, page) in self.pages.iter().enumerate() {
+                let len = (self.valid - index * BLOCK_BYTES).min(BLOCK_BYTES);
+                // SAFETY: The page is ours and holds `BLOCK_BYTES` bytes.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        glue::carryfs_page_address(page.as_ptr()).cast::<u8>(),
+                        len,
+                    )
+                };
+                crc.update(bytes);
+            }
+            if crc.finish().map_err(errno)? != self.expected {
+                pr_err!(
+                    "data checksum mismatch in object {object} unit {}\n",
+                    self.index
+                );
+                return Err(EIO);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Units one readahead read submits together: 2 MiB.
+const BATCH_UNITS: u64 = 32;
+
+/// A readahead read in flight: its units and their locked folios, which
+/// `carryfs_read_done` verifies and unlocks.
+struct Batch {
+    sb: *mut bindings::super_block,
+    object: u64,
+    uuid: [u8; 16],
+    units: KVec<Located>,
+    folios: KVec<*mut bindings::folio>,
+}
+
+impl Batch {
+    /// Verify the units, fill and unlock the folios. `status` is the reads'
+    /// errno; a counted read ends before the folios are unlocked, as an
+    /// unmount waits only for them.
+    fn finish(mut self, status: c_int, counted: bool) {
+        if status != 0 && counted {
+            pr_err!("read error in object {}\n", self.object);
+        }
+        for unit in self.units.iter_mut() {
+            unit.ok = status == 0 && unit.check(&self.uuid, self.object).is_ok();
+        }
+        let unit_of = |folio: &Folio| {
+            let block = folio.pos() / BLOCK_BYTES as u64;
+            let unit = self
+                .units
+                .iter()
+                .find(|unit| unit.ok && unit.index == block / UNIT_BLOCKS);
+            (unit, (block % UNIT_BLOCKS) as usize)
+        };
+        for folio in self.folios.iter() {
+            // SAFETY: The batch holds its folios locked.
+            let folio = unsafe { Folio::from_raw(*folio) };
+            if let (Some(unit), block) = unit_of(folio) {
+                folio.with_bytes(|bytes| copy_block(&unit.pages, unit.valid, block, bytes));
+            }
+        }
+        if counted {
+            volume::of(self.sb).lock().end_read();
+        }
+        for folio in self.folios.iter() {
+            // SAFETY: As above; `read_folio` retries and reports failures.
+            let folio = unsafe { Folio::from_raw(*folio) };
+            folio.end_read(unit_of(folio).0.is_some());
+        }
+    }
+}
+
+/// Completion of a batch submitted by `read_batch`, on the read workqueue.
+#[no_mangle]
+unsafe extern "C" fn carryfs_read_done(batch: *mut core::ffi::c_void, status: c_int) {
+    // SAFETY: `read_batch` passed a batch it leaked for this call.
+    let batch = unsafe { KBox::from_raw(batch.cast::<Batch>()) };
+    KBox::into_inner(batch).finish(status, true);
+}
+
+/// Read the units of `folios`, locked readahead folios of one file within
+/// `BATCH_UNITS` units, and unlock them once verified, without waiting.
+fn read_batch(source: &Source<'_>, folios: KVec<*mut bindings::folio>) {
+    let batch = Batch {
+        sb: source.sb,
+        object: source.object,
+        uuid: [0; 16],
+        units: KVec::new(),
+        folios: KVec::new(),
+    };
+    let Ok(mut batch) = KBox::new(batch, GFP_KERNEL) else {
+        for folio in folios.iter() {
+            // SAFETY: Locked readahead folios; `read_folio` retries.
+            unsafe { Folio::from_raw(*folio) }.end_read(false);
+        }
+        return;
+    };
+    batch.folios = folios;
+    let located = (|| -> Result {
+        let mut state = source.volume.lock();
+        // Counted before locating, so no commit reclaims what is located.
+        state.start_read();
+        let found = (|| -> Result {
+            let size = source.stored_size(&state)?;
+            batch.uuid = state.root.uuid;
+            let mut last = None;
+            for position in 0..batch.folios.len() {
+                // SAFETY: Readahead folios are locked page-cache folios.
+                let folio = unsafe { Folio::from_raw(batch.folios[position]) };
+                let unit = folio.pos() / UNIT_BYTES as u64;
+                if last != Some(unit) {
+                    batch.units.push(source.locate(&state, size, unit)?, GFP_KERNEL)?;
+                    last = Some(unit);
+                }
+            }
+            Ok(())
+        })();
+        if found.is_err() {
+            state.end_read();
+        }
+        found
+    })();
+    if located.is_err() {
+        KBox::into_inner(batch).finish(EIO.to_errno(), false);
+        return;
+    }
+    let mut bio = core::ptr::null_mut();
+    for unit in batch.units.iter() {
+        unit.queue(source.sb, &mut bio);
+    }
+    if bio.is_null() {
+        // Holes only.
+        KBox::into_inner(batch).finish(0, true);
+        return;
+    }
+    let raw = KBox::into_raw(batch);
+    // SAFETY: `bio` is the last of the chain, not yet submitted; the batch
+    // lives until `carryfs_read_done` takes it back.
+    if unsafe { glue::carryfs_submit_read(bio, raw.cast()) } != 0 {
+        // SAFETY: Not submitted: the batch is still ours.
+        let batch = KBox::into_inner(unsafe { KBox::from_raw(raw) });
+        // SAFETY: As above.
         let status = unsafe {
             let status = bindings::submit_bio_wait(bio);
             bindings::bio_put(bio);
             status
         };
-        if status != 0 {
-            pr_err!("read error in object {}\n", self.object);
-            return Err(EIO);
-        }
-        Ok(())
+        batch.finish(status, true);
     }
 }
 
@@ -281,20 +454,29 @@ unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
             )
         };
     }
-    let mut unit = None;
-    let mut failed = false;
+    // Read the window in batches of whole units, each verified and
+    // unlocked by the read workqueue, so the next batch's I/O overlaps.
+    let mut folios: KVec<*mut bindings::folio> = KVec::new();
+    let mut first_unit = 0;
     loop {
         // SAFETY: Returns the next locked folio of the request, or null.
         let folio = unsafe { glue::carryfs_readahead_folio(rac) };
-        if folio.is_null() {
-            break;
+        let unit = (!folio.is_null())
+            // SAFETY: Readahead folios are locked page-cache folios.
+            .then(|| unsafe { Folio::from_raw(folio) }.pos() / UNIT_BYTES as u64);
+        if !folios.is_empty() && unit.is_none_or(|unit| unit >= first_unit + BATCH_UNITS) {
+            read_batch(&source, core::mem::take(&mut folios));
         }
-        // SAFETY: Readahead folios are locked page-cache folios.
-        let folio = unsafe { Folio::from_raw(folio) };
-        // After a failure, leave the rest to `read_folio`, which reports it.
-        let ok = !failed && fill(&source, &mut unit, folio).is_ok();
-        failed |= !ok;
-        folio.end_read(ok);
+        let Some(unit) = unit else {
+            break;
+        };
+        if folios.is_empty() {
+            first_unit = unit;
+        }
+        if folios.push(folio, GFP_KERNEL).is_err() {
+            // SAFETY: As above; `read_folio` retries.
+            unsafe { Folio::from_raw(folio) }.end_read(false);
+        }
     }
 }
 
@@ -384,6 +566,7 @@ pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
     Ops(bindings::file_operations {
         llseek: Some(bindings::generic_file_llseek),
         open: Some(open),
+        release: Some(glue::carryfs_file_release),
         read_iter: Some(read_iter),
         write_iter: Some(write_iter),
         fsync: Some(crate::write::fsync),

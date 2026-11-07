@@ -159,6 +159,45 @@ void carryfs_timer_stop(void *timer)
 	kfree(t);
 }
 
+/*
+ * Read the catalog ahead after mounting, as the FUSE adapter does and as
+ * ext4 prefetches block bitmaps, so that first listings find it cached.
+ */
+struct carryfs_prefetch {
+	struct work_struct work;
+	struct super_block *sb;
+};
+
+static void carryfs_prefetch_fn(struct work_struct *work)
+{
+	struct carryfs_prefetch *prefetch =
+		container_of(work, struct carryfs_prefetch, work);
+
+	carryfs_prefetch_catalog(prefetch->sb);
+}
+
+void *carryfs_prefetch_start(struct super_block *sb)
+{
+	struct carryfs_prefetch *prefetch = kzalloc(sizeof(*prefetch), GFP_KERNEL);
+
+	if (!prefetch)
+		return NULL;
+	prefetch->sb = sb;
+	INIT_WORK(&prefetch->work, carryfs_prefetch_fn);
+	queue_work(system_unbound_wq, &prefetch->work);
+	return prefetch;
+}
+
+void carryfs_prefetch_stop(void *prefetch)
+{
+	struct carryfs_prefetch *p = prefetch;
+
+	if (!p)
+		return;
+	cancel_work_sync(&p->work);
+	kfree(p);
+}
+
 static struct file_system_type carryfs_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "carryfs",
@@ -169,14 +208,100 @@ static struct file_system_type carryfs_fs_type = {
 };
 MODULE_ALIAS_FS("carryfs");
 
+/*
+ * Verifies readahead units once their reads complete, and records data
+ * units once their writes do, outside interrupt context, as erofs and
+ * btrfs verify data and iomap completes ioends in work.
+ */
+static struct workqueue_struct *carryfs_read_wq;
+
 int carryfs_register(void)
 {
-	return register_filesystem(&carryfs_fs_type);
+	int error;
+
+	carryfs_read_wq = alloc_workqueue("carryfs-io", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+	if (!carryfs_read_wq)
+		return -ENOMEM;
+	error = register_filesystem(&carryfs_fs_type);
+	if (error)
+		destroy_workqueue(carryfs_read_wq);
+	return error;
 }
 
 void carryfs_unregister(void)
 {
 	unregister_filesystem(&carryfs_fs_type);
+	destroy_workqueue(carryfs_read_wq);
+}
+
+/* A chain of data reads or writes in flight; its batch belongs to Rust. */
+struct carryfs_read {
+	struct work_struct work;
+	void *batch;
+	int status;
+};
+
+static void carryfs_read_work(struct work_struct *work)
+{
+	struct carryfs_read *read = container_of(work, struct carryfs_read, work);
+
+	carryfs_read_done(read->batch, read->status);
+	kfree(read);
+}
+
+static void carryfs_read_end_io(struct bio *bio)
+{
+	struct carryfs_read *read = bio->bi_private;
+
+	read->status = blk_status_to_errno(bio->bi_status);
+	bio_put(bio);
+	queue_work(carryfs_read_wq, &read->work);
+}
+
+static void carryfs_write_work(struct work_struct *work)
+{
+	struct carryfs_read *write = container_of(work, struct carryfs_read, work);
+
+	carryfs_write_done(write->batch, write->status);
+	kfree(write);
+}
+
+/*
+ * Submit @bio, the last of a chain of data writes, and call
+ * carryfs_write_done(@batch) from the I/O workqueue once all complete, as
+ * iomap completes ioends. Fails only before submitting.
+ */
+int carryfs_submit_write(struct bio *bio, void *batch)
+{
+	struct carryfs_read *write = kmalloc(sizeof(*write), GFP_NOFS);
+
+	if (!write)
+		return -ENOMEM;
+	INIT_WORK(&write->work, carryfs_write_work);
+	write->batch = batch;
+	bio->bi_private = write;
+	bio->bi_end_io = carryfs_read_end_io;
+	submit_bio(bio);
+	return 0;
+}
+
+/*
+ * Submit @bio, the last of a chain, and call carryfs_read_done(@batch) from
+ * the read workqueue once the whole chain completes. Fails only before
+ * submitting.
+ */
+int carryfs_submit_read(struct bio *bio, void *batch)
+{
+	struct carryfs_read *read = kmalloc(sizeof(*read), GFP_NOFS);
+
+	if (!read)
+		return -ENOMEM;
+	INIT_WORK(&read->work, carryfs_read_work);
+	read->batch = batch;
+	bio->bi_private = read;
+	bio->bi_end_io = carryfs_read_end_io;
+	submit_bio(bio);
+	return 0;
 }
 
 /* Block device geometry. */
@@ -315,9 +440,17 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
  */
 int carryfs_write_dirty_inodes(struct super_block *sb)
 {
-	struct inode *inode, *toput = NULL;
-	int error = 0;
+	struct inode *inode, **started = NULL, **grown;
+	unsigned int count = 0, capacity = 0, i;
+	struct blk_plug plug;
+	int error = 0, status;
 
+	/*
+	 * Start every dirty inode's writeback under one plug, so the block
+	 * layer merges their writes, then wait for them all: writeback
+	 * completes in the I/O workqueue.
+	 */
+	blk_start_plug(&plug);
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
 		spin_lock(&inode->i_lock);
@@ -330,17 +463,50 @@ int carryfs_write_dirty_inodes(struct super_block *sb)
 		spin_unlock(&inode->i_lock);
 		spin_unlock(&sb->s_inode_list_lock);
 
+		if (count == capacity) {
+			capacity = max(2 * capacity, 64U);
+			grown = krealloc_array(started, capacity, sizeof(*started), GFP_NOFS);
+			if (!grown) {
+				blk_finish_plug(&plug);
+				error = -ENOMEM;
+				iput(inode);
+				goto wait;
+			}
+			started = grown;
+		}
+		started[count++] = inode;
+		status = filemap_fdatawrite(inode->i_mapping);
 		if (!error)
-			error = filemap_write_and_wait(inode->i_mapping);
-		iput(toput);
-		toput = inode;
+			error = status;
 
 		cond_resched();
 		spin_lock(&sb->s_inode_list_lock);
 	}
 	spin_unlock(&sb->s_inode_list_lock);
-	iput(toput);
+	blk_finish_plug(&plug);
+wait:
+	for (i = 0; i < count; i++) {
+		status = filemap_fdatawait(started[i]->i_mapping);
+		if (!error)
+			error = status;
+		iput(started[i]);
+	}
+	kfree(started);
 	return error;
+}
+
+/*
+ * At the last close of a file written through it, start writing it back
+ * without waiting, so its data is on its way before an fsync of it or its
+ * directory, as the FUSE adapter writes data before fsync. NFS writes back
+ * on close too, and XFS after a truncate. Errors stay on the mapping for
+ * a later fsync.
+ */
+int carryfs_file_release(struct inode *inode, struct file *file)
+{
+	if (file->f_mode & FMODE_WRITE)
+		filemap_flush(inode->i_mapping);
+	return 0;
 }
 
 /* A durable cache flush: earlier writes reach media before later ones. */
@@ -375,9 +541,10 @@ void carryfs_i_size_write(struct inode *inode, loff_t size)
  * Instantiate a dentry for an entry readdir just returned, as NFS and CIFS
  * do for readdirplus, so stats after a listing find it in the dcache.
  * Entries already cached are left alone; failures only skip the priming.
+ * @known, if not NULL, is the entry's inode record as readdir read it.
  */
 void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 ino,
-			  umode_t type)
+			  umode_t type, const void *known)
 {
 	struct qstr qname = QSTR_INIT(name, len);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
@@ -396,13 +563,14 @@ void carryfs_prime_dentry(struct dentry *parent, const char *name, int len, u64 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
 	dentry = d_alloc_parallel(parent, &qname, &wq);
 #else
+	/* 7.2 dropped the caller's wait queue. */
 	dentry = d_alloc_parallel(parent, &qname);
 #endif
 	if (IS_ERR(dentry))
 		return;
 	if (!d_in_lookup(dentry))
 		goto out;
-	inode = carryfs_iget(parent->d_sb, ino, type);
+	inode = carryfs_iget(parent->d_sb, ino, type, known);
 	if (IS_ERR(inode)) {
 		d_lookup_done(dentry);
 		goto out;
@@ -559,9 +727,11 @@ struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index)
 
 /*
  * Whether a folio of @mapping in [@first, @last] is dirty, or locked: a
- * write holds its folio locked from reserving space until dirtying it.
+ * write holds its folio locked from reserving space until dirtying it. With
+ * @writeback, a folio under writeback counts too.
  */
-bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last)
+bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t last,
+			bool writeback)
 {
 	XA_STATE(xas, &mapping->i_pages, first);
 	struct folio *folio;
@@ -571,7 +741,8 @@ bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t la
 	xas_for_each(&xas, folio, last) {
 		if (xas_retry(&xas, folio) || xa_is_value(folio))
 			continue;
-		if (folio_test_dirty(folio) || folio_test_locked(folio)) {
+		if (folio_test_dirty(folio) || folio_test_locked(folio) ||
+		    (writeback && folio_test_writeback(folio))) {
 			busy = true;
 			break;
 		}

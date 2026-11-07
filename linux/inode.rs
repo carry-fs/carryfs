@@ -13,7 +13,7 @@ use kernel::prelude::*;
 use crate::glue;
 use crate::namei::{self, DIRECTORY, FILE, SYMLINK};
 use crate::ondisk::error::Error as Encoding;
-use crate::tree::{le_u64, Tree};
+use crate::tree::{self, le_u64, Tree};
 use crate::vfs::{Dentry, Inode};
 use crate::{corrupt, dir, file, names, volume};
 
@@ -31,6 +31,22 @@ unsafe impl<T> Sync for Ops<T> {}
 
 /// A referenced inode for `object`, read from the catalog unless cached.
 pub(crate) fn get(sb: *mut bindings::super_block, object: u64) -> Result<*mut bindings::inode> {
+    get_known(sb, object, None)
+}
+
+/// An inode record read earlier, in the state `stamp` identifies.
+pub(crate) struct Known<'a> {
+    pub(crate) stamp: (u64, u64),
+    pub(crate) record: &'a [u8],
+}
+
+/// `get`, filling a new inode from `known` if the catalog has not changed
+/// since it was read.
+fn get_known(
+    sb: *mut bindings::super_block,
+    object: u64,
+    known: Option<&Known<'_>>,
+) -> Result<*mut bindings::inode> {
     // SAFETY: `sb` is an active super block of this filesystem.
     let inode = unsafe { bindings::iget_locked(sb, object as _) };
     if inode.is_null() {
@@ -41,7 +57,7 @@ pub(crate) fn get(sb: *mut bindings::super_block, object: u64) -> Result<*mut bi
         return Ok(inode);
     }
     // SAFETY: The inode is new and locked, so only this thread fills it.
-    match unsafe { fill(sb, inode, object) } {
+    match unsafe { fill(sb, inode, object, known) } {
         Ok(()) => {
             // SAFETY: The inode is new and now complete.
             unsafe { bindings::unlock_new_inode(inode) };
@@ -100,11 +116,23 @@ pub(crate) fn refresh_times(inode: &Inode) {
 /// # Safety
 ///
 /// `inode` must be a new, locked inode of `sb`.
-unsafe fn fill(sb: *mut bindings::super_block, inode: *mut bindings::inode, object: u64) -> Result {
+unsafe fn fill(
+    sb: *mut bindings::super_block,
+    inode: *mut bindings::inode,
+    object: u64,
+    known: Option<&Known<'_>>,
+) -> Result {
     let volume = volume::of(sb);
     let record = {
         let state = volume.lock();
-        namei::read_record(sb, &state, object).map_err(|error| {
+        if let Some(known) = known.filter(|known| known.stamp == state.stamp()) {
+            let mut record = KVec::new();
+            tree::append(&mut record, known.record)?;
+            Ok(record)
+        } else {
+            namei::read_record(sb, &state, object)
+        }
+        .map_err(|error| {
             if error == ENOENT {
                 corrupt(
                     state.root.catalog.block,
@@ -301,7 +329,7 @@ fn lookup_inode(dir: &Inode, dentry: &Dentry) -> Result<*mut bindings::inode> {
     let Some((target, kind)) = entry else {
         return Ok(ptr::null_mut());
     };
-    get_typed(sb, target, kind_mode(kind))
+    get_typed(sb, target, kind_mode(kind), None)
 }
 
 /// The file-type mode bits of a directory-entry type.
@@ -319,8 +347,9 @@ fn get_typed(
     sb: *mut bindings::super_block,
     object: u64,
     mode: u32,
+    known: Option<&Known<'_>>,
 ) -> Result<*mut bindings::inode> {
-    let inode = get(sb, object)?;
+    let inode = get_known(sb, object, known)?;
     // SAFETY: `get` returned a referenced inode.
     if unsafe { (*inode).i_mode } as u32 & bindings::S_IFMT != mode {
         // SAFETY: Drop the reference `get` took.
@@ -340,8 +369,11 @@ unsafe extern "C" fn carryfs_iget(
     sb: *mut bindings::super_block,
     object: u64,
     mode: bindings::umode_t,
+    known: *const c_void,
 ) -> *mut bindings::inode {
-    match get_typed(sb, object, u32::from(mode)) {
+    // SAFETY: `known` is null or the `Known` dir.rs passed to priming.
+    let known = unsafe { known.cast::<Known<'_>>().as_ref() };
+    match get_typed(sb, object, u32::from(mode), known) {
         Ok(inode) => inode,
         Err(error) => error.to_ptr(),
     }

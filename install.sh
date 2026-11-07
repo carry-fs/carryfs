@@ -98,8 +98,14 @@ prerequisites() {
                 fi
             done
             [ -d /run/systemd/system ] || die 'CarryFS needs a running systemd host; containers and WSL without systemd are unsupported.'
+            if [ "$native" = 1 ]; then
+                for tool in bash make modinfo depmod; do
+                    command -v "$tool" >/dev/null 2>&1 || die "Missing $tool for native installation."
+                done
+            fi
             ;;
         Darwin)
+            [ "$native" = 0 ] || die '--native is supported on Linux only.'
             platform=macos-arm64
             marker=/Library/Filesystems/carryfs.fs/Contents/VERSION
             adapter=/Library/Filesystems/carryfs.fs/Contents/Resources/mount_carryfs
@@ -207,7 +213,13 @@ build_local() {
         if [ "$platform" = linux-x86_64 ]; then
             cargo build --release --locked -p carryfs-core -p carryfs-fuse &&
             cp "$target/carryfs" "$target/carryfs-fuse" fuse/packaging/61-carryfs.rules \
-                fuse/packaging/mount_options.conf "$work/payload/"
+                fuse/packaging/mount_options.conf "$work/payload/" &&
+            if [ "$native" = 1 ]; then
+                kernel_release=$(uname -r) &&
+                bash scripts/kernel-build.sh "/lib/modules/$kernel_release/build" &&
+                cp linux/carryfs.ko "$work/payload/" &&
+                printf '%s\n' "$kernel_release" > "$work/payload/KERNEL_RELEASE"
+            fi
         else
             resources=$work/payload/carryfs.fs/Contents/Resources &&
             cargo build --release --locked -p carryfs-core -p carryfs-fuse -p carryfs-macos &&
@@ -226,34 +238,110 @@ build_local() {
 uninstall_linux() {
     sudo=
     [ "$(id -u)" = 0 ] || sudo=sudo
-    options=/etc/udisks2/mount_options.conf
-    work=$(mktemp -d "${TMPDIR:-/tmp}/carryfs-install.XXXXXXXX")
-    trap 'rm -rf "$work"' EXIT
-    if [ -f "$options" ]; then
-        awk '
-            /^\[.*\]/ { in_defaults = ($0 ~ /^\[defaults\][[:space:]]*$/) }
-            in_defaults && /^carryfs_(defaults|allow)=/ { next }
-            { print }' "$options" > "$work/mount_options.conf"
-    fi
-    $sudo rm -f /usr/local/bin/carryfs /etc/udev/rules.d/61-carryfs.rules
-    $sudo rm -rf /usr/libexec/carryfs
-    for link in /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs; do
-        if [ -L "$link" ] && [ "$(readlink "$link")" = /usr/libexec/carryfs/carryfs-fuse ]; then
-            $sudo rm -f "$link"
+    $sudo sh -s <<'UNINSTALL'
+set -eu
+die() { printf 'carryfs: %s\n' "$*" >&2; exit 1; }
+validate_kernel() {
+    case $1 in ''|.*|*[!a-zA-Z0-9._+~-]*) die 'Invalid kernel release in the native module record.' ;; esac
+}
+[ ! -d /sys/module/carryfs ] || die 'Unload the native module with modprobe -r carryfs before uninstalling.'
+mkdir /var/run/carryfs-install.lock || die 'Another installation is running, or the install lock needs cleanup.'
+backup=
+changed=0
+committed=0
+kernels=
+paths='/usr/local/bin/carryfs /usr/libexec/carryfs /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs /etc/udev/rules.d/61-carryfs.rules /etc/udisks2/mount_options.conf'
+finish() {
+    status=$?
+    trap - EXIT
+    if [ "$changed" = 1 ] && [ "$committed" = 0 ]; then
+        printf 'Uninstall failed; restoring the previous installation.\n' >&2
+        index=0
+        restored=1
+        for path in $paths; do
+            index=$((index+1))
+            rm -rf "$path" || restored=0
+            if [ -e "$backup/$index" ] || [ -L "$backup/$index" ]; then
+                mkdir -p "$(dirname "$path")" || restored=0
+                cp -pR "$backup/$index" "$path" || restored=0
+            fi
+        done
+        for kernel in $kernels; do
+            if [ -d "/lib/modules/$kernel" ]; then depmod -a "$kernel" || restored=0; fi
+        done
+        udevadm control --reload || restored=0
+        if [ "$restored" = 0 ]; then
+            printf 'Restoration failed. Keep the backup at %s and restore it before mounting CarryFS.\n' "$backup" >&2
+            backup=
         fi
-    done
-    if [ -f "$options" ]; then
-        if awk '!/^[[:space:]]*(#.*)?$/ && !/^\[defaults\][[:space:]]*$/ { set=1 } END { exit !set }' "$work/mount_options.conf"; then
-            $sudo install -m 644 "$work/mount_options.conf" "$options"
-        else
-            $sudo rm -f "$options"
-        fi
     fi
-    $sudo udevadm control --reload
+    [ -z "$backup" ] || rm -rf "$backup"
+    rmdir /var/run/carryfs-install.lock
+    exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+for process in carryfs-fuse mount_carryfs; do
+    status=0
+    pgrep -x "$process" >/dev/null || status=$?
+    case $status in
+        1) ;;
+        0) die 'A CarryFS daemon is running. Eject all CarryFS volumes and retry.' ;;
+        *) die 'Cannot check for running CarryFS daemons.' ;;
+    esac
+done
+[ ! -L /usr/libexec/carryfs/native-kernels ] || die 'The native module record must not be a symlink.'
+if [ -f /usr/libexec/carryfs/native-kernels ]; then
+    command -v depmod >/dev/null 2>&1 || die 'Missing depmod for native uninstallation.'
+    while IFS= read -r kernel || [ -n "$kernel" ]; do
+        validate_kernel "$kernel"
+        kernels="$kernels $kernel"
+        paths="$paths /lib/modules/$kernel/updates/carryfs.ko"
+    done < /usr/libexec/carryfs/native-kernels
+fi
+backup=$(mktemp -d /var/tmp/carryfs-install.XXXXXXXX)
+index=0
+for path in $paths; do
+    index=$((index+1))
+    if [ -e "$path" ] || [ -L "$path" ]; then cp -pR "$path" "$backup/$index"; fi
+done
+options=/etc/udisks2/mount_options.conf
+if [ -f "$options" ]; then
+    awk '
+        /^\[.*\]/ { in_defaults = ($0 ~ /^\[defaults\][[:space:]]*$/) }
+        in_defaults && /^carryfs_(defaults|allow)=/ { next }
+        { print }' "$options" > "$backup/mount_options.conf"
+fi
+changed=1
+rm -f /usr/local/bin/carryfs /etc/udev/rules.d/61-carryfs.rules
+rm -rf /usr/libexec/carryfs
+for link in /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs; do
+    if [ -L "$link" ] && [ "$(readlink "$link")" = /usr/libexec/carryfs/carryfs-fuse ]; then
+        rm -f "$link"
+    fi
+done
+if [ -f "$options" ]; then
+    if awk '!/^[[:space:]]*(#.*)?$/ && !/^\[defaults\][[:space:]]*$/ { set=1 } END { exit !set }' "$backup/mount_options.conf"; then
+        install -m 644 "$backup/mount_options.conf" "$options"
+    else
+        rm -f "$options"
+    fi
+fi
+for kernel in $kernels; do
+    rm -f "/lib/modules/$kernel/updates/carryfs.ko"
+    if [ -d "/lib/modules/$kernel" ]; then depmod -a "$kernel"; fi
+    if [ -d "/lib/modules/$kernel/updates" ]; then
+        rmdir --ignore-fail-on-non-empty "/lib/modules/$kernel/updates"
+    fi
+done
+udevadm control --reload
+committed=1
+UNINSTALL
 }
 
 main() {
-    requested='' upgrade=0 uninstall=0 local_build=0 installed=''
+    requested='' upgrade=0 uninstall=0 local_build=0 native=0 installed=''
     while [ "$#" -gt 0 ]; do
         case $1 in
             --version)
@@ -264,14 +352,16 @@ main() {
             --upgrade) upgrade=1; shift ;;
             --uninstall) uninstall=1; shift ;;
             --local) local_build=1; shift ;;
+            --native) native=1; shift ;;
             --help|-h)
-                printf 'Usage: install.sh [--version X.Y.Z[-rc.N] | --upgrade | --local | --uninstall]\nDefault: latest stable release within the installed major; latest stable on first install.\n--version installs that exact release, prereleases included.\n--local builds the checkout holding this script and installs or reinstalls it.\n'
+                printf 'Usage: install.sh [--version X.Y.Z[-rc.N] | --upgrade | --local [--native] | --uninstall]\nDefault: latest stable release within the installed major; latest stable on first install.\n--version installs that exact release, prereleases included.\n--local builds the checkout holding this script and installs or reinstalls it.\n--native adds the experimental Linux module for the running kernel; requires --local.\n--uninstall also removes all native modules recorded by this installer.\n'
                 return ;;
             *) die "Unknown argument: $1" ;;
         esac
     done
     [ "$local_build" = 0 ] || { [ -z "$requested" ] && [ "$upgrade" = 0 ] && [ "$uninstall" = 0 ]; } ||
         die '--local cannot be combined with --version, --upgrade, or --uninstall.'
+    [ "$native" = 0 ] || [ "$local_build" = 1 ] || die '--native requires --local.'
     if [ "$uninstall" = 1 ]; then
         [ -z "$requested" ] && [ "$upgrade" = 0 ] || die '--uninstall cannot be combined with --version or --upgrade.'
         system=$(uname -s)
@@ -282,7 +372,7 @@ main() {
                 kept='macFUSE and disk contents' ;;
             Linux)
                 adapter=/usr/libexec/carryfs
-                question="Remove CarryFS from /usr/local/bin/carryfs and $adapter, with its mount and mkfs helper links, udev rule, and UDisks options?"
+                question="Remove CarryFS from /usr/local/bin/carryfs and $adapter, with its helper links, udev rule, UDisks options, and recorded native modules?"
                 kept='Disk contents' ;;
             *) die '--uninstall is supported on Linux and macOS only.' ;;
         esac
@@ -344,6 +434,9 @@ main() {
     printf 'Install CarryFS %s for %s (current: %s).\n' "$selected" "$platform" "${installed:-unrecorded}"
     if [ -n "$installed" ] && newer_version "$installed" "$selected"; then printf 'This will downgrade CarryFS.\n'; fi
     printf 'Destination: /usr/local/bin/carryfs and %s. Eject all CarryFS volumes before continuing.\n' "${marker%/VERSION}"
+    if [ "$native" = 1 ]; then
+        printf 'Native module: /lib/modules/%s/updates/carryfs.ko. FUSE remains the default; the module will not be loaded.\n' "$(cat "$work/payload/KERNEL_RELEASE")"
+    fi
     printf '%s System installation requires administrator permission.\n' "$origin"
     [ -r /dev/tty ] || die 'Confirmation needs a terminal; download the script and run it from an interactive shell.'
     printf 'Install? [y/N] ' > /dev/tty

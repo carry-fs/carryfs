@@ -29,6 +29,14 @@ checks each of these, says which is missing, and builds the module. CI (the
 A rustup toolchain does not work, even at the kernel's rustc version,
 because it is a different build.
 
+To install the module alongside the CLI and FUSE adapter from a checkout, use
+`./install.sh --local --native`. It leaves the module unloaded and keeps FUSE
+as the default. `./install.sh --uninstall` removes all native modules recorded
+by the installer. See [installation](../INSTALLATION.md#fuse-adapter-or-native-driver)
+for kernel upgrades and signing requirements.
+
+To build and load without installing:
+
 ```sh
 scripts/kernel-build.sh
 sudo insmod linux/carryfs.ko

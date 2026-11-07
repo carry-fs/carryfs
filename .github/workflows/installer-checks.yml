@@ -1,6 +1,13 @@
 name: installer-checks
 
 on:
+  pull_request:
+    paths:
+      - install.sh
+      - packaging/install-unix.sh
+      - scripts/kernel-build.sh
+      - tests/installers/**
+      - .github/workflows/installer-checks.yml
   workflow_dispatch:
     inputs:
       version:
@@ -31,7 +38,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Release index and version selection
+      - name: Installer tests
         run: python -m unittest discover -s tests/installers -p 'test_*.py' -v
       - name: PowerShell selection
         if: runner.os == 'Windows'
@@ -39,6 +46,7 @@ jobs:
         run: powershell -NoProfile -File tests/installers/selection.ps1
 
   ubuntu-install:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -65,6 +73,7 @@ jobs:
           retention-days: 7
 
   windows-install:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2025
     timeout-minutes: 15
     steps:

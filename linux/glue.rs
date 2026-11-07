@@ -52,6 +52,10 @@ unsafe extern "C" {
         count: u32,
     ) -> c_int;
     pub(crate) fn carryfs_flush(sb: *mut super_block) -> c_int;
+    pub(crate) fn carryfs_timer_start(sb: *mut super_block) -> *mut c_void;
+    pub(crate) fn carryfs_timer_stop(timer: *mut c_void);
+    pub(crate) fn carryfs_nofs_save() -> u32;
+    pub(crate) fn carryfs_nofs_restore(flags: u32);
     pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;
     pub(crate) fn carryfs_inode_set_ops(
         inode: *mut inode,
@@ -95,6 +99,43 @@ unsafe extern "C" {
         pages: u32,
     ) -> *mut kernel::bindings::bio;
     pub(crate) fn carryfs_folio_inode(folio: *mut folio) -> *mut inode;
+    pub(crate) fn carryfs_bio_alloc_write(
+        sb: *mut super_block,
+        sector: u64,
+        pages: u32,
+    ) -> *mut kernel::bindings::bio;
+    pub(crate) fn carryfs_clean_aliases(sb: *mut super_block, block: u64, count: u64);
+    pub(crate) fn carryfs_write_folio(
+        mapping: *mut kernel::bindings::address_space,
+        pos: i64,
+    ) -> *mut folio;
+    pub(crate) fn carryfs_folio_uptodate(folio: *mut folio) -> bool;
+    pub(crate) fn carryfs_folio_mark_uptodate(folio: *mut folio);
+    pub(crate) fn carryfs_write_end(
+        iocb: *const kernel::bindings::kiocb,
+        mapping: *mut kernel::bindings::address_space,
+        pos: i64,
+        len: u32,
+        copied: u32,
+        folio: *mut folio,
+        fsdata: *mut c_void,
+    ) -> c_int;
+    pub(crate) fn carryfs_cached_folio(
+        mapping: *mut kernel::bindings::address_space,
+        index: u64,
+    ) -> *mut folio;
+    pub(crate) fn carryfs_folio_unlock_put(folio: *mut folio);
+    pub(crate) fn carryfs_folio_start_writeback(folio: *mut folio);
+    pub(crate) fn carryfs_folio_redirty(wbc: *mut kernel::bindings::writeback_control, folio: *mut folio);
+    pub(crate) fn carryfs_mapping_error(mapping: *mut kernel::bindings::address_space, error: c_int);
+    pub(crate) fn carryfs_i_size_read(inode: *mut inode) -> i64;
+    pub(crate) fn carryfs_mapping_host(mapping: *mut kernel::bindings::address_space) -> *mut inode;
+    pub(crate) fn carryfs_writeback_iter(
+        mapping: *mut kernel::bindings::address_space,
+        wbc: *mut kernel::bindings::writeback_control,
+        folio: *mut folio,
+        error: *mut c_int,
+    ) -> *mut folio;
     pub(crate) fn carryfs_readahead_inode(rac: *mut readahead_control) -> *mut inode;
     pub(crate) fn carryfs_readahead_index(rac: *mut readahead_control) -> u64;
     pub(crate) fn carryfs_readahead_count(rac: *mut readahead_control) -> u64;

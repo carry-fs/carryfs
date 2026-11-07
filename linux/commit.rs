@@ -73,6 +73,37 @@ pub(crate) fn open(sb: *mut super_block, state: &mut State, decoded: [Option<Roo
     Ok(())
 }
 
+/// Objects left orphaned when the volume was last in use: unlinked while
+/// open. A writable mount removes them.
+pub(crate) fn orphans(sb: *mut super_block, state: &State) -> Result<KVec<u64>> {
+    let mut found = KVec::new();
+    crate::tree::Tree::new(sb, state, TreeKind::Cleanup).scan(&[3], &mut |key, _| {
+        if key.first() != Some(&3) {
+            return Ok(false);
+        }
+        found.push(be_u64(key, 1), GFP_KERNEL)?;
+        Ok(true)
+    })?;
+    Ok(found)
+}
+
+/// Commit the open transaction, if any, from the periodic timer.
+#[no_mangle]
+unsafe extern "C" fn carryfs_periodic_commit(sb: *mut super_block) {
+    let volume = crate::volume::of(sb);
+    // Each pass may reclaim one batch; continue while more remains.
+    for _ in 0..16 {
+        let mut state = volume.lock();
+        if state.faulted || (state.txn.is_none() && !state.reclaim_pending) {
+            return;
+        }
+        // A failure faults the volume and was logged.
+        if commit(sb, &mut state).is_err() {
+            return;
+        }
+    }
+}
+
 /// The workspace list of `root` (FORMAT.md section 6, "Protected metadata
 /// workspace").
 fn read_slots(sb: *mut super_block, root: &Root) -> Result<KVec<u64>> {
@@ -146,8 +177,11 @@ pub(crate) fn commit(sb: *mut super_block, state: &mut State) -> Result {
     if state.faulted {
         return Err(EIO);
     }
-    let Some(txn) = state.txn.take() else {
-        return Ok(());
+    let txn = match state.txn.take() {
+        Some(txn) => txn,
+        // A commit may run for reclamation alone.
+        None if state.reclaim_pending => Txn::new(&state.root, state.hint)?,
+        None => return Ok(()),
     };
     match publish(sb, state, txn) {
         Ok(()) => Ok(()),
@@ -183,6 +217,13 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
         blocks: base.blocks,
         generation: base.generation,
     };
+
+    let more = txn.reclaim(&disk, base.cleanup)?;
+    state.reclaim_pending = more || !txn.retired.is_empty();
+    if txn.edits == 0 && txn.data_allocated == 0 {
+        // Nothing to publish: no change and nothing reclaimable.
+        return Ok(());
+    }
 
     // Workspace balance: release surplus base slots, or refill from raw free
     // blocks, setting their allocation bits.

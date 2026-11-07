@@ -9,6 +9,8 @@ use core::ptr;
 use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
+use core::ops::{Deref, DerefMut};
+
 use kernel::sync::{Mutex, MutexGuard, new_mutex};
 
 use crate::edit::Txn;
@@ -45,6 +47,10 @@ pub(crate) struct State {
     pub(crate) faulted: bool,
     /// Where the next transaction's data allocations start looking.
     pub(crate) hint: u64,
+    /// The periodic-commit timer of a writable mount, from glue.c.
+    pub(crate) timer: usize,
+    /// Retired data may be reclaimable by a later commit.
+    pub(crate) reclaim_pending: bool,
 }
 
 impl State {
@@ -77,8 +83,51 @@ pub(crate) struct Volume {
 impl Volume {
     // one lock serializes metadata access, reads included; a
     // read-mostly lock or RCU-published roots if readers contend on it.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock()
+    /// Lock the volume, in a NOFS allocation scope: reclaim that wrote back
+    /// this filesystem's pages would wait for the lock.
+    pub(crate) fn lock(&self) -> Locked<'_> {
+        let nofs = NoFs::new();
+        Locked {
+            state: self.state.lock(),
+            _nofs: nofs,
+        }
+    }
+}
+
+/// A `memalloc_nofs_save` scope, restored on drop.
+pub(crate) struct NoFs(u32);
+
+impl NoFs {
+    pub(crate) fn new() -> Self {
+        // SAFETY: Saving and restoring the task's allocation scope nests.
+        Self(unsafe { glue::carryfs_nofs_save() })
+    }
+}
+
+impl Drop for NoFs {
+    fn drop(&mut self) {
+        // SAFETY: Restores what `new` saved, in nesting order.
+        unsafe { glue::carryfs_nofs_restore(self.0) };
+    }
+}
+
+/// The locked volume state. The lock is released before the scope ends.
+pub(crate) struct Locked<'a> {
+    state: MutexGuard<'a, State>,
+    _nofs: NoFs,
+}
+
+impl Deref for Locked<'_> {
+    type Target = State;
+
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+
+impl DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.state
     }
 }
 
@@ -103,6 +152,21 @@ unsafe extern "C" fn carryfs_fill_super(
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }
+}
+
+/// Stop the periodic commit before unmounting; glue.c's `kill_sb` calls it
+/// before `kill_block_super`, whose final sync commits what remains.
+#[no_mangle]
+unsafe extern "C" fn carryfs_stop_timer(sb: *mut bindings::super_block) {
+    // SAFETY: `kill_sb` passes a super block that may not have finished
+    // mounting; only one with a volume can have a timer.
+    if unsafe { (*sb).s_fs_info }.is_null() {
+        return;
+    }
+    let timer = core::mem::take(&mut of(sb).lock().timer);
+    // SAFETY: The timer was started by `fill_super` and is stopped once;
+    // the lock is not held, since the timer's work takes it.
+    unsafe { glue::carryfs_timer_stop(timer as *mut c_void) };
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -180,6 +244,8 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 slots: KVec::new(),
                 faulted: false,
                 hint: 0,
+                timer: 0,
+                reclaim_pending: true,
             }),
         }),
         GFP_KERNEL,
@@ -206,6 +272,18 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         if writable {
             commit::open(sb, &mut state, [a, b])?;
         }
+    }
+    if writable {
+        let orphans = commit::orphans(sb, &of(sb).lock())?;
+        for object in orphans.iter() {
+            crate::namei::remove_object(sb, *object)?;
+        }
+        // SAFETY: `kill_sb` stops the timer before the volume goes away.
+        let timer = unsafe { glue::carryfs_timer_start(sb) };
+        if timer.is_null() {
+            return Err(ENOMEM);
+        }
+        of(sb).lock().timer = timer as usize;
     }
 
     let root_inode = inode::get(sb, inode::ROOT)?;

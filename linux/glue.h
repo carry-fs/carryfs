@@ -12,10 +12,13 @@ struct buffer_head;
 struct dir_context;
 struct kstatfs;
 struct readahead_control;
+struct writeback_control;
 
 /* Implemented in Rust. */
 int carryfs_fill_super(struct super_block *sb, u32 uid, u32 gid, int silent);
 void carryfs_free_volume(void *volume);
+void carryfs_stop_timer(struct super_block *sb);
+void carryfs_periodic_commit(struct super_block *sb);
 struct inode *carryfs_iget(struct super_block *sb, u64 ino, umode_t type);
 
 /* Implemented in glue.c. */
@@ -36,6 +39,10 @@ void carryfs_bh_set_verified(struct buffer_head *bh);
 int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *const *pages,
 			 unsigned int count);
 int carryfs_flush(struct super_block *sb);
+void *carryfs_timer_start(struct super_block *sb);
+void carryfs_timer_stop(void *timer);
+unsigned int carryfs_nofs_save(void);
+void carryfs_nofs_restore(unsigned int flags);
 bool carryfs_inode_is_new(struct inode *inode);
 void carryfs_i_size_write(struct inode *inode, loff_t size);
 void carryfs_inode_set_ops(struct inode *inode, const struct inode_operations *iop, const struct file_operations *fop, const struct address_space_operations *aops);
@@ -61,6 +68,23 @@ struct inode *carryfs_folio_inode(struct folio *folio);
 struct inode *carryfs_readahead_inode(struct readahead_control *rac);
 u64 carryfs_readahead_index(struct readahead_control *rac);
 u64 carryfs_readahead_count(struct readahead_control *rac);
+struct bio *carryfs_bio_alloc_write(struct super_block *sb, u64 sector, unsigned int pages);
+void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count);
+struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos);
+bool carryfs_folio_uptodate(struct folio *folio);
+void carryfs_folio_mark_uptodate(struct folio *folio);
+int carryfs_write_end(const struct kiocb *iocb, struct address_space *mapping, loff_t pos,
+		      unsigned int len, unsigned int copied, struct folio *folio, void *fsdata);
+struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index);
+void carryfs_folio_unlock_put(struct folio *folio);
+void carryfs_folio_start_writeback(struct folio *folio);
+void carryfs_folio_redirty(struct writeback_control *wbc, struct folio *folio);
+void carryfs_mapping_error(struct address_space *mapping, int error);
+loff_t carryfs_i_size_read(struct inode *inode);
+struct inode *carryfs_mapping_host(struct address_space *mapping);
+struct folio *carryfs_writeback_iter(struct address_space *mapping,
+				     struct writeback_control *wbc, struct folio *folio,
+				     int *error);
 struct folio *carryfs_readahead_folio(struct readahead_control *rac);
 loff_t carryfs_folio_pos(struct folio *folio);
 void *carryfs_kmap_local_folio(struct folio *folio, size_t offset);

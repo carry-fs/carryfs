@@ -21,17 +21,32 @@ use crate::tree::{self, Tree, le_u64};
 use crate::volume::{self, Volume};
 use crate::{corrupt, errno};
 
-const UNIT_BLOCKS: u64 = (UNIT_BYTES / BLOCK_BYTES) as u64;
+pub(crate) const UNIT_BLOCKS: u64 = (UNIT_BYTES / BLOCK_BYTES) as u64;
 const SECTORS_PER_BLOCK: u64 = (BLOCK_BYTES / 512) as u64;
 
 /// A verified unit: its valid bytes in up to 16 pages, or a hole.
-struct Unit {
+pub(crate) struct Unit {
     index: u64,
     pages: KVec<Page>,
     valid: usize,
 }
 
 impl Unit {
+    /// Copy page `block` of this unit into `destination`, zero past the
+    /// valid bytes; a hole reads as zeros.
+    pub(crate) fn copy_into(&self, block: usize, destination: &mut [u8]) {
+        let start = block * BLOCK_BYTES;
+        let len = self.valid.saturating_sub(start).min(BLOCK_BYTES);
+        if let Some(page) = self.pages.get(block).filter(|_| len > 0) {
+            // SAFETY: The bounce page holds `BLOCK_BYTES` bytes.
+            let source = unsafe {
+                core::slice::from_raw_parts(glue::carryfs_page_address(page.as_ptr()).cast::<u8>(), len)
+            };
+            destination[..len].copy_from_slice(source);
+        }
+        destination[len..BLOCK_BYTES].fill(0);
+    }
+
     /// Copy page `block` of this unit into `folio`, zero past the valid
     /// bytes; a hole reads as zeros.
     fn copy_to(&self, block: usize, folio: *mut bindings::folio) {
@@ -278,20 +293,33 @@ unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
     }
 }
 
-/// Change a file's size. Data writes are not supported yet, so only the
-/// current size is accepted.
-pub(crate) fn set_size(inode: *mut bindings::inode, size: u64) -> Result {
-    // SAFETY: The VFS holds the inode locked.
-    if unsafe { (*inode).i_size } as u64 == size {
-        return Ok(());
+/// Read and verify `unit` of `object`, a file of `size` bytes.
+pub(crate) fn read_unit(sb: *mut bindings::super_block, object: u64, size: u64, unit: u64) -> Result<Unit> {
+    Source {
+        sb,
+        volume: volume::of(sb),
+        object,
+        size,
     }
-    Err(crate::code(bindings::EOPNOTSUPP))
+    .read(unit)
+}
+
+/// Fill a locked, not uptodate folio of `inode` from disk, for a partial
+/// write into it.
+pub(crate) fn fill_folio(inode: *mut bindings::inode, folio: *mut bindings::folio) -> Result {
+    // SAFETY: The VFS holds the inode and the folio.
+    let source = unsafe { Source::new(inode) };
+    fill(&source, &mut None, folio)
 }
 
 pub(crate) static ADDRESS_SPACE_OPERATIONS: Ops<bindings::address_space_operations> =
     Ops(bindings::address_space_operations {
         read_folio: Some(read_folio),
         readahead: Some(readahead),
+        writepages: Some(crate::write::writepages),
+        dirty_folio: Some(bindings::filemap_dirty_folio),
+        write_begin: Some(crate::write::write_begin),
+        write_end: Some(crate::write::write_end),
         // SAFETY: All-zero entries are absent operations.
         ..unsafe { core::mem::zeroed() }
     });
@@ -300,7 +328,9 @@ pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
     Ops(bindings::file_operations {
         llseek: Some(bindings::generic_file_llseek),
         read_iter: Some(bindings::generic_file_read_iter),
-        mmap_prepare: Some(bindings::generic_file_readonly_mmap_prepare),
+        write_iter: Some(bindings::generic_file_write_iter),
+        fsync: Some(crate::write::fsync),
+        mmap_prepare: Some(bindings::generic_file_mmap_prepare),
         splice_read: Some(bindings::filemap_splice_read),
         // SAFETY: All-zero entries are absent operations.
         ..unsafe { core::mem::zeroed() }

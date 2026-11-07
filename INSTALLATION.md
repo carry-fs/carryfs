@@ -29,11 +29,27 @@ sudo pacman -S curl fuse3 udisks2 procps-ng coreutils
 
 #### FUSE adapter or native driver
 
-The install script sets up the FUSE adapter. On some distributions you can
-also build the native kernel driver from source. `mount.carryfs`, which
-UDisks and `mount -t carryfs` call, continues to use FUSE even when the native
-module is loaded. Select native explicitly with
-`mount -i -t carryfs DEVICE DIRECTORY`.
+The install script sets up the FUSE adapter. From a Linux checkout, add the
+experimental native module with:
+
+```sh
+./install.sh --local --native
+```
+
+The installer still requires the Linux FUSE and desktop prerequisites above.
+No published release is required. The installer builds both adapters before
+asking for confirmation. It installs the module at
+`/lib/modules/$(uname -r)/updates/carryfs.ko`, records that kernel version, and
+refreshes the module index. It does not load the module.
+
+`mount.carryfs`, which UDisks and `mount -t carryfs` call, continues to use
+FUSE even when the native module is loaded. To load and mount native explicitly,
+run:
+
+```sh
+sudo modprobe carryfs
+sudo mount -i -t carryfs DEVICE DIRECTORY
+```
 
 | Distribution | Kernel | Native driver |
 |---|---|---|
@@ -42,9 +58,17 @@ module is loaded. Select native explicitly with
 | Arch Linux | 7.2 | Yes |
 | Others | | If the kernel is 7.0 or newer and built with Rust support |
 
+This table describes module builds. The installer supports Ubuntu and Arch;
+on other distributions, build and load the module manually.
+
 The driver is a prototype. [linux/README.md](linux/README.md) explains how to
 build and load it. The native driver requires 4 KiB kernel pages and rejects
 `sync` and `dirsync` mounts.
+
+The installer builds unsigned modules and refuses native installation when
+signature enforcement or kernel lockdown requires a trusted signature.
+After a kernel upgrade, rerun `./install.sh --local --native` for the new
+running kernel. There is no automatic rebuild.
 
 ### macOS
 
@@ -190,8 +214,28 @@ These commands are for a first install. To replace an existing one, run
 
 ## Uninstall
 
-Run the public installer with its uninstall option. It removes a by-hand
-install too; no repository checkout is needed.
+On Linux, uninstall also removes every native module recorded by this
+installer, including copies for older kernels. It refreshes each affected
+module index and leaves unrelated modules and UDisks settings intact.
+Installation and uninstallation restore the previous files if an operation
+fails. If restoration fails, the script reports the retained backup path.
+
+If the native module is loaded, unmount its volumes and unload it before
+installing or uninstalling:
+
+```sh
+sudo modprobe -r carryfs
+```
+
+For a source installation, use the installer from the checkout:
+
+```sh
+./install.sh --uninstall
+```
+
+For a release installation, use the public installer with its uninstall
+option. It also removes userspace files installed by hand. Native modules
+installed by hand are not recorded and are left alone.
 
 Linux and macOS:
 

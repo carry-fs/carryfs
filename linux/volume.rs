@@ -6,19 +6,20 @@ use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
 
+use core::ops::{Deref, DerefMut};
 use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
-use core::ops::{Deref, DerefMut};
 
-use kernel::sync::{Mutex, MutexGuard, new_mutex};
+use kernel::sync::{new_mutex, Mutex, MutexGuard};
 
 use crate::edit::Txn;
 use crate::glue;
 use crate::ondisk::format::{
-    self, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS, Root, TreeKind, TreeRef,
+    self, Root, TreeKind, TreeRef, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS,
 };
 use crate::tree::{Block, Tree};
+use crate::vfs::SuperBlock;
 use crate::{commit, corrupt, errno, inode, names};
 
 /// `f_type` reported by statfs: ASCII "CFSX".
@@ -51,6 +52,8 @@ pub(crate) struct State {
     pub(crate) timer: usize,
     /// Retired data may be reclaimable by a later commit.
     pub(crate) reclaim_pending: bool,
+    /// Space held for dirty page-cache units.
+    pub(crate) reservations: crate::reserve::Reservations,
 }
 
 impl State {
@@ -64,9 +67,9 @@ impl State {
 
     /// Free blocks, counting the open transaction's changes.
     pub(crate) fn free_blocks(&self) -> u64 {
-        self.txn
-            .as_ref()
-            .map_or(self.root.free_blocks, |txn| txn.free_blocks(self.root.free_blocks))
+        self.txn.as_ref().map_or(self.root.free_blocks, |txn| {
+            txn.free_blocks(self.root.free_blocks)
+        })
     }
 }
 
@@ -78,6 +81,9 @@ pub(crate) struct Volume {
     pub(crate) writable: bool,
     #[pin]
     state: Mutex<State>,
+    /// Held through each `writepages` call; see there.
+    #[pin]
+    pub(crate) writeback: Mutex<()>,
 }
 
 impl Volume {
@@ -238,6 +244,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
             uid: bindings::kuid_t { val: uid },
             gid: bindings::kgid_t { val: gid },
             writable,
+            writeback <- new_mutex!(()),
             state <- new_mutex!(State {
                 root,
                 txn: None,
@@ -246,6 +253,7 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 hint: 0,
                 timer: 0,
                 reclaim_pending: true,
+                reservations: Default::default(),
             }),
         }),
         GFP_KERNEL,
@@ -291,7 +299,10 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
     if unsafe { (*root_inode).i_mode } as u32 & bindings::S_IFMT != bindings::S_IFDIR {
         // SAFETY: Drop the reference `get` took.
         unsafe { bindings::iput(root_inode) };
-        return Err(corrupt(root.catalog.block, crate::ondisk::error::Error::Corrupt("root is not a directory")));
+        return Err(corrupt(
+            root.catalog.block,
+            crate::ondisk::error::Error::Corrupt("root is not a directory"),
+        ));
     }
     // SAFETY: `d_make_root` consumes the inode reference, even on failure.
     let dentry = unsafe { bindings::d_make_root(root_inode) };
@@ -305,13 +316,20 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
 
 unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::kstatfs) -> c_int {
     // SAFETY: The VFS passes a live dentry of this filesystem.
+    let sb = unsafe { SuperBlock::from_raw((*dentry).d_sb) };
+    // Space reserved for dirty data is not free to anyone else.
     let (root, free) = {
-        let state = of(unsafe { (*dentry).d_sb }).lock();
-        (state.root, state.free_blocks())
+        let state = sb.volume().lock();
+        (state.root, crate::reserve::available(&state))
     };
     let fsid = root.uuid;
     let word = |offset: usize| {
-        u32::from_le_bytes([fsid[offset], fsid[offset + 1], fsid[offset + 2], fsid[offset + 3]])
+        u32::from_le_bytes([
+            fsid[offset],
+            fsid[offset + 1],
+            fsid[offset + 2],
+            fsid[offset + 3],
+        ])
     };
     // SAFETY: `buf` is the caller's statfs buffer.
     unsafe {
@@ -330,7 +348,10 @@ unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::k
     0
 }
 
-unsafe extern "C" fn show_options(seq: *mut bindings::seq_file, root: *mut bindings::dentry) -> c_int {
+unsafe extern "C" fn show_options(
+    seq: *mut bindings::seq_file,
+    root: *mut bindings::dentry,
+) -> c_int {
     // SAFETY: The VFS passes the mount's root dentry.
     let volume = of(unsafe { (*root).d_sb });
     // SAFETY: Translating IDs into the initial namespace is always valid, and
@@ -344,7 +365,8 @@ unsafe extern "C" fn show_options(seq: *mut bindings::seq_file, root: *mut bindi
 }
 
 unsafe extern "C" fn sync_fs(sb: *mut bindings::super_block, _wait: c_int) -> c_int {
-    let volume = of(sb);
+    // SAFETY: The VFS passes a mounted super block of this filesystem.
+    let volume = unsafe { SuperBlock::from_raw(sb) }.volume();
     if !volume.writable {
         return 0;
     }

@@ -14,7 +14,7 @@ use kernel::prelude::*;
 
 use crate::corrupt;
 use crate::glue::{self, BufferHead};
-use crate::ondisk::format::{self, BLOCK_BYTES, PageView, Records, TreeKind, TreeRef};
+use crate::ondisk::format::{self, PageView, Records, TreeKind, TreeRef, BLOCK_BYTES};
 use crate::volume::State;
 
 /// Catalog record kinds (FORMAT.md section 5).
@@ -53,6 +53,24 @@ pub(crate) fn be_u64(key: &[u8], offset: usize) -> u64 {
     key.get(offset..offset + 8)
         .and_then(|bytes| bytes.try_into().ok())
         .map_or(0, u64::from_be_bytes)
+}
+
+/// Append `bytes` to `vec` in one copy: the kernel's `extend_from_slice`
+/// clones element by element.
+pub(crate) fn append(vec: &mut KVec<u8>, bytes: &[u8]) -> Result {
+    vec.reserve(bytes.len(), GFP_KERNEL)?;
+    let spare = vec.spare_capacity_mut();
+    // SAFETY: `reserve` made room for `bytes.len()` more bytes, and
+    // `MaybeUninit<u8>` has the layout of `u8`; the copy initializes them.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            spare.as_mut_ptr().cast::<u8>(),
+            bytes.len(),
+        );
+        vec.inc_len(bytes.len());
+    }
+    Ok(())
 }
 
 /// Key order. Catalog keys start with a big-endian object ID, and most keys
@@ -273,7 +291,9 @@ impl<'a> Tree<'a> {
 
     pub(crate) fn view<'b>(&self, page: &'b Page<'_>, at: Position) -> Result<PageView<'b>> {
         match at.link {
-            Link::Draft(_) => format::draft_page_view(page.data()).map_err(|error| corrupt(0, error)),
+            Link::Draft(_) => {
+                format::draft_page_view(page.data()).map_err(|error| corrupt(0, error))
+            }
             Link::Disk(reference) => format::verified_page_view(
                 page.data(),
                 reference,
@@ -332,7 +352,11 @@ impl<'a> Tree<'a> {
             let view = self.view(&page, at)?;
             // Bisect leaves, whose keys often share their owner; scan
             // internal pages, where the owner alone usually decides.
-            let scratch: &mut [u16] = if view.level == 0 { &mut offsets } else { &mut [] };
+            let scratch: &mut [u16] = if view.level == 0 {
+                &mut offsets
+            } else {
+                &mut []
+            };
             // Internal keys are subtree minimums, so the last child whose
             // minimum is at most `key` holds the answer.
             let Some((_, from)) = view.floor_record(key, compare, scratch) else {
@@ -353,7 +377,11 @@ impl<'a> Tree<'a> {
     }
 
     /// Calls `f` with the value of the record whose key is exactly `key`.
-    pub(crate) fn get<T>(&self, key: &[u8], f: impl FnOnce(&[u8]) -> Result<T>) -> Result<Option<T>> {
+    pub(crate) fn get<T>(
+        &self,
+        key: &[u8],
+        f: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<Option<T>> {
         Ok(self
             .floor(key, |found, value| {
                 if found == key {

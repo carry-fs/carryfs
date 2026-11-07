@@ -9,8 +9,8 @@ use kernel::prelude::*;
 
 use crate::edit::{self, Txn};
 use crate::glue;
-use crate::ondisk::format::{self, ALLOCATION_GROUP_BLOCKS, BLOCK_BYTES, Root, TreeKind, TreeRef};
-use crate::tree::{Block, Link, be_u64, le_u64};
+use crate::ondisk::format::{self, Root, TreeKind, TreeRef, ALLOCATION_GROUP_BLOCKS, BLOCK_BYTES};
+use crate::tree::{be_u64, le_u64, Block, Link};
 use crate::volume::State;
 use crate::{corrupt, errno};
 
@@ -119,14 +119,21 @@ fn read_slots(sb: *mut super_block, root: &Root) -> Result<KVec<u64>> {
         root.blocks,
     )
     .map_err(|error| corrupt(root.workspace.block, error))?;
-    let bad = |reason| corrupt(root.workspace.block, crate::ondisk::error::Error::Corrupt(reason));
+    let bad = |reason| {
+        corrupt(
+            root.workspace.block,
+            crate::ondisk::error::Error::Corrupt(reason),
+        )
+    };
     let mut append = |key: &[u8], value: &[u8]| -> Result {
         let first = be_u64(key, 0);
         let count = value
             .get(..4)
             .and_then(|bytes| bytes.try_into().ok())
             .map_or(0, |bytes| u64::from(u32::from_le_bytes(bytes)));
-        if slots.len() as u64 + count > CAPACITY as u64 || slots.last().is_some_and(|last| last + 1 >= first) {
+        if slots.len() as u64 + count > CAPACITY as u64
+            || slots.last().is_some_and(|last| last + 1 >= first)
+        {
             return Err(bad("workspace runs overlap or exceed capacity"));
         }
         for block in first..first + count {
@@ -194,7 +201,12 @@ pub(crate) fn commit(sb: *mut super_block, state: &mut State) -> Result {
 }
 
 /// Post-order of the live drafts under `link`: children before parents.
-fn post_order(txn: &Txn, link: Link, kind: TreeKind, order: &mut KVec<(usize, TreeKind)>) -> Result {
+fn post_order(
+    txn: &Txn,
+    link: Link,
+    kind: TreeKind,
+    order: &mut KVec<(usize, TreeKind)>,
+) -> Result {
     let Link::Draft(id) = link else {
         return Ok(());
     };
@@ -253,7 +265,10 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
     }
     let usable = state.slots.len() - release.len();
     if order.len() > usable {
-        pr_err!("transaction needs {} pages but has {usable} workspace slots\n", order.len());
+        pr_err!(
+            "transaction needs {} pages but has {usable} workspace slots\n",
+            order.len()
+        );
         return Err(ENOSPC);
     }
     let mut assigned = KVec::with_capacity(txn.drafts.len(), GFP_KERNEL)?;
@@ -286,17 +301,29 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
                 offset = value_at + 16;
             }
         }
-        let total = if kind == TreeKind::Catalog { edit::total(page) } else { 0 };
+        let total = if kind == TreeKind::Catalog {
+            edit::total(page)
+        } else {
+            0
+        };
         let me = TreeRef {
             block: assigned[id],
             generation,
         };
         format::seal_page(page, me, &base.uuid, kind, total);
-        format::decode_page(&page[..], me, &base.uuid, kind, generation, None, base.blocks)
-            .map_err(|error| {
-                pr_err!("built an invalid page: {:?}\n", error);
-                errno(error)
-            })?;
+        format::decode_page(
+            &page[..],
+            me,
+            &base.uuid,
+            kind,
+            generation,
+            None,
+            base.blocks,
+        )
+        .map_err(|error| {
+            pr_err!("built an invalid page: {:?}\n", error);
+            errno(error)
+        })?;
     }
 
     // The successor workspace list.
@@ -316,7 +343,11 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
     let changed = successor[..] != state.slots[..];
     let workspace = if changed {
         TreeRef {
-            block: if base.workspace.block == 32 { base.blocks - 96 } else { 32 },
+            block: if base.workspace.block == 32 {
+                base.blocks - 96
+            } else {
+                32
+            },
             generation,
         }
     } else {
@@ -442,13 +473,25 @@ fn encode_bank(
         pages.push((workspace.block, root), GFP_KERNEL)?;
     }
     for (block, page) in pages.iter() {
-        let level = if *block == workspace.block { None } else { Some(0) };
+        let level = if *block == workspace.block {
+            None
+        } else {
+            Some(0)
+        };
         let reference = TreeRef {
             block: *block,
             generation: workspace.generation,
         };
-        format::decode_page(&page[..], reference, &base.uuid, TreeKind::Workspace, workspace.generation, level, base.blocks)
-            .map_err(errno)?;
+        format::decode_page(
+            &page[..],
+            reference,
+            &base.uuid,
+            TreeKind::Workspace,
+            workspace.generation,
+            level,
+            base.blocks,
+        )
+        .map_err(errno)?;
     }
     Ok(())
 }

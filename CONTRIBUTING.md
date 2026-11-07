@@ -31,6 +31,12 @@ Linux and macOS:
 ./install.sh --local
 ```
 
+On Linux, `./install.sh --local --native` also builds and installs the
+experimental module for the running kernel. FUSE remains the default.
+`./install.sh --uninstall` removes both adapters, including recorded modules
+for older kernels. See [native installation](INSTALLATION.md#fuse-adapter-or-native-driver)
+for requirements and loading instructions.
+
 Windows, from 64-bit PowerShell:
 
 ```powershell
@@ -108,10 +114,12 @@ If index publication fails after a release succeeds, rerun the failed
 publisher job to rebuild it from the published releases.
 
 The [installer-checks workflow](.github/workflows/installer-checks.yml) runs
-selection tests on Ubuntu, macOS, and Windows, then installs a selected
-published package on disposable Ubuntu and Windows hosts. Start it manually
-and choose the package version. It checks adapter installation, reinstall,
-and uninstall; the Ubuntu job removes `jq` first.
+selection tests on Ubuntu, macOS, and Windows for installer PRs. Linux also
+checks native installation, reinstall, rollback, and cleanup across kernel
+versions in a temporary filesystem tree. These checks need no published release.
+To test a published package on disposable Ubuntu and Windows hosts, start the
+workflow manually and choose the package version. The Ubuntu job removes
+`jq` first.
 [Initial verification](https://github.com/carry-fs/carryfs/actions/runs/40237648047)
 passed using an existing published package and the checkout's installers.
 

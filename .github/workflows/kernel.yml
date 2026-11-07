@@ -1,0 +1,116 @@
+name: kernel
+
+# Builds the kernel driver (linux/) against the kernel headers of several
+# distributions, each with the rustc that built its kernel. Weekly too, as
+# distributions update their kernels.
+
+on:
+  push:
+    paths:
+      - linux/**
+      - ondisk/**
+      - fuse/**
+      - scripts/kernel-build.sh
+      - Cargo.lock
+      - Cargo.toml
+      - src/**
+      - .github/workflows/kernel.yml
+  pull_request:
+    paths:
+      - linux/**
+      - ondisk/**
+      - fuse/**
+      - scripts/kernel-build.sh
+      - Cargo.lock
+      - Cargo.toml
+      - src/**
+      - .github/workflows/kernel.yml
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  runtime:
+    name: native runtime
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Kernel and VM tools
+        run: pacman -Syu --noconfirm --needed base-devel git linux linux-headers rust pahole qemu-base virtme-ng busybox python ripgrep device-mapper e2fsprogs
+      - name: Build
+        run: |
+          scripts/kernel-build.sh
+          cargo build --release --locked -p carryfs-core -p carryfs-fuse
+          python3 linux/tests/mount_guards.py
+          python3 linux/tests/metadata_writes.py
+      - name: Build pinned fstests log replay tool
+        run: |
+          mkdir -p build/check-kernel
+          git init build/fstests
+          git -C build/fstests fetch --depth 1 https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git 22348afe338c0f6d540c0d7ef0db749eaa51b218
+          git -C build/fstests checkout --detach FETCH_HEAD
+          cc -D_GNU_SOURCE -O2 build/fstests/src/log-writes/replay-log.c \
+            build/fstests/src/log-writes/log-writes.c -o build/check-kernel/replay-log
+      - name: Boot matching kernel and run native checks
+        env:
+          CARRYFS_VM_TCG: '1'
+          CARRYFS_VM_TIMEOUT: '2700'
+        run: |
+          kernel=$(ls /usr/lib/modules/*/vmlinuz | sort -V | tail -1)
+          KERNEL_IMAGE="$kernel" bash linux/tests/vm.sh
+          KERNEL_IMAGE="$kernel" python3 linux/tests/flush.py
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: kernel-runtime
+          path: build/check-kernel/
+          retention-days: 7
+
+  build:
+    name: build (${{ matrix.distro }})
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu-26.04
+            image: ubuntu:26.04
+            install: |
+              apt-get update
+              # Metapackages can reach mirrors before their versioned dependencies.
+              version=$(apt-cache search --names-only '^linux-headers-[0-9].*-generic$' |
+                awk '{print $1}' | sed 's/^linux-headers-//' | sort -V | tail -1)
+              test -n "$version"
+              apt-get install -y --no-install-recommends ca-certificates make gcc libc6-dev kmod \
+                "linux-headers-$version" "linux-lib-rust-$version"
+              # The rustc that built the kernel, which Ubuntu versions as rustc-1.NN.
+              rust=$(sed -n 's/^CONFIG_RUSTC_VERSION_TEXT="\{0,1\}rustc \([0-9]*\.[0-9]*\).*/\1/p' \
+                "/usr/src/linux-headers-$version/include/config/auto.conf")
+              apt-get install -y --no-install-recommends "rustc-$rust"
+          - distro: arch
+            image: archlinux:latest
+            install: pacman -Syu --noconfirm --needed base-devel linux-headers rust pahole
+          - distro: fedora
+            image: fedora:latest
+            install: dnf -y install make gcc gawk binutils kmod kernel-devel rust dwarves
+    steps:
+      - uses: actions/checkout@v7
+      - name: Kernel headers and rustc
+        run: ${{ matrix.install }}
+      - name: Build
+        run: scripts/kernel-build.sh

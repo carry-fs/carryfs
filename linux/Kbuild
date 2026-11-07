@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-2.0-only OR Apache-2.0
+obj-m := carryfs.o
+carryfs-y := driver.o glue.o

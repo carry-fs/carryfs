@@ -1,0 +1,5 @@
+#!/bin/sh
+# mkfs(8) helper for fstests. Options pass through: local.config sets
+# MKFS_OPTIONS=-f, as fstests passes -f to mkfs.xfs, and generic/740 runs
+# without it to check that mkfs refuses another file system.
+exec "$CARRYFS_BIN/carryfs-fuse" mkfs "$@"

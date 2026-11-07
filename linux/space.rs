@@ -40,6 +40,17 @@ fn set_bit(bitmap: &mut [u8; BITMAP], block: u64, value: bool) {
     }
 }
 
+/// The group after `index` of `groups`, wrapping. A remainder by a runtime
+/// divisor would add a division-by-zero panic path, which objtool does not
+/// know never returns.
+fn next_group(index: u64, groups: u64) -> u64 {
+    if index + 1 >= groups {
+        0
+    } else {
+        index + 1
+    }
+}
+
 impl Group {
     fn free(&self, block: u64) -> bool {
         !bit(&self.committed, block) && !bit(&self.current, block)
@@ -118,7 +129,7 @@ impl Txn {
                 self.hint = block + run;
                 return Ok((block, run));
             }
-            group_index = (group_index + 1) % groups;
+            group_index = next_group(group_index, groups);
             self.hint = group_index * ALLOCATION_GROUP_BLOCKS;
         }
         Err(ENOSPC)
@@ -137,7 +148,7 @@ impl Txn {
         let groups = disk.blocks.div_ceil(ALLOCATION_GROUP_BLOCKS);
         for _ in 0..groups.min(count as u64) {
             let index = cursor;
-            cursor = (index + 1) % groups;
+            cursor = next_group(index, groups);
             let group = self.group(disk, index)?;
             let end = ((index + 1) * ALLOCATION_GROUP_BLOCKS).min(disk.blocks);
             for block in index * ALLOCATION_GROUP_BLOCKS..end {

@@ -334,6 +334,47 @@ impl<'a> Tree<'a> {
         unsafe { glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), count as u32) };
     }
 
+    /// Read the tree's internal pages, a level at a time, and start reading
+    /// its leaves, until `budget` pages.
+    pub(crate) fn prefetch(&self, budget: usize) -> Result {
+        let mut level = KVec::new();
+        level.push(self.root_position(), GFP_KERNEL)?;
+        let mut spent = 1;
+        while !level.is_empty() {
+            let mut blocks = KVec::with_capacity(level.len(), GFP_KERNEL)?;
+            for at in level.iter() {
+                if let Link::Disk(reference) = at.link {
+                    blocks.push(reference.block, GFP_KERNEL)?;
+                }
+            }
+            // SAFETY: `sb` is mounted; `blocks` holds block numbers.
+            unsafe {
+                glue::carryfs_readahead_blocks(self.sb, blocks.as_ptr(), blocks.len() as u32)
+            };
+            if level[0].level == Some(0) {
+                // Leaves are verified when first used.
+                return Ok(());
+            }
+            let mut next = KVec::new();
+            for at in level.iter() {
+                let page = self.load(*at, None)?;
+                let view = self.view(&page, *at)?;
+                if view.level == 0 {
+                    return Ok(());
+                }
+                for (_, value) in view.records() {
+                    if spent == budget {
+                        break;
+                    }
+                    next.push(self.child(*at, view.level, value), GFP_KERNEL)?;
+                    spent += 1;
+                }
+            }
+            level = next;
+        }
+        Ok(())
+    }
+
     /// Check the tree's root page, as opening a volume does.
     pub(crate) fn check_root(&self) -> Result {
         self.load(self.root_position(), None).map(drop)

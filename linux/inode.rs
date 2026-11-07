@@ -220,7 +220,7 @@ unsafe fn change_attributes(
             return Err(EPERM);
         }
         if valid & bindings::ATTR_SIZE != 0 {
-            file::set_size(inode, (*attr).ia_size as u64)?;
+            crate::write::set_size(inode, (*attr).ia_size as u64)?;
         }
         if valid & (bindings::ATTR_MTIME | bindings::ATTR_CTIME) != 0 {
             let modified = (valid & bindings::ATTR_MTIME != 0)

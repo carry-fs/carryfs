@@ -18,9 +18,11 @@
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
+#include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/version.h>
+#include <linux/workqueue.h>
 
 #include "glue.h"
 
@@ -109,10 +111,51 @@ static int carryfs_init_fs_context(struct fs_context *fc)
 
 static void carryfs_kill_sb(struct super_block *sb)
 {
-	void *volume = sb->s_fs_info;
+	void *volume;
 
+	carryfs_stop_timer(sb);
+	volume = sb->s_fs_info;
 	kill_block_super(sb);
 	carryfs_free_volume(volume);
+}
+
+/* Commit open transactions every few seconds, as ext4's default commit=5. */
+#define CARRYFS_COMMIT_INTERVAL (5 * HZ)
+
+struct carryfs_timer {
+	struct delayed_work work;
+	struct super_block *sb;
+};
+
+static void carryfs_timer_fn(struct work_struct *work)
+{
+	struct carryfs_timer *timer =
+		container_of(to_delayed_work(work), struct carryfs_timer, work);
+
+	carryfs_periodic_commit(timer->sb);
+	schedule_delayed_work(&timer->work, CARRYFS_COMMIT_INTERVAL);
+}
+
+void *carryfs_timer_start(struct super_block *sb)
+{
+	struct carryfs_timer *timer = kzalloc(sizeof(*timer), GFP_KERNEL);
+
+	if (!timer)
+		return NULL;
+	timer->sb = sb;
+	INIT_DELAYED_WORK(&timer->work, carryfs_timer_fn);
+	schedule_delayed_work(&timer->work, CARRYFS_COMMIT_INTERVAL);
+	return timer;
+}
+
+void carryfs_timer_stop(void *timer)
+{
+	struct carryfs_timer *t = timer;
+
+	if (!t)
+		return;
+	disable_delayed_work_sync(&t->work);
+	kfree(t);
 }
 
 static struct file_system_type carryfs_fs_type = {
@@ -268,6 +311,16 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
 int carryfs_flush(struct super_block *sb)
 {
 	return blkdev_issue_flush(sb->s_bdev);
+}
+
+unsigned int carryfs_nofs_save(void)
+{
+	return memalloc_nofs_save();
+}
+
+void carryfs_nofs_restore(unsigned int flags)
+{
+	memalloc_nofs_restore(flags);
 }
 
 /* Inodes, dentries, and directory iteration. */
@@ -439,7 +492,118 @@ struct bio *carryfs_bio_alloc_read(struct super_block *sb, u64 sector, unsigned 
 	return bio;
 }
 
+struct bio *carryfs_bio_alloc_write(struct super_block *sb, u64 sector, unsigned int pages)
+{
+	struct bio *bio = bio_alloc(sb->s_bdev, pages, REQ_OP_WRITE, GFP_NOIO);
+
+	bio->bi_iter.bi_sector = sector;
+	return bio;
+}
+
+/* New data blocks may still sit in the block device's cache as metadata. */
+void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count)
+{
+	clean_bdev_aliases(sb->s_bdev, block, count);
+}
+
 /* Page cache. */
+
+/* The locked folio a buffered write fills, or an ERR_PTR. */
+struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos)
+{
+	return __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN,
+				   mapping_gfp_mask(mapping));
+}
+
+bool carryfs_folio_uptodate(struct folio *folio)
+{
+	return folio_test_uptodate(folio);
+}
+
+void carryfs_folio_mark_uptodate(struct folio *folio)
+{
+	folio_mark_uptodate(folio);
+}
+
+/* simple_write_end() from fs/libfs.c, which is not exported. */
+int carryfs_write_end(const struct kiocb *iocb, struct address_space *mapping, loff_t pos,
+		      unsigned int len, unsigned int copied, struct folio *folio, void *fsdata)
+{
+	struct inode *inode = folio->mapping->host;
+	loff_t last_pos = pos + copied;
+
+	if (!folio_test_uptodate(folio)) {
+		if (copied < len) {
+			size_t from = offset_in_folio(folio, pos);
+
+			folio_zero_range(folio, from + copied, len - copied);
+		}
+		folio_mark_uptodate(folio);
+	}
+	if (last_pos > inode->i_size)
+		i_size_write(inode, last_pos);
+	folio_mark_dirty(folio);
+	folio_unlock(folio);
+	folio_put(folio);
+	return copied;
+}
+
+/*
+ * An uptodate folio of @mapping at @index, locked and referenced, or NULL
+ * when the page cache has none.
+ */
+struct folio *carryfs_cached_folio(struct address_space *mapping, pgoff_t index)
+{
+	struct folio *folio = filemap_lock_folio(mapping, index);
+
+	if (IS_ERR(folio))
+		return NULL;
+	if (!folio_test_uptodate(folio)) {
+		folio_unlock(folio);
+		folio_put(folio);
+		return NULL;
+	}
+	return folio;
+}
+
+void carryfs_folio_unlock_put(struct folio *folio)
+{
+	folio_unlock(folio);
+	folio_put(folio);
+}
+
+void carryfs_folio_start_writeback(struct folio *folio)
+{
+	folio_start_writeback(folio);
+	folio_unlock(folio);
+}
+
+void carryfs_folio_redirty(struct writeback_control *wbc, struct folio *folio)
+{
+	folio_redirty_for_writepage(wbc, folio);
+}
+
+void carryfs_mapping_error(struct address_space *mapping, int error)
+{
+	mapping_set_error(mapping, error);
+}
+
+loff_t carryfs_i_size_read(struct inode *inode)
+{
+	return i_size_read(inode);
+}
+
+struct inode *carryfs_mapping_host(struct address_space *mapping)
+{
+	return mapping->host;
+}
+
+struct folio *carryfs_writeback_iter(struct address_space *mapping,
+				     struct writeback_control *wbc, struct folio *folio,
+				     int *error)
+{
+	return writeback_iter(mapping, wbc, folio, error);
+}
 
 struct inode *carryfs_folio_inode(struct folio *folio)
 {

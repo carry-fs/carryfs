@@ -3,18 +3,21 @@
 //! Mounting: device geometry, root selection, and super block operations.
 
 use core::ffi::c_void;
+use core::pin::Pin;
 use core::ptr;
 
 use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
+use kernel::sync::{Mutex, MutexGuard, new_mutex};
 
+use crate::edit::Txn;
 use crate::glue;
 use crate::ondisk::format::{
-    self, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS, Root, TreeKind,
+    self, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS, Root, TreeKind, TreeRef,
 };
 use crate::tree::{Block, Tree};
-use crate::{corrupt, errno, inode, names};
+use crate::{commit, corrupt, errno, inode, names};
 
 /// `f_type` reported by statfs: ASCII "CFSX".
 pub(crate) const MAGIC: u64 = 0x4346_5358;
@@ -29,11 +32,54 @@ const MAX_DEVICE_BYTES: u64 = 32 << 40;
 const TIME_MIN: i64 = -11_644_473_600;
 const TIME_MAX: i64 = 253_402_300_799;
 
-/// A mounted volume, in `s_fs_info`. Read-only mounts never change it.
-pub(crate) struct Volume {
+/// Everything a mount reads or changes, under the volume's lock.
+pub(crate) struct State {
+    /// The committed root, durable in both root slots.
     pub(crate) root: Root,
+    /// The open transaction of a writable mount.
+    pub(crate) txn: Option<Txn>,
+    /// The committed workspace list of a writable mount.
+    pub(crate) slots: KVec<u64>,
+    /// Set after a failed publication or an edit that stopped part-way;
+    /// FORMAT.md section 3 allows no further mutation until remount.
+    pub(crate) faulted: bool,
+    /// Where the next transaction's data allocations start looking.
+    pub(crate) hint: u64,
+}
+
+impl State {
+    pub(crate) fn tree_root(&self, kind: TreeKind) -> TreeRef {
+        match kind {
+            TreeKind::Catalog => self.root.catalog,
+            TreeKind::Allocation => self.root.allocation,
+            _ => self.root.cleanup,
+        }
+    }
+
+    /// Free blocks, counting the open transaction's changes.
+    pub(crate) fn free_blocks(&self) -> u64 {
+        self.txn
+            .as_ref()
+            .map_or(self.root.free_blocks, |txn| txn.free_blocks(self.root.free_blocks))
+    }
+}
+
+/// A mounted volume, in `s_fs_info`.
+#[pin_data]
+pub(crate) struct Volume {
     pub(crate) uid: bindings::kuid_t,
     pub(crate) gid: bindings::kgid_t,
+    pub(crate) writable: bool,
+    #[pin]
+    state: Mutex<State>,
+}
+
+impl Volume {
+    // one lock serializes metadata access, reads included; a
+    // read-mostly lock or RCU-published roots if readers contend on it.
+    pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock()
+    }
 }
 
 /// The volume of a mounted super block.
@@ -64,9 +110,9 @@ unsafe extern "C" fn carryfs_fill_super(
 #[no_mangle]
 unsafe extern "C" fn carryfs_free_volume(volume: *mut c_void) {
     if !volume.is_null() {
-        // SAFETY: `fill_super` made `volume` with `KBox::into_raw`, and the
-        // super block is gone.
-        drop(unsafe { KBox::from_raw(volume as *mut Volume) });
+        // SAFETY: `fill_super` made `volume` from a pinned `KBox`, and the
+        // super block is gone, so nothing borrows it.
+        drop(unsafe { Pin::new_unchecked(KBox::from_raw(volume as *mut Volume)) });
     }
 }
 
@@ -110,6 +156,8 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         return Err(EINVAL);
     }
+    // SAFETY: As above.
+    let writable = unsafe { (*sb).s_flags } & SB_RDONLY == 0;
     let blocks = geometry(sb, silent)?;
     let a = read_root(sb, ROOT_A, blocks)?;
     let b = read_root(sb, blocks - 257, blocks)?;
@@ -121,34 +169,43 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         errno(error)
     })?;
-    let volume = KBox::new(
-        Volume {
-            root,
+    let volume = KBox::pin_init(
+        try_pin_init!(Volume {
             uid: bindings::kuid_t { val: uid },
             gid: bindings::kgid_t { val: gid },
-        },
+            writable,
+            state <- new_mutex!(State {
+                root,
+                txn: None,
+                slots: KVec::new(),
+                faulted: false,
+                hint: 0,
+            }),
+        }),
         GFP_KERNEL,
     )?;
-    // SAFETY: `sb` is not yet visible to anyone else.
+    // SAFETY: `sb` is not yet visible to anyone else; `carryfs_free_volume`
+    // unpins and frees the volume.
     unsafe {
-        (*sb).s_fs_info = KBox::into_raw(volume) as *mut c_void;
+        (*sb).s_fs_info = KBox::into_raw(Pin::into_inner_unchecked(volume)) as *mut c_void;
         (*sb).s_magic = MAGIC as _;
-        (*sb).s_op = &SUPER_OPERATIONS;
+        (*sb).s_op = &SUPER_OPERATIONS.0;
         (*sb).s_maxbytes = i64::MAX;
         (*sb).s_time_gran = 1;
         (*sb).s_time_min = TIME_MIN;
         (*sb).s_time_max = TIME_MAX;
-        (*sb).s_flags |= SB_RDONLY | SB_NOATIME;
+        (*sb).s_flags |= SB_NOATIME;
         glue::carryfs_set_uuid(sb, root.uuid.as_ptr());
         bindings::set_default_d_op(sb, &names::DENTRY_OPERATIONS.0);
     }
-    let volume = of(sb);
-    for (kind, reference) in [
-        (TreeKind::Catalog, root.catalog),
-        (TreeKind::Allocation, root.allocation),
-        (TreeKind::Cleanup, root.cleanup),
-    ] {
-        Tree::new(sb, volume, kind, reference).check_root()?;
+    {
+        let mut state = of(sb).lock();
+        for kind in [TreeKind::Catalog, TreeKind::Allocation, TreeKind::Cleanup] {
+            Tree::new(sb, &state, kind).check_root()?;
+        }
+        if writable {
+            commit::open(sb, &mut state, [a, b])?;
+        }
     }
 
     let root_inode = inode::get(sb, inode::ROOT)?;
@@ -170,7 +227,10 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
 
 unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::kstatfs) -> c_int {
     // SAFETY: The VFS passes a live dentry of this filesystem.
-    let root = of(unsafe { (*dentry).d_sb }).root;
+    let (root, free) = {
+        let state = of(unsafe { (*dentry).d_sb }).lock();
+        (state.root, state.free_blocks())
+    };
     let fsid = root.uuid;
     let word = |offset: usize| {
         u32::from_le_bytes([fsid[offset], fsid[offset + 1], fsid[offset + 2], fsid[offset + 3]])
@@ -182,8 +242,8 @@ unsafe extern "C" fn statfs(dentry: *mut bindings::dentry, buf: *mut bindings::k
             MAGIC,
             BLOCK_BYTES as u64,
             root.blocks.saturating_sub(RESERVED_TOTAL_BLOCKS),
-            root.free_blocks,
-            root.free_blocks.saturating_sub(MAINTENANCE_RESERVE),
+            free,
+            free.saturating_sub(MAINTENANCE_RESERVE),
             255,
             word(0) ^ word(8),
             word(4) ^ word(12),
@@ -205,11 +265,24 @@ unsafe extern "C" fn show_options(seq: *mut bindings::seq_file, root: *mut bindi
     0
 }
 
-static SUPER_OPERATIONS: bindings::super_operations = bindings::super_operations {
-    free_inode: Some(inode::free_inode),
-    statfs: Some(statfs),
-    show_options: Some(show_options),
-    // SAFETY: All-zero is a valid `super_operations`: every other entry is
-    // an absent operation.
-    ..unsafe { core::mem::zeroed() }
-};
+unsafe extern "C" fn sync_fs(sb: *mut bindings::super_block, _wait: c_int) -> c_int {
+    let volume = of(sb);
+    if !volume.writable {
+        return 0;
+    }
+    match commit::commit(sb, &mut volume.lock()) {
+        Ok(()) => 0,
+        Err(error) => error.to_errno(),
+    }
+}
+
+static SUPER_OPERATIONS: inode::Ops<bindings::super_operations> =
+    inode::Ops(bindings::super_operations {
+        free_inode: Some(inode::free_inode),
+        evict_inode: Some(inode::evict_inode),
+        statfs: Some(statfs),
+        show_options: Some(show_options),
+        sync_fs: Some(sync_fs),
+        // SAFETY: All-zero entries are absent operations.
+        ..unsafe { core::mem::zeroed() }
+    });

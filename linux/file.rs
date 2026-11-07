@@ -51,7 +51,7 @@ impl Unit {
     }
 }
 
-/// The file being read: its object, size, and volume.
+/// The file being read: its object and size.
 struct Source<'a> {
     sb: *mut bindings::super_block,
     volume: &'a Volume,
@@ -81,7 +81,8 @@ impl Source<'_> {
     fn checksum(&self, unit: u64) -> Result<Option<u32>> {
         let key = tree::numbered_key(self.object, tree::CHECKSUMS, unit / 256);
         let slot = (unit % 256) as usize;
-        Ok(Tree::catalog(self.sb, self.volume)
+        let state = self.volume.lock();
+        Ok(Tree::catalog(self.sb, &state)
             .get(&key, |group| checksum_slot(group, slot).map_err(errno))?
             .flatten())
     }
@@ -90,7 +91,9 @@ impl Source<'_> {
     /// stay contiguous in its extent.
     fn map(&self, block: u64) -> Result<(u64, u64)> {
         let key = tree::numbered_key(self.object, tree::EXTENT, block);
-        let found = Tree::catalog(self.sb, self.volume).floor(&key, |found, value| {
+        let state = self.volume.lock();
+        let catalog = state.root.catalog.block;
+        let found = Tree::catalog(self.sb, &state).floor(&key, |found, value| {
             let owner = found.get(..9) == Some(&tree::prefix(self.object, tree::EXTENT)[..]);
             let start = found
                 .get(9..17)
@@ -103,7 +106,7 @@ impl Source<'_> {
         })?;
         found.flatten().ok_or_else(|| {
             corrupt(
-                self.volume.root.catalog.block,
+                catalog,
                 Encoding::Corrupt("backed checksum unit has unmapped blocks"),
             )
         })
@@ -128,7 +131,8 @@ impl Source<'_> {
         }
         self.read_blocks(unit * UNIT_BLOCKS, &pages)?;
 
-        let mut crc = DataUnitCrc::new(&self.volume.root.uuid, self.object, unit, valid)
+        let uuid = self.volume.lock().root.uuid;
+        let mut crc = DataUnitCrc::new(&uuid, self.object, unit, valid)
             .map_err(errno)?;
         for (index, page) in pages.iter().enumerate() {
             let len = (valid - index * BLOCK_BYTES).min(BLOCK_BYTES);
@@ -272,6 +276,16 @@ unsafe extern "C" fn readahead(rac: *mut bindings::readahead_control) {
         // SAFETY: Unlocks the folio, marking it uptodate on success.
         unsafe { bindings::folio_end_read(folio, ok) };
     }
+}
+
+/// Change a file's size. Data writes are not supported yet, so only the
+/// current size is accepted.
+pub(crate) fn set_size(inode: *mut bindings::inode, size: u64) -> Result {
+    // SAFETY: The VFS holds the inode locked.
+    if unsafe { (*inode).i_size } as u64 == size {
+        return Ok(());
+    }
+    Err(crate::code(bindings::EOPNOTSUPP))
 }
 
 pub(crate) static ADDRESS_SPACE_OPERATIONS: Ops<bindings::address_space_operations> =

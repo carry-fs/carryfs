@@ -64,6 +64,24 @@ fn fold_into(name: &[u8], out: &mut KVec<u8>) -> Result<Option<()>> {
     })
 }
 
+/// `name`'s stored spelling and comparison key, for creating it.
+pub(crate) fn parse(name: &[u8]) -> core::result::Result<(KVec<u8>, KVec<u8>), crate::ondisk::error::Error> {
+    use crate::ondisk::error::Error as E;
+    let text = core::str::from_utf8(name).map_err(|_| E::InvalidName("name is not UTF-8"))?;
+    let copy = |parsed: name::ParsedName<'_>| -> core::result::Result<(KVec<u8>, KVec<u8>), E> {
+        let mut stored = KVec::with_capacity(parsed.stored.len(), GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
+        stored.extend_from_slice(parsed.stored, GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
+        let mut folded = KVec::with_capacity(parsed.folded.len(), GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
+        folded.extend_from_slice(parsed.folded, GFP_NOWAIT).map_err(|_| E::TooLong("out of memory"))?;
+        Ok((stored, folded))
+    };
+    if text.is_ascii() {
+        let mut folded = [0; MAX_STORED_BYTES];
+        return copy(name::parse_ascii(text, &mut folded)?);
+    }
+    copy(name::parse_unicode(text, &mut FOLD.lock().scratch)?)
+}
+
 /// The catalog key of `name`'s directory entry in `dir`, or `None` when no
 /// entry can have that name.
 pub(crate) fn entry_key(dir: u64, name: &[u8]) -> Result<Option<KVec<u8>>> {
@@ -133,6 +151,7 @@ unsafe extern "C" fn d_compare(
 
 pub(crate) static DENTRY_OPERATIONS: Ops<bindings::dentry_operations> =
     Ops(bindings::dentry_operations {
+        d_revalidate: Some(crate::namei::d_revalidate),
         d_hash: Some(d_hash),
         d_compare: Some(d_compare),
         // SAFETY: All-zero entries are absent operations.

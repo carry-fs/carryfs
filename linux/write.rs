@@ -13,8 +13,10 @@
 //! written; commits wait for writes in between (`State::writing`), so no
 //! publication sees blocks allocated but unowned. Writeback returns once
 //! the writes are submitted, and the I/O workqueue records them
-//! (`carryfs_write_done`). A claim on the object keeps one writer or size
-//! change per file at a time, so its writes record in order.
+//! (`carryfs_write_done`). One writer per file at a time prepares and
+//! allocates a batch; up to `volume::PIPELINE` batches of a file are then in
+//! flight, and they record in the order they were allocated. A size change
+//! holds the file alone.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -57,10 +59,14 @@ fn record_size(record: &[u8]) -> u64 {
     le_u64(record, 16)
 }
 
-/// Copy a folio into a bounce page.
-fn copy_folio(folio: &Folio, page: &Page) {
-    folio.with_bytes(|source| page_bytes(page).copy_from_slice(source));
+/// Copy block `index` of a folio into a bounce page.
+fn copy_block(folio: &Folio, index: usize, page: &Page) {
+    folio.with_block(index, |source| page_bytes(page).copy_from_slice(source));
 }
+
+/// The blocks of the folio writeback holds locked, which `fill` must not
+/// lock again.
+type Held = Option<core::ops::Range<u64>>;
 
 fn page_bytes(page: &Page) -> &mut [u8] {
     // SAFETY: The page is private to the writer and holds `BLOCK_BYTES`.
@@ -129,7 +135,10 @@ impl<'a> Writer<'a> {
     fn add_tail(&mut self) -> Result {
         let stored = {
             let state = volume::of(self.sb).lock();
-            record_size(&read_record(self.sb, &state, self.object)?)
+            match state.planned_size(self.object) {
+                Some(planned) => planned,
+                None => record_size(&read_record(self.sb, &state, self.object)?),
+            }
         };
         let size = self.inode.size();
         if size > stored && stored % UNIT_BYTES as u64 != 0 {
@@ -141,11 +150,13 @@ impl<'a> Writer<'a> {
     /// Take a dirty folio from writeback: copy it, start its writeback, and
     /// unlock it.
     fn add_folio(&mut self, folio: &Folio) -> Result {
-        let block = folio.pos() / BLOCK_BYTES as u64;
+        let block = folio.first_block();
         let unit = self.pending(block / UNIT_BLOCKS)?;
         let slot = (block % UNIT_BLOCKS) as usize;
-        copy_folio(folio, &unit.pages[slot]);
-        unit.present |= 1 << slot;
+        for index in 0..folio.blocks() {
+            copy_block(folio, index, &unit.pages[slot + index]);
+            unit.present |= 1 << (slot + index);
+        }
         unit.folios.push(folio.as_ptr(), GFP_KERNEL)?;
         // SAFETY: Writeback handed the folio over locked; its writeback
         // ends after the batch is written, in `flush`.
@@ -154,12 +165,20 @@ impl<'a> Writer<'a> {
     }
 
     /// Fill each unit's missing pages: uptodate page-cache pages first, then
-    /// the old unit, read and verified, then zeros. `held` is the block of a
-    /// folio the caller holds locked, which is still dirty: it is filled from
-    /// the old unit, and written with its own unit later.
-    fn fill(&mut self, held: Option<u64>) -> Result {
+    /// the old unit, read and verified, then zeros. `held` are the blocks of
+    /// a folio the caller holds locked, which is still dirty: they are filled
+    /// from the old unit, and written with their own unit later.
+    fn fill(&mut self, held: &Held) -> Result {
         let source_size = {
-            let state = volume::of(self.sb).lock();
+            let mut state = volume::of(self.sb).lock();
+            // A batch in flight may record this file's size and units while
+            // this one reads them: a unit with missing pages waits for it,
+            // or it would read old extents for a new size, or zero pages it
+            // wrote. Whole units read nothing and keep the pipeline.
+            let full = (1u32 << UNIT_BLOCKS) - 1;
+            if self.units.iter().any(|unit| u32::from(unit.present) != full) {
+                state.wait_recorded(self.object);
+            }
             record_size(&read_record(self.sb, &state, self.object)?)
         };
         for unit in self.units.iter_mut() {
@@ -169,15 +188,17 @@ impl<'a> Writer<'a> {
                     continue;
                 }
                 let block = unit.index * UNIT_BLOCKS + slot as u64;
-                let folio = if held == Some(block) {
+                let folio = if held.as_ref().is_some_and(|held| held.contains(&block)) {
                     core::ptr::null_mut()
                 } else {
                     // SAFETY: The mapping belongs to a referenced inode.
                     unsafe { glue::carryfs_cached_folio(self.mapping, block) }
                 };
                 if !folio.is_null() {
-                    // SAFETY: `carryfs_cached_folio` returned it locked.
-                    copy_folio(unsafe { Folio::from_raw(folio) }, &unit.pages[slot]);
+                    // SAFETY: `carryfs_cached_folio` returned the folio
+                    // holding `block`, locked.
+                    let cached = unsafe { Folio::from_raw(folio) };
+                    copy_block(cached, (block - cached.first_block()) as usize, &unit.pages[slot]);
                     // SAFETY: `carryfs_cached_folio` locked and referenced it.
                     unsafe { glue::carryfs_folio_unlock_put(folio) };
                 } else if block * (BLOCK_BYTES as u64) < source_size {
@@ -199,59 +220,77 @@ impl<'a> Writer<'a> {
     /// Write the collected units and record them, then end their folios'
     /// writeback, now or, for writeback, once the writes complete. Returns
     /// the error to report on the mapping, if any. `held` is as for `fill`.
-    fn flush(&mut self, held: Option<u64>) -> Result {
+    fn flush(&mut self, held: Held) -> Result {
         if self.units.is_empty() {
             return Ok(());
         }
-        volume::of(self.sb).lock().claim(self.object);
+        let (sb, object) = (self.sb, self.object);
+        volume::of(sb).lock().claim_writer(object);
         // A size change between reading the tail and allocating retries.
         let mut result = Err(EAGAIN);
         let mut allocation = None;
         for _ in 0..3 {
             result = self
                 .add_tail()
-                .and_then(|()| self.fill(held))
+                .and_then(|()| self.fill(&held))
                 .and_then(|()| self.allocate())
                 .map(|allocated| allocation = Some(allocated));
             if result != Err(EAGAIN) {
                 break;
             }
         }
+        // The next batch may be prepared while this one is written.
+        volume::of(sb).lock().end_writer(object);
         let Some(allocation) = allocation else {
-            return complete(self.inode, &mut self.units, None, result);
+            let mut state = volume::of(sb).lock();
+            release_units(&mut state, object, &self.units);
+            drop(state);
+            return finish(self.inode, &mut self.units, result.map(|()| None));
+        };
+        let mut batch = Batch {
+            inode: self.inode.as_ptr(),
+            units: core::mem::take(&mut self.units),
+            allocation,
         };
         if self.asynchronous {
-            if let Ok(mut inflight) = KBox::new(
-                Inflight {
-                    inode: self.inode.as_ptr(),
-                    units: KVec::new(),
-                    allocation: None,
+            let empty = Batch {
+                inode: batch.inode,
+                units: KVec::new(),
+                allocation: Allocation {
+                    size: 0,
+                    stored: 0,
+                    ticket: 0,
+                    runs: KVec::new(),
                 },
-                GFP_KERNEL,
-            ) {
-                inflight.units = core::mem::take(&mut self.units);
-                let bio = queue_units(self.sb, &inflight.units, &allocation);
-                inflight.allocation = Some(allocation);
+            };
+            if let Ok(mut boxed) = KBox::new(empty, GFP_KERNEL) {
+                core::mem::swap(&mut *boxed, &mut batch);
+                let bio = queue_units(sb, &boxed.units, &boxed.allocation);
                 if bio.is_null() {
-                    return KBox::into_inner(inflight).complete(Ok(()));
+                    return complete_boxed(boxed, Ok(()));
                 }
-                let raw = KBox::into_raw(inflight);
+                let raw = KBox::into_raw(boxed);
                 // SAFETY: `bio` is the last of the chain, not yet submitted;
                 // the batch lives until `carryfs_write_done` takes it back.
                 if unsafe { glue::carryfs_submit_write(bio, raw.cast()) } == 0 {
                     return Ok(());
                 }
                 // SAFETY: Not submitted: the batch is still ours.
-                let inflight = KBox::into_inner(unsafe { KBox::from_raw(raw) });
+                let boxed = unsafe { KBox::from_raw(raw) };
                 // SAFETY: As above.
                 let written = unsafe { wait(bio) };
-                return inflight.complete(written);
+                return complete_boxed(boxed, written);
             }
         }
-        let bio = queue_units(self.sb, &self.units, &allocation);
+        let bio = queue_units(sb, &batch.units, &batch.allocation);
         // SAFETY: `bio` is null or the last of the chain, not yet submitted.
         let written = if bio.is_null() { Ok(()) } else { unsafe { wait(bio) } };
-        complete(self.inode, &mut self.units, Some(allocation), written)
+        forget_cached(sb, &batch.allocation);
+        let mut state = volume::of(sb).lock();
+        state.wait_turn(object, batch.allocation.ticket);
+        let result = complete_turn(state, &mut batch, written);
+        self.units = core::mem::take(&mut batch.units);
+        result
     }
 
     /// Allocate blocks for the collected units, under the volume lock. Until
@@ -284,14 +323,26 @@ impl<'a> Writer<'a> {
             }
         }
         let allocation = mutate(sb, |state, disk| {
-            let stored = record_size(&read_record(sb, state, object)?);
+            // Batches in flight record first: build on their size.
+            let stored = match state.planned_size(object) {
+                Some(planned) => planned,
+                None => record_size(&read_record(sb, state, object)?),
+            };
             // A smaller i_size is a truncate in progress, or one whose tail
             // rewrite failed: extents past it remain until truncate removes
             // them, so keep the stored size (fstests generic/476).
+            // Record no further than this batch's last unit: an appender's
+            // i_size past it ends in a unit not yet written, a hole, which
+            // the next batch would rewrite as a grown partial tail. So a
+            // stored partial tail is always a unit a batch wrote, the backed
+            // tail FORMAT.md section 5 rewrites on growth.
+            let end = units
+                .last()
+                .map_or(0, |unit| (unit.index + 1) * UNIT_BYTES as u64);
             let size = if truncate {
                 inode.size()
             } else {
-                inode.size().max(stored)
+                inode.size().min(end).max(stored)
             };
             if size > stored
                 && stored % UNIT_BYTES as u64 != 0
@@ -335,7 +386,13 @@ impl<'a> Writer<'a> {
                 units.binary_search_by_key(&unit, |pending| pending.index).is_ok()
             });
             state.writing += 1;
-            Ok(Allocation { size, stored, runs })
+            let ticket = state.issue(object, size);
+            Ok(Allocation {
+                size,
+                stored,
+                ticket,
+                runs,
+            })
         })?;
         Ok(allocation)
     }
@@ -346,25 +403,18 @@ impl<'a> Writer<'a> {
 struct Allocation {
     size: u64,
     stored: u64,
+    /// The batch's place in its object's order of recording.
+    ticket: u64,
     /// Unit position, first block, and count.
     runs: KVec<(usize, u64, u64)>,
 }
 
-/// A writeback's units whose writes are in flight; `carryfs_write_done`
-/// completes them.
-struct Inflight {
+/// Units allocated for writing, until recorded.
+struct Batch {
     /// Live while its folios are under writeback: eviction waits for them.
     inode: *mut bindings::inode,
     units: KVec<Pending>,
-    allocation: Option<Allocation>,
-}
-
-impl Inflight {
-    fn complete(mut self, written: Result) -> Result {
-        // SAFETY: The folios under writeback keep the inode alive.
-        let inode = unsafe { Inode::from_raw(self.inode) };
-        complete(inode, &mut self.units, self.allocation.take(), written)
-    }
+    allocation: Allocation,
 }
 
 /// Completion of a write submitted by `Writer::flush`, on the I/O
@@ -372,39 +422,89 @@ impl Inflight {
 #[no_mangle]
 unsafe extern "C" fn carryfs_write_done(batch: *mut core::ffi::c_void, status: c_int) {
     // SAFETY: `flush` passed a batch it leaked for this call.
-    let inflight = KBox::into_inner(unsafe { KBox::from_raw(batch.cast::<Inflight>()) });
+    let boxed = unsafe { KBox::from_raw(batch.cast::<Batch>()) };
     let written = if status == 0 { Ok(()) } else { Err(EIO) };
-    let _ = inflight.complete(written);
+    let _ = complete_boxed(boxed, written);
 }
 
-/// Record written units, or release their blocks if the write failed;
-/// release their reservations and the object's claim; then end their
-/// folios' writeback, setting the mapping's error if dirty data was lost.
-/// Without `allocation`, `written` is why nothing was written.
-fn complete(
-    inode: &Inode,
-    units: &mut KVec<Pending>,
-    allocation: Option<Allocation>,
-    written: Result,
-) -> Result {
-    let (sb, object) = (inode.super_block().as_ptr(), inode.object());
+/// Complete a batch written asynchronously: record it now if its turn has
+/// come, or park it for the batch before it to record.
+fn complete_boxed(mut boxed: KBox<Batch>, written: Result) -> Result {
+    // SAFETY: The folios under writeback keep the inode alive.
+    let inode = unsafe { Inode::from_raw(boxed.inode) };
+    let (sb, object, ticket) = (inode.super_block().as_ptr(), inode.object(), boxed.allocation.ticket);
+    forget_cached(sb, &boxed.allocation);
     let mut state = volume::of(sb).lock();
-    let result = match &allocation {
-        Some(allocation) => {
-            let result = edit(sb, &mut state, |state, disk| {
-                record(sb, state, disk, inode, units, allocation, written)
-            });
-            state.end_write();
-            result.map(Some)
-        }
-        None => written.map(|()| None),
-    };
-    // Recorded or lost, the units' taken folios are clean now.
+    if !state.is_turn(object, ticket) {
+        let errno = written.err().map_or(0, |error| error.to_errno());
+        state.park(object, ticket, KBox::into_raw(boxed).expose_provenance(), errno);
+        return Ok(());
+    }
+    complete_turn(state, &mut boxed, written)
+}
+
+/// Record `batch`, whose turn it is, and any parked batches after it, then
+/// finish them without the lock. `batch`'s own result.
+fn complete_turn(mut state: volume::Locked<'_>, batch: &mut Batch, written: Result) -> Result {
+    // SAFETY: As above.
+    let inode = unsafe { Inode::from_raw(batch.inode) };
+    let object = inode.object();
+    let result = record_batch(&mut state, inode, batch, written);
+    let mut next: [Option<(KBox<Batch>, Result<Option<u64>>)>; volume::PIPELINE] =
+        Default::default();
+    for slot in next.iter_mut() {
+        let Some((address, errno)) = state.take_parked(object) else {
+            break;
+        };
+        // SAFETY: `complete_boxed` parked a batch it leaked.
+        let mut parked = unsafe {
+            KBox::from_raw(core::ptr::with_exposed_provenance_mut::<Batch>(address))
+        };
+        let written = if errno == 0 { Ok(()) } else { Err(Error::from_errno(errno)) };
+        let recorded = record_batch(&mut state, inode, &mut parked, written);
+        *slot = Some((parked, recorded));
+    }
+    state.notify();
+    drop(state);
+    let own = finish(inode, &mut batch.units, result);
+    for (mut parked, recorded) in next.into_iter().flatten() {
+        // Parked batches come from writeback, whose caller returned: their
+        // error is reported once, on the mapping, by `finish` itself.
+        let _ = finish(inode, &mut parked.units, recorded);
+    }
+    own
+}
+
+/// Record a batch whose turn it is, or release its blocks if its write
+/// failed; release its units' reservations. The blocks the file then has.
+fn record_batch(
+    state: &mut volume::Locked<'_>,
+    inode: &Inode,
+    batch: &mut Batch,
+    written: Result,
+) -> Result<Option<u64>> {
+    let (sb, object) = (inode.super_block().as_ptr(), inode.object());
+    let result = edit(sb, state, |state, disk| {
+        record(sb, state, disk, inode, &batch.units, &batch.allocation, written)
+    });
+    state.end_write();
+    state.recorded(object);
+    release_units(state, object, &batch.units);
+    result.map(Some)
+}
+
+/// Release the reservations of `units`, written or lost: their taken
+/// folios are clean now.
+fn release_units(state: &mut State, object: u64, units: &[Pending]) {
     state.reservations.release_clean(object, |unit| {
         units.binary_search_by_key(&unit, |pending| pending.index).is_ok()
     });
-    state.unclaim(object);
-    drop(state);
+}
+
+/// After recording, without the lock: set the inode's blocks, and end the
+/// units' folios' writeback, setting the mapping's error if dirty data was
+/// lost.
+fn finish(inode: &Inode, units: &mut KVec<Pending>, result: Result<Option<u64>>) -> Result {
     if let Ok(Some(allocated)) = result {
         inode.set_blocks(allocated);
     }
@@ -446,9 +546,10 @@ fn record(
     }
     let mut record = read_record(sb, state, object)?;
     if record_size(&record) != allocation.stored {
-        // Claims order an object's writes and size changes; this would be
-        // a bug, so fail rather than record units sized for another size.
-        pr_err!("size of object {object} changed during a data write\n");
+        // Batches record in order, each on the size the one before it
+        // planned: the one before failed, and logged why, or this is a bug.
+        // Fail rather than record units sized for another size.
+        pr_err!("object {object}: size is not the one this write batch built on\n");
         release(state, disk, runs)?;
         return Err(EIO);
     }
@@ -525,6 +626,18 @@ fn queue_units(
     // SAFETY: Started above.
     unsafe { glue::carryfs_plug_finish(plug) };
     bio
+}
+
+/// Forget the buffer cache's copies of the blocks `allocation` was written
+/// to, once the write ended and before it is recorded: small-file reads
+/// (`file::small_read`) read data through that cache, and none can find
+/// these blocks before the record does. Without the volume lock, as it
+/// waits for reads in flight.
+fn forget_cached(sb: *mut bindings::super_block, allocation: &Allocation) {
+    for (_, first, count) in allocation.runs.iter().copied() {
+        // SAFETY: `sb` holds its block device.
+        unsafe { glue::carryfs_forget_blocks(sb, first, count) };
+    }
 }
 
 /// Submit `bio`, the last of a chain, and wait for the chain.
@@ -759,6 +872,8 @@ pub(crate) unsafe extern "C" fn writepages(
     let _writeback = inode.super_block().volume().writeback.lock();
     let mut writer = Writer::new(inode);
     writer.asynchronous = true;
+    // SAFETY: The VFS passes a valid writeback control.
+    let background = unsafe { glue::carryfs_wbc_background(wbc) };
     let mut error: c_int = 0;
     let mut folio = core::ptr::null_mut();
     loop {
@@ -770,11 +885,24 @@ pub(crate) unsafe extern "C" fn writepages(
         // SAFETY: As above.
         let locked = unsafe { Folio::from_raw(folio) };
         let unit = locked.pos() / BLOCK_BYTES as u64 / UNIT_BLOCKS;
+        // Background writeback, which runs while a writer appends, leaves the
+        // partial unit at EOF dirty: written now, it would be written again
+        // whole once the append fills it. Sync, close-time, and periodic
+        // writeback write it.
+        let size = inode.size();
+        if background && size % UNIT_BYTES as u64 != 0 && unit == size / UNIT_BYTES as u64 {
+            // SAFETY: The folio is still locked; leave it dirty for later.
+            unsafe {
+                glue::carryfs_folio_redirty(wbc, folio);
+                bindings::folio_unlock(folio);
+            }
+            continue;
+        }
         if writer.units.last().is_some_and(|last| last.index != unit) && writer.units.len() == BATCH
         {
             // The folio may lie in the stored tail unit, which `flush` adds.
-            let held = locked.pos() / BLOCK_BYTES as u64;
-            if let Err(failure) = writer.flush(Some(held)) {
+            let first = locked.first_block();
+            if let Err(failure) = writer.flush(Some(first..first + locked.blocks() as u64)) {
                 error = failure.to_errno();
             }
         }
@@ -814,7 +942,7 @@ pub(crate) unsafe extern "C" fn write_begin(
             zero_past_eof(host);
         }
         // SAFETY: As above.
-        let folio = unsafe { glue::carryfs_write_folio(mapping, pos) };
+        let folio = unsafe { glue::carryfs_write_folio(mapping, pos, len as usize) };
         if let Err(error) = kernel::error::from_err_ptr(folio) {
             return error.to_errno();
         }
@@ -828,12 +956,25 @@ pub(crate) unsafe extern "C" fn write_begin(
         } else {
             &units[..1]
         };
-        let reserved = {
+        // A write into the unit this file last reserved, still held, skips
+        // the volume lock (glue.c's reserved hint).
+        // SAFETY: The folio is locked, which keeps a held unit's reservation.
+        let hinted = units.len() == 1
+            && !volume::of(sb).faulted()
+            && unsafe { glue::carryfs_reserved_hint(inode, unit) };
+        let reserved = if hinted {
+            Ok(())
+        } else {
             let mut state = volume::of(sb).lock();
             if state.faulted {
                 Err(EIO)
             } else {
-                reserve::reserve(sb, &mut state, host, units)
+                reserve::reserve(sb, &mut state, host, units).inspect(|()| {
+                    if units.len() == 1 {
+                        // SAFETY: Under the volume lock, which releases take.
+                        unsafe { glue::carryfs_set_reserved_hint(inode, unit) };
+                    }
+                })
             }
         };
         match reserved {
@@ -855,9 +996,17 @@ pub(crate) unsafe extern "C" fn write_begin(
         // is held.
         unsafe { glue::carryfs_write_dirty_inodes(sb) };
     };
-    // A partial write into a page not in the cache reads its old content.
+    // A write that does not cover a folio not in the cache reads its old
+    // content: a large folio's other blocks too. The write may be longer
+    // than a smaller folio the cache had to fall back to; it is then cut to
+    // that folio, which it covers.
     // SAFETY: The folio is locked and referenced.
-    if !unsafe { glue::carryfs_folio_uptodate(folio) } && len as usize != BLOCK_BYTES {
+    let covered = unsafe {
+        let held = Folio::from_raw(folio);
+        pos as u64 == held.pos() && len as usize >= held.blocks() * BLOCK_BYTES
+    };
+    // SAFETY: As above.
+    if !unsafe { glue::carryfs_folio_uptodate(folio) } && !covered {
         // SAFETY: The VFS holds the file's inode and the new folio locked.
         let filled =
             unsafe { crate::file::fill_folio(Inode::from_raw(inode), Folio::from_raw(folio)) };
@@ -884,13 +1033,13 @@ fn release(state: &mut State, disk: &Disk, runs: &[(usize, u64, u64)]) -> Result
     Ok(())
 }
 
-/// Zero the cached last page past the size, before the size grows over it:
-/// a shared mapping may have written there (fstests generic/363). The disk
-/// needs nothing, as reads stop at a unit's valid length.
+/// Zero the cached last folio past the size, before the size grows over
+/// it: a shared mapping may have written there (fstests generic/363), in
+/// any of a large folio's pages past the size. The disk needs nothing, as
+/// reads stop at a unit's valid length.
 fn zero_past_eof(inode: &Inode) {
     let size = inode.size();
-    let offset = (size % BLOCK_BYTES as u64) as usize;
-    if offset == 0 {
+    if size % BLOCK_BYTES as u64 == 0 {
         return;
     }
     // SAFETY: The mapping belongs to a referenced inode.
@@ -900,7 +1049,7 @@ fn zero_past_eof(inode: &Inode) {
     }
     // SAFETY: `carryfs_cached_folio` returned it locked and referenced.
     unsafe {
-        Folio::from_raw(folio).with_bytes(|bytes| bytes[offset..].fill(0));
+        glue::carryfs_folio_zero_tail(folio, size as i64);
         glue::carryfs_folio_unlock_put(folio);
     }
 }
@@ -928,14 +1077,14 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
     // that may be waiting for the claim.
     let old = {
         let mut state = volume::of(sb).lock();
-        state.claim(object);
+        state.claim_exclusive(object);
         state
             .reservations
             .release_from(object, size.div_ceil(UNIT_BYTES as u64));
         read_record(sb, &state, object).map(|record| record_size(&record))
     };
     let changed = old.and_then(|old| change_size(inode, old, size).map(|()| old));
-    volume::of(sb).lock().unclaim(object);
+    volume::of(sb).lock().end_exclusive(object);
     let old = changed?;
     // The tail unit's valid length changes: rewrite it whole, which also
     // records the new size. Without a partial tail only the size changes.

@@ -7,6 +7,27 @@ use kernel::bindings::super_block;
 use kernel::bindings::{dentry, dir_context, file, folio, inode, page, qstr, readahead_control};
 use kernel::ffi::c_int;
 
+/// The calling task's utilization clamp raised to full while this lives,
+/// for driver work FUSE's daemon would do at full clock
+/// (`carryfs_boost_caller`).
+pub(crate) struct CallerBoost(bool);
+
+impl CallerBoost {
+    pub(crate) fn new() -> Self {
+        // SAFETY: Called in the caller's own context.
+        Self(unsafe { carryfs_boost_caller() })
+    }
+}
+
+impl Drop for CallerBoost {
+    fn drop(&mut self) {
+        if self.0 {
+            // SAFETY: Undoes the boost `new` made, on the same task.
+            unsafe { carryfs_unboost_caller() };
+        }
+    }
+}
+
 /// A `struct buffer_head`, which the Rust bindings leave out.
 #[repr(C)]
 pub(crate) struct BufferHead {
@@ -20,6 +41,7 @@ unsafe extern "C" {
     pub(crate) fn carryfs_register() -> c_int;
     pub(crate) fn carryfs_unregister();
 
+    pub(crate) fn carryfs_bdev_nonrot(sb: *mut super_block) -> bool;
     pub(crate) fn carryfs_bdev_bytes(sb: *mut super_block) -> u64;
     pub(crate) fn carryfs_bdev_logical_block_size(sb: *mut super_block) -> u32;
     pub(crate) fn carryfs_bdev_physical_block_size(sb: *mut super_block) -> u32;
@@ -56,8 +78,12 @@ unsafe extern "C" {
     pub(crate) fn carryfs_timer_start(sb: *mut super_block) -> *mut c_void;
     pub(crate) fn carryfs_timer_stop(timer: *mut c_void);
     pub(crate) fn carryfs_file_release(inode: *mut inode, file: *mut file) -> c_int;
-    pub(crate) fn carryfs_prefetch_start(sb: *mut super_block) -> *mut c_void;
-    pub(crate) fn carryfs_prefetch_stop(prefetch: *mut c_void);
+    pub(crate) fn carryfs_reserved_hint(inode: *mut inode, unit: u64) -> bool;
+    pub(crate) fn carryfs_set_reserved_hint(inode: *mut inode, unit: u64);
+    pub(crate) fn carryfs_clear_reserved_hint(mapping: *mut kernel::bindings::address_space);
+    pub(crate) fn carryfs_background_new(sb: *mut super_block) -> *mut c_void;
+    pub(crate) fn carryfs_prefetch_queue(background: *mut c_void);
+    pub(crate) fn carryfs_background_stop(background: *mut c_void);
     pub(crate) fn carryfs_nofs_save() -> u32;
     pub(crate) fn carryfs_nofs_restore(flags: u32);
     pub(crate) fn carryfs_inode_is_new(inode: *mut inode) -> bool;
@@ -103,9 +129,13 @@ unsafe extern "C" {
     pub(crate) fn carryfs_plug_start() -> *mut c_void;
     pub(crate) fn carryfs_plug_finish(plug: *mut c_void);
     pub(crate) fn carryfs_clean_aliases(sb: *mut super_block, block: u64, count: u64);
+    pub(crate) fn carryfs_forget_blocks(sb: *mut super_block, block: u64, count: u64);
+    pub(crate) fn carryfs_boost_caller() -> bool;
+    pub(crate) fn carryfs_unboost_caller();
     pub(crate) fn carryfs_write_folio(
         mapping: *mut kernel::bindings::address_space,
         pos: i64,
+        len: usize,
     ) -> *mut folio;
     pub(crate) fn carryfs_folio_uptodate(folio: *mut folio) -> bool;
     pub(crate) fn carryfs_folio_mark_uptodate(folio: *mut folio);
@@ -135,6 +165,7 @@ unsafe extern "C" {
         wbc: *mut kernel::bindings::writeback_control,
         folio: *mut folio,
     );
+    pub(crate) fn carryfs_wbc_background(wbc: *mut kernel::bindings::writeback_control) -> bool;
     pub(crate) fn carryfs_mapping_error(
         mapping: *mut kernel::bindings::address_space,
         error: c_int,
@@ -152,6 +183,9 @@ unsafe extern "C" {
     pub(crate) fn carryfs_readahead_index(rac: *mut readahead_control) -> u64;
     pub(crate) fn carryfs_readahead_count(rac: *mut readahead_control) -> u64;
     pub(crate) fn carryfs_readahead_folio(rac: *mut readahead_control) -> *mut folio;
+    pub(crate) fn carryfs_set_folio_orders(mapping: *mut kernel::bindings::address_space, max: u32);
+    pub(crate) fn carryfs_folio_nr_pages(folio: *mut folio) -> core::ffi::c_ulong;
+    pub(crate) fn carryfs_folio_zero_tail(folio: *mut folio, pos: i64);
     pub(crate) fn carryfs_folio_pos(folio: *mut folio) -> i64;
     pub(crate) fn carryfs_kmap_local_folio(folio: *mut folio, offset: usize) -> *mut c_void;
     pub(crate) fn carryfs_kunmap_local(addr: *mut c_void);

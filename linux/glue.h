@@ -24,6 +24,7 @@ int carryfs_reserve_folio(struct inode *inode, u64 index);
 void carryfs_read_done(void *batch, int status);
 void carryfs_write_done(void *batch, int status);
 void carryfs_prefetch_catalog(struct super_block *sb);
+void *carryfs_volume_background(struct super_block *sb);
 
 /* Implemented in glue.c. */
 int carryfs_register(void);
@@ -31,9 +32,11 @@ void carryfs_unregister(void);
 struct bio;
 int carryfs_submit_read(struct bio *bio, void *batch);
 int carryfs_submit_write(struct bio *bio, void *batch);
-void *carryfs_prefetch_start(struct super_block *sb);
-void carryfs_prefetch_stop(void *prefetch);
+void *carryfs_background_new(struct super_block *sb);
+void carryfs_prefetch_queue(void *background);
+void carryfs_background_stop(void *background);
 u64 carryfs_bdev_bytes(struct super_block *sb);
+bool carryfs_bdev_nonrot(struct super_block *sb);
 unsigned int carryfs_bdev_logical_block_size(struct super_block *sb);
 unsigned int carryfs_bdev_physical_block_size(struct super_block *sb);
 void carryfs_set_uuid(struct super_block *sb, const u8 *uuid);
@@ -50,6 +53,9 @@ int carryfs_write_blocks(struct super_block *sb, const u64 *blocks, const u8 *co
 int carryfs_flush(struct super_block *sb);
 int carryfs_write_dirty_inodes(struct super_block *sb);
 int carryfs_file_release(struct inode *inode, struct file *file);
+bool carryfs_reserved_hint(struct inode *inode, u64 unit);
+void carryfs_set_reserved_hint(struct inode *inode, u64 unit);
+void carryfs_clear_reserved_hint(struct address_space *mapping);
 void *carryfs_timer_start(struct super_block *sb);
 void carryfs_timer_stop(void *timer);
 unsigned int carryfs_nofs_save(void);
@@ -73,7 +79,10 @@ void carryfs_file_allow_direct(struct file *file);
 void *carryfs_plug_start(void);
 void carryfs_plug_finish(void *plug);
 void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count);
-struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos);
+void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count);
+bool carryfs_boost_caller(void);
+void carryfs_unboost_caller(void);
+struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos, size_t len);
 bool carryfs_folio_uptodate(struct folio *folio);
 void carryfs_folio_mark_uptodate(struct folio *folio);
 int carryfs_write_end(const struct kiocb *iocb, struct address_space *mapping, loff_t pos,
@@ -86,6 +95,7 @@ struct vm_area_desc;
 int carryfs_file_mmap_prepare(struct vm_area_desc *desc);
 void carryfs_folio_start_writeback(struct folio *folio);
 void carryfs_folio_redirty(struct writeback_control *wbc, struct folio *folio);
+bool carryfs_wbc_background(struct writeback_control *wbc);
 void carryfs_mapping_error(struct address_space *mapping, int error);
 loff_t carryfs_i_size_read(struct inode *inode);
 struct inode *carryfs_mapping_host(struct address_space *mapping);
@@ -93,6 +103,9 @@ struct folio *carryfs_writeback_iter(struct address_space *mapping,
 				     struct writeback_control *wbc, struct folio *folio,
 				     int *error);
 struct folio *carryfs_readahead_folio(struct readahead_control *rac);
+void carryfs_set_folio_orders(struct address_space *mapping, unsigned int max);
+unsigned long carryfs_folio_nr_pages(struct folio *folio);
+void carryfs_folio_zero_tail(struct folio *folio, loff_t pos);
 loff_t carryfs_folio_pos(struct folio *folio);
 void *carryfs_kmap_local_folio(struct folio *folio, size_t offset);
 void carryfs_kunmap_local(void *addr);

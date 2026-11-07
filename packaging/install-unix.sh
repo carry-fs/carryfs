@@ -22,6 +22,7 @@ changed=0
 committed=0
 native_kernel=
 native_stage=
+cli_stage=
 native_directory_created=0
 finish() {
     status=$?
@@ -47,6 +48,7 @@ finish() {
         fi
     fi
     [ -z "$native_stage" ] || rm -f "$native_stage"
+    [ -z "$cli_stage" ] || rm -f "$cli_stage"
     if [ "$native_directory_created" = 1 ] && [ "$committed" = 0 ] && [ -d "/lib/modules/$native_kernel/updates" ]; then
         rmdir --ignore-fail-on-non-empty "/lib/modules/$native_kernel/updates"
     fi
@@ -179,8 +181,10 @@ case $platform in
         cp -R "$backup/carryfs.fs" /Library/Filesystems/carryfs.fs
         ;;
 esac
-install -m 755 "$backup/carryfs" /usr/local/bin/carryfs.new
-mv -f /usr/local/bin/carryfs.new /usr/local/bin/carryfs
+cli_stage=$(mktemp /usr/local/bin/.carryfs.XXXXXXXX)
+install -m 755 "$backup/carryfs" "$cli_stage"
+mv -f "$cli_stage" /usr/local/bin/carryfs
+cli_stage=
 committed=1
 printf 'System files installed. Reconnect an ejected CarryFS disk to mount it.\n'
 if [ -n "$native_kernel" ]; then

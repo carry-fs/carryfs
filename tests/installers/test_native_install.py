@@ -192,6 +192,17 @@ fi''')
         self.assertFalse(self.module().exists())
         self.assertFalse(self.module().parent.exists())
 
+    def test_failed_cli_replacement_removes_staging_file(self):
+        self.assert_success(self.install())
+        before = self.snapshot()
+        real_mv = shutil.which("mv")
+        self.tool("mv", f'''if [ "$3" = "{self.host / 'usr/local/bin/carryfs'}" ]; then exit 1; fi
+exec "{real_mv}" "$@"''')
+        result = self.install(expected="0.1.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
     def test_failed_uninstall_restores_all_kernel_modules_and_configuration(self):
         self.assert_success(self.install())
         other = "7.3.0-test"

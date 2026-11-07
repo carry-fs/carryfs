@@ -60,22 +60,11 @@ fn write_root(sb: *mut super_block, root: &Root, block: u64) -> Result {
     flush(sb)
 }
 
-/// Write the last publication's root B, if it is pending, and flush it:
-/// sync and unmount leave both roots holding the same generation.
-pub(crate) fn settle(sb: *mut super_block, state: &mut State) -> Result {
-    if state.faulted || !state.mirror_pending {
-        return Ok(());
-    }
-    let root = state.root;
-    write_root(sb, &root, root_b(&root)).inspect_err(|_| crate::volume::fault(sb, state))?;
-    state.mirror_pending = false;
-    Ok(())
-}
-
 /// Prepare a writable mount: read the committed workspace list and finish
 /// any interrupted mirroring, before any allocation.
 pub(crate) fn open(sb: *mut super_block, state: &mut State, decoded: [Option<Root>; 2]) -> Result {
     state.slots = read_slots(sb, &state.root)?;
+    crate::check::validate(sb, state)?;
     let root = state.root;
     for (block, existing) in [(256, decoded[0]), (root_b(&root), decoded[1])] {
         if existing != Some(root) {
@@ -154,11 +143,17 @@ fn read_slots(sb: *mut super_block, root: &Root) -> Result<KVec<u64>> {
         Ok(())
     };
     if view.level == 0 {
+        if view.len() > LEAF_RUNS {
+            return Err(bad("workspace leaf exceeds capacity"));
+        }
         for (key, value) in view.records() {
             append(key, value)?;
         }
     } else {
-        for (index, (_, value)) in view.records().enumerate() {
+        if view.level != 1 || view.len() > CAPACITY.div_ceil(LEAF_RUNS) {
+            return Err(bad("invalid workspace tree shape"));
+        }
+        for (index, (minimum, value)) in view.records().enumerate() {
             let reference = TreeRef {
                 block: le_u64(value, 0),
                 generation: le_u64(value, 8),
@@ -179,6 +174,12 @@ fn read_slots(sb: *mut super_block, root: &Root) -> Result<KVec<u64>> {
                 root.blocks,
             )
             .map_err(|error| corrupt(reference.block, error))?;
+            if leaf_view.records().next().is_none_or(|(key, _)| key != minimum)
+                || leaf_view.len() > LEAF_RUNS
+                || (index + 1 < view.len() && leaf_view.len() != LEAF_RUNS)
+            {
+                return Err(bad("workspace child minimum or length mismatch"));
+            }
             for (key, value) in leaf_view.records() {
                 append(key, value)?;
             }
@@ -399,9 +400,9 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
 
     // Data reached the device as writeback finished; one flush then covers
     // it and the metadata below.
-    let mut blocks = KVec::with_capacity(order.len() + bank.len() + 1, GFP_KERNEL)?;
+    let mut blocks = KVec::with_capacity(order.len() + bank.len(), GFP_KERNEL)?;
     let mut pages: KVec<*const u8> =
-        KVec::with_capacity(order.len() + bank.len() + 1, GFP_KERNEL)?;
+        KVec::with_capacity(order.len() + bank.len(), GFP_KERNEL)?;
     for (id, _) in order.iter() {
         blocks.push(assigned[*id], GFP_KERNEL)?;
         pages.push(txn.drafts[*id].page.as_ptr(), GFP_KERNEL)?;
@@ -410,22 +411,10 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
         blocks.push(*block, GFP_KERNEL)?;
         pages.push(page.as_ptr(), GFP_KERNEL)?;
     }
-    // The previous publication's root B goes with this one's pages, so the
-    // flush below makes it durable before root A is overwritten.
-    let mut mirror = KBox::new([0; BLOCK_BYTES], GFP_KERNEL)?;
-    if state.mirror_pending {
-        base.encode(root_b(&base), base.blocks, &mut mirror).map_err(errno)?;
-        blocks.push(root_b(&base), GFP_KERNEL)?;
-        pages.push(mirror.as_ptr(), GFP_KERNEL)?;
-    }
     write(sb, &blocks, &pages)?;
     flush(sb)?;
-    state.mirror_pending = false;
-    // Durable once root A is: a crash before root B is written reopens G
-    // from A and finishes mirroring (FORMAT.md section 3). Root B follows
-    // with the next publication, or `settle`.
     write_root(sb, &root, 256)?;
-    state.mirror_pending = true;
+    write_root(sb, &root, root_b(&root))?;
 
     state.root = root;
     state.slots = successor;

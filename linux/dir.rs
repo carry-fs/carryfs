@@ -2,20 +2,14 @@
 
 //! Directory iteration.
 //!
-//! Entries are catalog records keyed by comparison key, so a position is
-//! only an ordinal. Each open directory keeps the key of the last entry it
-//! returned; reading on from that position resumes after the key, and any
-//! other position, after a seek, counts entries from the start.
+//! Positions count entries. Each open directory keeps its last emitted key
+//! to resume without rescanning. Seeking to another position scans from the start.
 //!
-//! Listing from the catalog also instantiates each entry's dentry, as NFS
-//! and CIFS do for readdirplus, because a listing is usually followed by a
-//! stat of each entry.
+//! Listings prime dentries so later stat calls avoid catalog lookups.
 //!
-//! A pass that lists a directory whole keeps the result on its inode, as
-//! FUSE keeps readdir pages, and later listings read it without the lock
-//! or the catalog. Changes to a directory hold its inode lock exclusively
-//! and drop the copy; listings hold it shared, so none is using it then.
-//! The inode version catches changes between the calls of one pass.
+//! Complete listings stay on the inode until a change or eviction. Listings
+//! hold the inode lock shared; mutations hold it exclusively and drop the copy.
+//! The inode version detects changes between calls in one listing pass.
 
 use kernel::bindings;
 use kernel::ffi::c_int;
@@ -57,15 +51,9 @@ const AHEAD_LEAVES: usize = 16;
 
 /// Read-ahead for a first listing of a directory, kept with its open file.
 ///
-/// A listing needs the leaves of the directory's entries and those of its
-/// children's records, and the children are found from the entries. Reading
-/// all entry leaves first, then the children's, made a cold listing of
-/// 10,000 entries wait 10 ms for the entries before its CPU work could
-/// start, and any read queued behind them waited too. So this reads the
-/// entry leaves a few at a time and, as each is scanned, the leaves of its
-/// entries' children, each merged (`Tree::read_ahead_merged`), keeping
-/// about `AHEAD_ENTRIES` ahead of the listing. Only hints: a change to the
-/// catalog stops it, as its leaf positions may then be gone.
+/// Read entry leaves in groups, then read their targets' inode leaves.
+/// This keeps about `AHEAD_ENTRIES` ahead without delaying the first entries
+/// behind a whole-directory read. A catalog change invalidates saved positions.
 struct Ahead {
     stamp: (u64, u64),
     leaves: KVec<tree::Position>,

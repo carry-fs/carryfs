@@ -191,16 +191,17 @@ fn touch_parent(
     sb: *mut bindings::super_block,
     state: &mut State,
     disk: &Disk,
-    dir: u64,
+    dir: &Inode,
     delta: i64,
     time: (i64, u32),
 ) -> Result {
-    let mut record = read_record(sb, state, dir)?;
+    let mut record = read_record(sb, state, dir.object())?;
     let children = le_u64(&record, CHILDREN).saturating_add_signed(delta);
     set_u64(&mut record, CHILDREN, children);
     set_time(&mut record, MODIFIED, time);
     set_time(&mut record, CHANGED, time);
-    write_record(state, disk, dir, &record)
+    write_record(state, disk, dir.object(), &record)?;
+    inode::refresh_times(dir, state)
 }
 
 /// Mark `object` unlinked: set its orphan flag and add its marker. Its
@@ -261,13 +262,11 @@ fn create_object(
         txn(state).next_object = object + 1;
         write_record(state, disk, object, &record)?;
         txn(state).put(disk, TreeKind::Catalog, &key, &value)?;
-        touch_parent(sb, state, disk, parent, 1, time)?;
+        touch_parent(sb, state, disk, dir, 1, time)?;
         Ok(object)
     })?;
     changed(dir);
-    let inode = inode::get(sb, object)?;
-    inode::refresh_times(dir);
-    Ok(inode)
+    inode::get(sb, object)
 }
 
 unsafe extern "C" fn create(
@@ -353,14 +352,17 @@ fn remove_entry(dir: &Inode, dentry: &Dentry, directory: bool) -> Result {
         }
         let time = now();
         txn(state).delete(disk, TreeKind::Catalog, &key)?;
-        touch_parent(sb, state, disk, parent, -1, time)?;
-        orphan(sb, state, disk, entry.target, time)
+        touch_parent(sb, state, disk, dir, -1, time)?;
+        orphan(sb, state, disk, entry.target, time)?;
+        if let Some(victim) = dentry.inode() {
+            inode::refresh_times(victim, state)?;
+        }
+        Ok(())
     })?;
     changed(dir);
     if let Some(victim) = dentry.inode() {
         victim.clear_nlink();
     }
-    inode::refresh_times(dir);
     Ok(())
 }
 
@@ -441,7 +443,7 @@ fn rename_entry(
             // A case-only rename updates the stored spelling in place.
             let value = entry_value(source.target, source.kind, &stored)?;
             txn(state).put(disk, TreeKind::Catalog, &new_key, &value)?;
-            return touch_parent(sb, state, disk, from, 0, time);
+            return touch_parent(sb, state, disk, old_dir, 0, time);
         }
         let destination = read_entry(sb, state, &new_key)?;
         if let Some(destination) = &destination {
@@ -466,14 +468,20 @@ fn rename_entry(
         txn(state).delete(disk, TreeKind::Catalog, &old_key)?;
         txn(state).put(disk, TreeKind::Catalog, &new_key, &value)?;
         write_record(state, disk, source.target, &moved)?;
+        if let Some(moved) = old_dentry.inode() {
+            inode::refresh_times(moved, state)?;
+        }
         if let Some(destination) = destination {
             orphan(sb, state, disk, destination.target, time)?;
+            if let Some(replaced) = new_dentry.inode() {
+                inode::refresh_times(replaced, state)?;
+            }
             victim_unlinked = true;
-            touch_parent(sb, state, disk, to, 0, time)?;
+            touch_parent(sb, state, disk, new_dir, 0, time)?;
         } else {
-            touch_parent(sb, state, disk, to, 1, time)?;
+            touch_parent(sb, state, disk, new_dir, 1, time)?;
         }
-        touch_parent(sb, state, disk, from, -1, time)
+        touch_parent(sb, state, disk, old_dir, -1, time)
     })?;
     changed(old_dir);
     changed(new_dir);
@@ -482,8 +490,6 @@ fn rename_entry(
             replaced.clear_nlink();
         }
     }
-    inode::refresh_times(old_dir);
-    inode::refresh_times(new_dir);
     Ok(())
 }
 
@@ -492,43 +498,10 @@ fn rename_entry(
 pub(crate) fn remove_object(sb: *mut bindings::super_block, object: u64) -> Result {
     loop {
         let done = mutate(sb, |state, disk| {
-            // Collect a bounded batch of the object's keys, then delete them.
-            let prefix = &tree::prefix(object, 0)[..8];
-            let mut keys: KVec<KVec<u8>> = KVec::new();
-            let mut extents: KVec<(u64, u64)> = KVec::new();
-            Tree::catalog(sb, state).scan(prefix, &mut |key, value| {
-                if !key.starts_with(prefix) || keys.len() >= 256 {
-                    return Ok(false);
-                }
-                if key.get(8) == Some(&tree::EXTENT) {
-                    extents.push(
-                        (le_u64(value, 0), le_u64(value, 8) & u64::from(u32::MAX)),
-                        GFP_KERNEL,
-                    )?;
-                }
-                let mut copy = KVec::new();
-                copy.extend_from_slice(key, GFP_KERNEL)?;
-                keys.push(copy, GFP_KERNEL)?;
-                Ok(true)
-            })?;
-            let done = keys.len() < 256;
-            // The inode record goes last, with the marker.
-            for key in keys.iter().filter(|key| key.get(8) != Some(&tree::INODE)) {
-                txn(state).delete(disk, TreeKind::Catalog, key)?;
-            }
-            for (first, count) in extents.iter() {
-                txn(state).retire(disk, *first, *count)?;
-            }
+            let done = crate::write::remove_data_step(sb, state, disk, object)?;
             if done {
                 txn(state).delete(disk, TreeKind::Catalog, &tree::prefix(object, tree::INODE))?;
                 txn(state).delete(disk, TreeKind::Cleanup, &orphan_key(object))?;
-            } else {
-                // Keep the record's block count equal to its extents'.
-                let mut record = read_record(sb, state, object)?;
-                let removed: u64 = extents.iter().map(|(_, count)| count).sum();
-                let allocated = le_u64(&record, ALLOCATED).saturating_sub(removed);
-                set_u64(&mut record, ALLOCATED, allocated);
-                write_record(state, disk, object, &record)?;
             }
             Ok(done)
         })?;
@@ -536,22 +509,6 @@ pub(crate) fn remove_object(sb: *mut bindings::super_block, object: u64) -> Resu
             return Ok(());
         }
     }
-}
-
-/// Store new modification or change times from `setattr`.
-pub(crate) fn set_times(
-    sb: *mut bindings::super_block,
-    object: u64,
-    modified: Option<(i64, u32)>,
-) -> Result {
-    mutate(sb, |state, disk| {
-        let mut record = read_record(sb, state, object)?;
-        if let Some(time) = modified {
-            set_time(&mut record, MODIFIED, time);
-        }
-        set_time(&mut record, CHANGED, now());
-        write_record(state, disk, object, &record)
-    })
 }
 
 pub(crate) unsafe extern "C" fn d_revalidate(

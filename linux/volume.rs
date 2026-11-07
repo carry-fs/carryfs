@@ -44,9 +44,6 @@ pub(crate) struct State {
     pub(crate) txn: Option<Txn>,
     /// The committed workspace list of a writable mount.
     pub(crate) slots: KVec<u64>,
-    /// Root A holds the committed root, and root B does not yet: the next
-    /// publication writes it with its pages (`commit::settle`).
-    pub(crate) mirror_pending: bool,
     /// Set after a failed publication or an edit that stopped part-way;
     /// FORMAT.md section 3 allows no further mutation until remount.
     pub(crate) faulted: bool,
@@ -159,8 +156,7 @@ pub(crate) struct Volume {
 }
 
 impl Volume {
-    // one lock serializes metadata access, reads included; a
-    // read-mostly lock or RCU-published roots if readers contend on it.
+    // Metadata reads and writes share this lock.
     /// Lock the volume, in a NOFS allocation scope: reclaim that wrote back
     /// this filesystem's pages would wait for the lock.
     pub(crate) fn lock(&self) -> Locked<'_> {
@@ -580,7 +576,6 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
                 root,
                 txn: None,
                 slots: KVec::new(),
-                mirror_pending: false,
                 faulted: false,
                 hint: 0,
                 timer: 0,
@@ -634,16 +629,9 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         of(sb).lock().timer = timer as usize;
     }
 
-    // A writable mount on an SSD reads and verifies the catalog before it
-    // returns, as the FUSE adapter's writable open checks the whole forest,
-    // in merged reads: about 28 ms for a 1,700-page catalog on a USB SSD,
-    // where FUSE takes 80, and its first listings find it cached. A
-    // read-only one reads the catalog's first leaves in key order, the root
-    // and the oldest directories, about 4 ms, while FUSE's read-only mount
-    // takes 11 ms and starts its key-order read-ahead; other first listings
-    // read their directory's leaves ahead of themselves (`dir::Ahead`).
-    // A background walk instead raced listings and slowed the passes after
-    // them. On a disk that seeks, a background walk reads the catalog ahead.
+    // SSD mounts prefetch synchronously to avoid competing with first listings.
+    // Writable mounts warm the catalog; read-only mounts warm its first leaves.
+    // Rotating disks use background prefetch to keep mount latency bounded.
     // SAFETY: `sb` holds its block device.
     let ssd = unsafe { glue::carryfs_bdev_nonrot(sb) };
     if ssd && writable {
@@ -732,7 +720,7 @@ unsafe extern "C" fn sync_fs(sb: *mut bindings::super_block, _wait: c_int) -> c_
         return 0;
     }
     let mut state = volume.lock();
-    match commit::commit(sb, &mut state).and_then(|()| commit::settle(sb, &mut state)) {
+    match commit::commit(sb, &mut state) {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }

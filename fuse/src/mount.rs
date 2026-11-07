@@ -52,7 +52,8 @@ pub fn helper(args: &[OsString]) -> Result<()> {
     let [device, directory] = positional[..] else {
         return Err("usage: mount.carryfs DEVICE DIRECTORY [-o OPTIONS]".into());
     };
-    parse_options(options.to_str().ok_or("mount options must be UTF-8")?, ROOT)?;
+    let text = options.to_str().ok_or("mount options must be UTF-8")?;
+    parse_options(text, ROOT)?;
     if fake {
         return Ok(());
     }

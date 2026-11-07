@@ -1,0 +1,38 @@
+#!/bin/bash
+# Run fstests against the CarryFS kernel driver on two loop images.
+# Usage: run.sh FSTESTS_DIR [check arguments, default -g quick]
+# Needs root, the module loaded, and release builds of carryfs and
+# carryfs-fuse in target/release.
+set -eu
+fstests=$(realpath "$1")
+shift
+here=$(dirname "$(realpath "$0")")
+export CARRYFS_BIN=$(realpath "$here/../../../target/release")
+# Images live on disk: /tmp is often a small tmpfs, and a full backing
+# file fails the loop device's writes.
+work=$(mktemp -d "${CARRYFS_FSTESTS_DIR:-/var/tmp}/carryfs-fstests.XXXXXX")
+truncate -s 2G "$work/test.img" "$work/scratch.img"
+export TEST_DEV=$(losetup -f --show "$work/test.img")
+export SCRATCH_DEV=$(losetup -f --show "$work/scratch.img")
+export TEST_DIR=$work/test SCRATCH_MNT=$work/scratch
+mkdir -p "$TEST_DIR" "$SCRATCH_MNT"
+cleanup() {
+	umount "$TEST_DIR" "$SCRATCH_MNT" 2>/dev/null || true
+	losetup -d "$TEST_DEV" "$SCRATCH_DEV"
+	rm -rf "$work"
+}
+trap cleanup EXIT
+export PATH=$here/bin:$PATH
+# fstests expects GNU coreutils; Ubuntu's default uutils differ, such as
+# od's uppercase hex (generic/029, generic/030) and touch's date parsing
+# (generic/634). Ubuntu ships the GNU tools with a gnu prefix.
+mkdir "$work/bin"
+for tool in /usr/bin/gnu*; do
+	ln -s "$tool" "$work/bin/${tool#/usr/bin/gnu}"
+done
+export PATH=$work/bin:$PATH
+"$here/bin/mkfs.carryfs" "$TEST_DEV" >/dev/null
+cp "$here/local.config" "$fstests/local.config"
+cd "$fstests"
+[ $# -gt 0 ] || set -- -g quick
+./check "$@"

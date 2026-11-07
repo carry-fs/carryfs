@@ -24,6 +24,18 @@ use crate::ondisk::name::validate_disk_name_characters;
 use crate::tree::{self, Tree, le_u64};
 use crate::{corrupt, inode, volume};
 
+/// Entries read per hold of the volume lock (FORMAT.md section 6's
+/// directory page).
+const BATCH: usize = 64;
+
+/// An entry read for emitting.
+struct Entry {
+    key: KVec<u8>,
+    name: KVec<u8>,
+    target: u64,
+    kind: u8,
+}
+
 /// Where an open directory stopped: the position after its last entry,
 /// that entry's key, and whether this pass began at the first entry and
 /// primed every entry since.
@@ -70,54 +82,77 @@ unsafe fn iterate_entries(file: *mut bindings::file, ctx: *mut bindings::dir_con
     };
     let whole = whole && prime;
     let mut ended = false;
+    let mut resume = resume;
     let mut last = KVec::new();
     last.extend_from_slice(start, GFP_KERNEL)?;
     let mut emitted = 0;
     let volume = volume::of(sb);
-    Tree::catalog(sb, volume).scan(start, &mut |key, value| {
-        if !key.starts_with(&prefix) {
-            ended = true;
-            return Ok(false);
+    // Entries are read under the volume lock in batches, then emitted and
+    // primed without it: priming fills inodes, which takes the lock.
+    'listing: loop {
+        let mut batch: KVec<Entry> = KVec::new();
+        {
+            let state = volume.lock();
+            let catalog = state.root.catalog.block;
+            Tree::catalog(sb, &state).scan(&last, &mut |key, value| {
+                if !key.starts_with(&prefix) {
+                    ended = true;
+                    return Ok(false);
+                }
+                if resume && key == &last[..] {
+                    return Ok(true);
+                }
+                if skip > 0 {
+                    skip -= 1;
+                    return Ok(true);
+                }
+                let name = value.get(12..).unwrap_or_default();
+                validate_disk_name_characters(name).map_err(|error| corrupt(catalog, error))?;
+                let mut entry = Entry {
+                    key: KVec::new(),
+                    name: KVec::new(),
+                    target: le_u64(value, 0),
+                    kind: value.get(8).copied().unwrap_or(0),
+                };
+                entry.key.extend_from_slice(key, GFP_KERNEL)?;
+                entry.name.extend_from_slice(name, GFP_KERNEL)?;
+                batch.push(entry, GFP_KERNEL)?;
+                Ok(batch.len() < BATCH)
+            })?;
         }
-        if resume && key == start {
-            return Ok(true);
-        }
-        if skip > 0 {
-            skip -= 1;
-            return Ok(true);
-        }
-        let name = value.get(12..).unwrap_or_default();
-        validate_disk_name_characters(name)
-            .map_err(|error| corrupt(volume.root.catalog.block, error))?;
-        let kind = value.get(8).copied().unwrap_or(0);
-        let target = le_u64(value, 0);
-        let dt = match kind {
-            1 => bindings::DT_REG,
-            2 => bindings::DT_DIR,
-            _ => bindings::DT_LNK,
-        };
-        // SAFETY: `ctx` is valid; the name is at most 255 bytes.
-        if !unsafe { glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, target, dt) } {
-            return Ok(false);
-        }
-        // SAFETY: `ctx` is valid, and the open directory pins its dentry.
-        unsafe {
-            (*ctx).pos += 1;
-            if prime {
-                glue::carryfs_prime_dentry(
-                    parent,
-                    name.as_ptr(),
-                    name.len() as c_int,
-                    target,
-                    inode::kind_mode(kind) as u16,
-                );
+        let full = batch.len() == BATCH;
+        for entry in batch {
+            let dt = match entry.kind {
+                1 => bindings::DT_REG,
+                2 => bindings::DT_DIR,
+                _ => bindings::DT_LNK,
+            };
+            let name = &entry.name;
+            // SAFETY: `ctx` is valid; the name is at most 255 bytes.
+            if !unsafe { glue::carryfs_dir_emit(ctx, name.as_ptr(), name.len() as c_int, entry.target, dt) } {
+                break 'listing;
             }
+            // SAFETY: `ctx` is valid, and the open directory pins its dentry.
+            unsafe {
+                (*ctx).pos += 1;
+                if prime {
+                    glue::carryfs_prime_dentry(
+                        parent,
+                        name.as_ptr(),
+                        name.len() as c_int,
+                        entry.target,
+                        inode::kind_mode(entry.kind) as u16,
+                    );
+                }
+            }
+            last = entry.key;
+            emitted += 1;
         }
-        last.clear();
-        last.extend_from_slice(key, GFP_KERNEL)?;
-        emitted += 1;
-        Ok(true)
-    })?;
+        if ended || !full {
+            break;
+        }
+        resume = true;
+    }
     if ended && whole {
         // SAFETY: As above.
         unsafe { glue::carryfs_set_dir_primed(inode) };

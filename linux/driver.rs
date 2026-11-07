@@ -19,11 +19,15 @@ mod ondisk {
     mod name_tables;
 }
 
+mod commit;
 mod dir;
+mod edit;
 mod file;
 mod glue;
 mod inode;
 mod names;
+mod namei;
+mod space;
 mod tree;
 mod volume;
 
@@ -68,6 +72,11 @@ pub(crate) fn errno(error: ondisk::error::Error) -> Error {
         E::InvalidGeometry | E::InvalidInput(_) | E::InvalidName(_) => kernel::bindings::EINVAL,
     };
     Error::from_errno(-(code as i32))
+}
+
+/// The kernel error for an errno the `kernel` crate does not name.
+pub(crate) fn code(errno: u32) -> Error {
+    Error::from_errno(-(errno as i32))
 }
 
 /// Log corruption found at `block` and return `EFSCORRUPTED`.

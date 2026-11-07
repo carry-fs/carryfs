@@ -28,8 +28,9 @@ REPO = Path(__file__).resolve().parents[1]
 from benchmarks.workloads import bench
 from benchmarks.workloads import listing
 
-SYSTEMS = ("carryfs", "ext4", "exfat", "btrfs", "apfs", "ntfs")
-SUPPORTED = {"linux": ("carryfs", "ext4", "exfat", "btrfs"),
+# carryfs-kernel is the native Linux driver in linux/; carryfs is FUSE.
+SYSTEMS = ("carryfs", "carryfs-kernel", "ext4", "exfat", "btrfs", "apfs", "ntfs")
+SUPPORTED = {"linux": ("carryfs", "carryfs-kernel", "ext4", "exfat", "btrfs"),
              "darwin": ("carryfs", "exfat", "apfs"),
              "win32": ("carryfs", "exfat", "ntfs")}
 DEFAULTS = dict(seq_mib=512, files=1000, dirs=20, per_dir=50,
@@ -287,6 +288,14 @@ def preflight(config, args):
             if target["fs"] == "carryfs":
                 required.append((tuple(Path(target["bin_dir"]) / executable for executable in native.binaries(config["mount_mode"])),
                                  f"{disk['name']}/{target['name']} binaries; run build first and pass its release directory as --bin-dir"))
+            if target["fs"] == "carryfs-kernel":
+                required.append(((Path(target["bin_dir"]) / "carryfs",),
+                                 f"{disk['name']}/{target['name']} formatter and checker; run build first"))
+    if "carryfs-kernel" in systems:
+        if config["mount_mode"] != "root":
+            raise ValueError("carryfs-kernel needs root mount mode")
+        if not re.search(r"^\s*carryfs$", Path("/proc/filesystems").read_text(), re.MULTILINE):
+            raise ValueError("the carryfs kernel module is not loaded; build linux/ and insmod carryfs.ko")
     require_commands(required)
     check_access = native.access_checks(config)
     if check_access and config["mount_mode"] == "root":
@@ -461,7 +470,7 @@ class Sample:
             self.device = current["path"]
         if os.path.ismount(self.point):
             raise ValueError(f"{self.point}: already mounted")
-        if fs == "carryfs":
+        if fs in ("carryfs", "carryfs-kernel"):
             image = self.folder / "format.img"
             destination = os.open(self.device, os.O_WRONLY | os.O_EXCL)
             try:
@@ -523,6 +532,10 @@ class Sample:
                     if self.daemon.poll() is not None or time.perf_counter() - started > 60:
                         raise RuntimeError(f"daemon mount failed or timed out; see {self.folder / 'daemon.log'}")
                     time.sleep(.01)
+        elif self.target["fs"] == "carryfs-kernel":
+            # -i: the installed mount.carryfs helper would start FUSE.
+            self.command("mount", "-i", "-t", "carryfs", "-o", f"{mode},noatime,uid={os.getuid()},gid={os.getgid()}",
+                         self.device, self.point, timeout=60)
         elif self.runner.config["mount_mode"] == "user":
             self.command("mount", self.point, timeout=60)
         else:
@@ -535,8 +548,9 @@ class Sample:
         elapsed = time.perf_counter() - started
         actual = capture(["findmnt", "--json", "-M", self.point, "-o", "SOURCE,FSTYPE,OPTIONS"])
         mounted = json.loads(actual)["filesystems"][0]
+        fstype = "carryfs" if self.target["fs"] == "carryfs-kernel" else self.target["fs"]
         if self.target["fs"] != "carryfs" and (os.path.realpath(mounted["source"]) != os.path.realpath(self.device)
-                                                 or mounted["fstype"] != self.target["fs"]):
+                                                 or mounted["fstype"] != fstype):
             raise ValueError("mounted source/filesystem differs from the selected target")
         key = f"{self.disk}/{self.target['name']}/{mode}"
         setting = {field: mounted[field] for field in ("fstype", "options")}
@@ -579,7 +593,7 @@ class Sample:
 
     def check(self):
         fs = self.target["fs"]
-        if fs == "carryfs":
+        if fs in ("carryfs", "carryfs-kernel"):
             fd = os.open(self.device, os.O_RDONLY)
             try:
                 size = os.lseek(fd, 0, os.SEEK_END)
@@ -911,6 +925,10 @@ def run(args):
                             sample.close()
                         rows.extend(sample_rows(sample.folder / "results.jsonl", config["workload"], config.get("selection")))
                         (sample.folder / "complete").write_text("namespace, SHA-256 and offline checks passed\n")
+                        # A passed sample's images are disposable, and a run's worth
+                        # filled the disk; a failed sample keeps them for debugging.
+                        for image in ("disk.img", "format.img"):
+                            (sample.folder / image).unlink(missing_ok=True)
         finally:
             bench.emit = original_emit
             bench.os, bench.sync_path = original_os, original_sync

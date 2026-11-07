@@ -27,6 +27,25 @@ sudo pacman -S curl fuse3 udisks2 procps-ng coreutils
 `/dev/fuse` must exist. If it doesn't, load the kernel module with
 `sudo modprobe fuse`.
 
+#### FUSE adapter or native driver
+
+The install script sets up the FUSE adapter. On some distributions you can
+also build the native kernel driver from source. `mount.carryfs`, which
+UDisks and `mount -t carryfs` call, continues to use FUSE even when the native
+module is loaded. Select native explicitly with
+`mount -i -t carryfs DEVICE DIRECTORY`.
+
+| Distribution | Kernel | Native driver |
+|---|---|---|
+| Ubuntu 26.04 | 7.0 | Yes |
+| Fedora 45 | 7.2 | Yes |
+| Arch Linux | 7.2 | Yes |
+| Others | | If the kernel is 7.0 or newer and built with Rust support |
+
+The driver is a prototype. [linux/README.md](linux/README.md) explains how to
+build and load it. The native driver requires 4 KiB kernel pages and rejects
+`sync` and `dirsync` mounts.
+
 ### macOS
 
 You need macOS 15.6 or later on Apple Silicon.

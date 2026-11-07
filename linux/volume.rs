@@ -11,6 +11,7 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
+use kernel::sync::atomic::{Acquire, Atomic, Release};
 use kernel::sync::{new_condvar, new_mutex, CondVar, Mutex, MutexGuard};
 
 use crate::edit::Txn;
@@ -43,6 +44,9 @@ pub(crate) struct State {
     pub(crate) txn: Option<Txn>,
     /// The committed workspace list of a writable mount.
     pub(crate) slots: KVec<u64>,
+    /// Root A holds the committed root, and root B does not yet: the next
+    /// publication writes it with its pages (`commit::settle`).
+    pub(crate) mirror_pending: bool,
     /// Set after a failed publication or an edit that stopped part-way;
     /// FORMAT.md section 3 allows no further mutation until remount.
     pub(crate) faulted: bool,
@@ -50,8 +54,6 @@ pub(crate) struct State {
     pub(crate) hint: u64,
     /// The periodic-commit timer of a writable mount, from glue.c.
     pub(crate) timer: usize,
-    /// The catalog prefetch started at mount, from glue.c.
-    prefetch: usize,
     /// Retired data may be reclaimable by a later commit.
     pub(crate) reclaim_pending: bool,
     /// Space held for dirty page-cache units.
@@ -65,15 +67,38 @@ pub(crate) struct State {
     /// Commits waiting for I/O; new reads wait for them, so that a stream
     /// of reads cannot starve a commit.
     committing: u32,
-    /// Objects whose data a writer is writing or a size change is changing,
-    /// one at a time each (`Locked::claim`).
-    claimed: [u64; CLAIMS],
-    claims: usize,
+    /// Objects with data writes in flight or a size change under way; room
+    /// for `CLAIMS` is reserved at mount. On the heap: inline, the table
+    /// overflowed the kernel stack while `fill_super` built the state.
+    flights: KVec<Flight>,
 }
 
 /// Objects written at once; more writers wait, which bounds the data
 /// writes in flight.
 const CLAIMS: usize = 64;
+/// Batches of one object in flight at once, so that its next batch is
+/// prepared and submitted while one is written.
+pub(crate) const PIPELINE: usize = 2;
+
+/// One object's data writes in flight. One writer at a time prepares and
+/// allocates a batch; up to `PIPELINE` batches are then written at once
+/// and recorded in allocation order. A size change holds the object alone.
+#[derive(Clone, Copy, Default)]
+struct Flight {
+    object: u64,
+    writer: bool,
+    exclusive: bool,
+    /// Batches allocated and not yet recorded.
+    outstanding: usize,
+    /// Tickets handed to allocated batches, and the next to record.
+    issued: u64,
+    recorded: u64,
+    /// The size the last allocated batch records.
+    planned: u64,
+    /// Completions that came before their turn: ticket, batch, errno.
+    parked: [(u64, usize, i32); PIPELINE],
+    parked_count: usize,
+}
 
 impl State {
     pub(crate) fn tree_root(&self, kind: TreeKind) -> TreeRef {
@@ -118,6 +143,16 @@ pub(crate) struct Volume {
     /// Held through each `writepages` call; see there.
     #[pin]
     pub(crate) writeback: Mutex<()>,
+    /// The mount's background work, from glue.c: catalog prefetch, and
+    /// writeback started at close. Stopped by `kill_sb`.
+    background: usize,
+    /// Set with `State::faulted`, for writes that skip the lock.
+    fault_seen: Atomic<u32>,
+    /// The block after the last small file read, and how many small reads
+    /// in a row followed on from the one before: `file::small_read` reads
+    /// ahead only for a run of them.
+    pub(crate) next_small: Atomic<u64>,
+    pub(crate) small_run: Atomic<u32>,
     /// Signalled when `State::writing`, `reading`, or `committing` drops.
     #[pin]
     written: CondVar,
@@ -204,29 +239,156 @@ impl Locked<'_> {
         self.volume.written.notify_all();
     }
 
-    /// Take `object` for one data write or size change, waiting for the
-    /// one in progress: an object's writes must record in order.
-    pub(crate) fn claim(&mut self, object: u64) {
+    /// Wait until `ready` holds for `object`'s flight, or a new one could
+    /// be made; the flight's index, made if missing.
+    fn flight(&mut self, object: u64, ready: impl Fn(&Flight) -> bool) -> usize {
         loop {
-            let state = &*self.state;
-            let held = state.claimed[..state.claims].contains(&object);
-            if !held && state.claims < CLAIMS {
-                break;
+            let state = &mut *self.state;
+            match state.find_flight(object) {
+                Some(at) if ready(&state.flights[at]) => return at,
+                None if state.flights.len() < CLAIMS => {
+                    let flight = Flight {
+                        object,
+                        ..Default::default()
+                    };
+                    // Within the capacity reserved at mount: never fails.
+                    if state.flights.push_within_capacity(flight).is_ok() {
+                        return state.flights.len() - 1;
+                    }
+                }
+                _ => {}
             }
             self.volume.written.wait(&mut self.state);
         }
-        let claims = self.state.claims;
-        self.state.claimed[claims] = object;
-        self.state.claims += 1;
     }
 
-    pub(crate) fn unclaim(&mut self, object: u64) {
-        let state = &mut *self.state;
-        if let Some(at) = state.claimed[..state.claims].iter().position(|held| *held == object) {
-            state.claims -= 1;
-            state.claimed[at] = state.claimed[state.claims];
+    /// Become `object`'s writer: the one preparing and allocating a batch,
+    /// once fewer than `PIPELINE` are in flight.
+    pub(crate) fn claim_writer(&mut self, object: u64) {
+        let at = self.flight(object, |flight| {
+            !flight.writer && !flight.exclusive && flight.outstanding < PIPELINE
+        });
+        self.state.flights[at].writer = true;
+    }
+
+    /// Stop being `object`'s writer, its batch allocated or abandoned.
+    pub(crate) fn end_writer(&mut self, object: u64) {
+        if let Some(at) = self.state.find_flight(object) {
+            self.state.flights[at].writer = false;
+            self.state.drop_idle_flight(at);
         }
         self.volume.written.notify_all();
+    }
+
+    /// Hold `object` alone for a size change, with no write in flight.
+    pub(crate) fn claim_exclusive(&mut self, object: u64) {
+        let at = self.flight(object, |flight| {
+            !flight.writer && !flight.exclusive && flight.outstanding == 0
+        });
+        self.state.flights[at].exclusive = true;
+    }
+
+    pub(crate) fn end_exclusive(&mut self, object: u64) {
+        if let Some(at) = self.state.find_flight(object) {
+            self.state.flights[at].exclusive = false;
+            self.state.drop_idle_flight(at);
+        }
+        self.volume.written.notify_all();
+    }
+
+    /// Wait until the batch with `ticket` is next to record.
+    pub(crate) fn wait_turn(&mut self, object: u64, ticket: u64) {
+        while !self.state.is_turn(object, ticket) {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    /// Wait until no batch of `object` is in flight, so its record matches
+    /// its blocks on disk.
+    pub(crate) fn wait_recorded(&mut self, object: u64) {
+        while self.state.planned_size(object).is_some() {
+            self.volume.written.wait(&mut self.state);
+        }
+    }
+
+    pub(crate) fn notify(&self) {
+        self.volume.written.notify_all();
+    }
+}
+
+impl State {
+    fn find_flight(&self, object: u64) -> Option<usize> {
+        self.flights.iter().position(|flight| flight.object == object)
+    }
+
+    fn drop_idle_flight(&mut self, at: usize) {
+        let flight = &self.flights[at];
+        if !flight.writer && !flight.exclusive && flight.outstanding == 0 && flight.parked_count == 0 {
+            let last = self.flights.len() - 1;
+            self.flights.swap(at, last);
+            self.flights.pop();
+        }
+    }
+
+    /// The size `object`'s batches in flight will leave recorded, if any.
+    pub(crate) fn planned_size(&self, object: u64) -> Option<u64> {
+        self.find_flight(object)
+            .map(|at| &self.flights[at])
+            .filter(|flight| flight.outstanding > 0)
+            .map(|flight| flight.planned)
+    }
+
+    /// Hand the writer's allocated batch, which records `size`, its ticket.
+    pub(crate) fn issue(&mut self, object: u64, size: u64) -> u64 {
+        let Some(at) = self.find_flight(object) else {
+            return 0;
+        };
+        let flight = &mut self.flights[at];
+        flight.outstanding += 1;
+        flight.planned = size;
+        flight.issued += 1;
+        flight.issued - 1
+    }
+
+    pub(crate) fn is_turn(&self, object: u64, ticket: u64) -> bool {
+        self.find_flight(object)
+            .is_some_and(|at| self.flights[at].recorded == ticket)
+    }
+
+    /// Note the batch whose turn it was recorded.
+    pub(crate) fn recorded(&mut self, object: u64) {
+        if let Some(at) = self.find_flight(object) {
+            self.flights[at].recorded += 1;
+            self.flights[at].outstanding = self.flights[at].outstanding.saturating_sub(1);
+            self.drop_idle_flight(at);
+        }
+    }
+
+    /// Keep a completed batch whose turn has not come, as `batch`, an
+    /// address, with its errno.
+    pub(crate) fn park(&mut self, object: u64, ticket: u64, batch: usize, errno: i32) {
+        if let Some(at) = self.find_flight(object) {
+            let flight = &mut self.flights[at];
+            // Fewer than `PIPELINE` wait: the batch whose turn it is has not
+            // completed.
+            if let Some(slot) = flight.parked.get_mut(flight.parked_count) {
+                *slot = (ticket, batch, errno);
+                flight.parked_count += 1;
+            }
+        }
+    }
+
+    /// The parked batch whose turn it is, if any.
+    pub(crate) fn take_parked(&mut self, object: u64) -> Option<(usize, i32)> {
+        let at = self.find_flight(object)?;
+        let flight = &mut self.flights[at];
+        let position = flight.parked[..flight.parked_count]
+            .iter()
+            .position(|(ticket, _, _)| *ticket == flight.recorded)?;
+        let (_, batch, errno) = flight.parked[position];
+        flight.parked_count -= 1;
+        flight.parked[position] = flight.parked[flight.parked_count];
+        Some((batch, errno))
     }
 }
 
@@ -242,6 +404,20 @@ impl DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut State {
         &mut self.state
     }
+}
+
+impl Volume {
+    /// Whether the volume faulted, without the lock.
+    pub(crate) fn faulted(&self) -> bool {
+        self.fault_seen.load(Acquire) != 0
+    }
+}
+
+/// Fault the volume: FORMAT.md section 3 allows no further mutation until
+/// remount.
+pub(crate) fn fault(sb: *mut bindings::super_block, state: &mut State) {
+    state.faulted = true;
+    of(sb).fault_seen.store(1, Release);
 }
 
 /// The volume of a mounted super block.
@@ -276,39 +452,50 @@ unsafe extern "C" fn carryfs_stop_timer(sb: *mut bindings::super_block) {
     if unsafe { (*sb).s_fs_info }.is_null() {
         return;
     }
-    let (timer, prefetch) = {
-        let mut state = of(sb).lock();
-        (core::mem::take(&mut state.timer), core::mem::take(&mut state.prefetch))
-    };
-    // SAFETY: The timer and prefetch were started by `fill_super` and are
-    // stopped once; the lock is not held, since their work takes it.
+    let timer = core::mem::take(&mut of(sb).lock().timer);
+    // SAFETY: The timer and background work were started by `fill_super`
+    // and are stopped once, `kill_sb` running once; the lock is not held,
+    // since their work takes it.
     unsafe {
         glue::carryfs_timer_stop(timer as *mut c_void);
-        glue::carryfs_prefetch_stop(prefetch as *mut c_void);
+        glue::carryfs_background_stop(of(sb).background as *mut c_void);
     }
 }
 
-/// Catalog pages read ahead at mount: 16 MiB, the FUSE adapter's budget.
-const PREFETCH_PAGES: usize = 4_096;
+/// The mount's background work for glue.c, or null if it has none.
+#[no_mangle]
+unsafe extern "C" fn carryfs_volume_background(sb: *mut bindings::super_block) -> *mut c_void {
+    of(sb).background as *mut c_void
+}
 
-/// Read the committed catalog ahead; `carryfs_prefetch_start` queues it.
+/// Catalog pages read ahead after mounting: 16 MiB, the FUSE adapter's
+/// budget.
+const PREFETCH_PAGES: usize = 4_096;
+/// Catalog leaves a read-only SSD mount reads, in key order, before it
+/// returns: 1 MiB, about 4 ms on a USB SSD.
+const MOUNT_READ_ONLY_LEAVES: usize = 256;
+
+/// Read the committed catalog ahead after mounting a disk that seeks;
+/// glue.c's background work queues it.
 #[no_mangle]
 unsafe extern "C" fn carryfs_prefetch_catalog(sb: *mut bindings::super_block) {
-    let tree = {
-        let state = of(sb).lock();
-        Tree {
-            sb,
-            uuid: state.root.uuid,
-            blocks: state.root.blocks,
-            kind: TreeKind::Catalog,
-            root: crate::tree::Link::Disk(state.root.catalog),
-            generation: state.root.generation,
-            drafts: &[],
-        }
-    };
     // Only a cache warms or not: a page a commit has since replaced or a
     // read failure ends the walk, and use reports real errors.
-    let _ = tree.prefetch(PREFETCH_PAGES);
+    let _ = committed_catalog(sb).prefetch(PREFETCH_PAGES, false);
+}
+
+/// The committed catalog, without the open transaction's drafts.
+fn committed_catalog<'a>(sb: *mut bindings::super_block) -> Tree<'a> {
+    let state = of(sb).lock();
+    Tree {
+        sb,
+        uuid: state.root.uuid,
+        blocks: state.root.blocks,
+        kind: TreeKind::Catalog,
+        root: crate::tree::Link::Disk(state.root.catalog),
+        generation: state.root.generation,
+        drafts: &[],
+    }
 }
 
 /// Free the volume after `kill_block_super`, whether or not mounting
@@ -375,32 +562,42 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         errno(error)
     })?;
+    let flights = KVec::with_capacity(CLAIMS, GFP_KERNEL)?;
+    // SAFETY: Its work runs only once queued, after mounting.
+    let background = unsafe { glue::carryfs_background_new(sb) };
     let volume = KBox::pin_init(
         try_pin_init!(Volume {
             uid: bindings::kuid_t { val: uid },
             gid: bindings::kgid_t { val: gid },
             writable,
             writeback <- new_mutex!(()),
+            background: background as usize,
             written <- new_condvar!(),
+            fault_seen: Atomic::new(0),
+            next_small: Atomic::new(0),
+            small_run: Atomic::new(0),
             state <- new_mutex!(State {
                 root,
                 txn: None,
                 slots: KVec::new(),
+                mirror_pending: false,
                 faulted: false,
                 hint: 0,
                 timer: 0,
-                prefetch: 0,
                 reclaim_pending: true,
                 reservations: Default::default(),
                 writing: 0,
                 reading: 0,
                 committing: 0,
-                claimed: [0; CLAIMS],
-                claims: 0,
+                flights,
             }),
         }),
         GFP_KERNEL,
-    )?;
+    )
+    .inspect_err(|_| {
+        // SAFETY: Never queued, and owned here alone.
+        unsafe { glue::carryfs_background_stop(background) }
+    })?;
     // SAFETY: `sb` is not yet visible to anyone else; `carryfs_free_volume`
     // unpins and frees the volume.
     unsafe {
@@ -437,9 +634,26 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         of(sb).lock().timer = timer as usize;
     }
 
-    // SAFETY: `kill_sb` stops the prefetch before the volume goes away.
-    let prefetch = unsafe { glue::carryfs_prefetch_start(sb) };
-    of(sb).lock().prefetch = prefetch as usize;
+    // A writable mount on an SSD reads and verifies the catalog before it
+    // returns, as the FUSE adapter's writable open checks the whole forest,
+    // in merged reads: about 28 ms for a 1,700-page catalog on a USB SSD,
+    // where FUSE takes 80, and its first listings find it cached. A
+    // read-only one reads the catalog's first leaves in key order, the root
+    // and the oldest directories, about 4 ms, while FUSE's read-only mount
+    // takes 11 ms and starts its key-order read-ahead; other first listings
+    // read their directory's leaves ahead of themselves (`dir::Ahead`).
+    // A background walk instead raced listings and slowed the passes after
+    // them. On a disk that seeks, a background walk reads the catalog ahead.
+    // SAFETY: `sb` holds its block device.
+    let ssd = unsafe { glue::carryfs_bdev_nonrot(sb) };
+    if ssd && writable {
+        let _ = committed_catalog(sb).prefetch(PREFETCH_PAGES, true);
+    } else if ssd {
+        let _ = committed_catalog(sb).read_first_leaves(MOUNT_READ_ONLY_LEAVES);
+    } else if of(sb).background != 0 {
+        // SAFETY: `kill_sb` stops the work before the volume goes away.
+        unsafe { glue::carryfs_prefetch_queue(of(sb).background as *mut c_void) };
+    }
 
     let root_inode = inode::get(sb, inode::ROOT)?;
     // SAFETY: `get` returned a referenced inode.
@@ -517,7 +731,8 @@ unsafe extern "C" fn sync_fs(sb: *mut bindings::super_block, _wait: c_int) -> c_
     if !volume.writable {
         return 0;
     }
-    match commit::commit(sb, &mut volume.lock()) {
+    let mut state = volume.lock();
+    match commit::commit(sb, &mut state).and_then(|()| commit::settle(sb, &mut state)) {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }

@@ -60,6 +60,18 @@ fn write_root(sb: *mut super_block, root: &Root, block: u64) -> Result {
     flush(sb)
 }
 
+/// Write the last publication's root B, if it is pending, and flush it:
+/// sync and unmount leave both roots holding the same generation.
+pub(crate) fn settle(sb: *mut super_block, state: &mut State) -> Result {
+    if state.faulted || !state.mirror_pending {
+        return Ok(());
+    }
+    let root = state.root;
+    write_root(sb, &root, root_b(&root)).inspect_err(|_| crate::volume::fault(sb, state))?;
+    state.mirror_pending = false;
+    Ok(())
+}
+
 /// Prepare a writable mount: read the committed workspace list and finish
 /// any interrupted mirroring, before any allocation.
 pub(crate) fn open(sb: *mut super_block, state: &mut State, decoded: [Option<Root>; 2]) -> Result {
@@ -201,7 +213,7 @@ fn commit_quiesced(sb: *mut super_block, state: &mut State) -> Result {
         Ok(()) => Ok(()),
         Err(error) => {
             pr_err!("publication failed; the volume is read-only until remounted\n");
-            state.faulted = true;
+            crate::volume::fault(sb, state);
             Err(error)
         }
     }
@@ -387,8 +399,9 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
 
     // Data reached the device as writeback finished; one flush then covers
     // it and the metadata below.
-    let mut blocks = KVec::with_capacity(order.len() + bank.len(), GFP_KERNEL)?;
-    let mut pages: KVec<*const u8> = KVec::with_capacity(order.len() + bank.len(), GFP_KERNEL)?;
+    let mut blocks = KVec::with_capacity(order.len() + bank.len() + 1, GFP_KERNEL)?;
+    let mut pages: KVec<*const u8> =
+        KVec::with_capacity(order.len() + bank.len() + 1, GFP_KERNEL)?;
     for (id, _) in order.iter() {
         blocks.push(assigned[*id], GFP_KERNEL)?;
         pages.push(txn.drafts[*id].page.as_ptr(), GFP_KERNEL)?;
@@ -397,10 +410,22 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
         blocks.push(*block, GFP_KERNEL)?;
         pages.push(page.as_ptr(), GFP_KERNEL)?;
     }
+    // The previous publication's root B goes with this one's pages, so the
+    // flush below makes it durable before root A is overwritten.
+    let mut mirror = KBox::new([0; BLOCK_BYTES], GFP_KERNEL)?;
+    if state.mirror_pending {
+        base.encode(root_b(&base), base.blocks, &mut mirror).map_err(errno)?;
+        blocks.push(root_b(&base), GFP_KERNEL)?;
+        pages.push(mirror.as_ptr(), GFP_KERNEL)?;
+    }
     write(sb, &blocks, &pages)?;
     flush(sb)?;
+    state.mirror_pending = false;
+    // Durable once root A is: a crash before root B is written reopens G
+    // from A and finishes mirroring (FORMAT.md section 3). Root B follows
+    // with the next publication, or `settle`.
     write_root(sb, &root, 256)?;
-    write_root(sb, &root, root_b(&root))?;
+    state.mirror_pending = true;
 
     state.root = root;
     state.slots = successor;
@@ -410,7 +435,7 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
 
 /// Sort in place. `slice::sort_unstable` has a panic path objtool in Linux
 /// 7.0 does not know is noreturn.
-fn heapsort(values: &mut [u64]) {
+pub(crate) fn heapsort(values: &mut [u64]) {
     fn sift(values: &mut [u64], mut root: usize, end: usize) {
         loop {
             let mut child = 2 * root + 1;

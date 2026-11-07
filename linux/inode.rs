@@ -187,6 +187,11 @@ unsafe fn fill(
         }
         if !aops.is_null() {
             (*(*inode).i_mapping).a_ops = aops;
+            // Folios of up to one checksum unit: aligned to their size, each
+            // lies within one unit, which reads verify and writes rewrite
+            // whole. Fewer folios than pages cut the page cache's per-folio
+            // work on reads, writeback and eviction.
+            glue::carryfs_set_folio_orders((*inode).i_mapping, file::UNIT_BLOCKS.ilog2());
         }
     }
     if kind == SYMLINK {

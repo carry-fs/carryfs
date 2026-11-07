@@ -15,11 +15,13 @@
 #include <linux/fs_parser.h>
 #include <linux/highmem.h>
 #include <linux/iversion.h>
+#include <linux/kthread.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/namei.h>
 #include <linux/pagemap.h>
 #include <linux/sched/mm.h>
+#include <uapi/linux/sched/types.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/version.h>
@@ -110,14 +112,22 @@ static int carryfs_init_fs_context(struct fs_context *fc)
 	return 0;
 }
 
+/*
+ * The unmounting task tears the mount down: evicting inodes and dentries,
+ * then dropping the device's cached pages. FUSE does that in its clamped
+ * daemon threads, so the caller is boosted for it as for listings.
+ */
 static void carryfs_kill_sb(struct super_block *sb)
 {
+	bool boosted = carryfs_boost_caller();
 	void *volume;
 
 	carryfs_stop_timer(sb);
 	volume = sb->s_fs_info;
 	kill_block_super(sb);
 	carryfs_free_volume(volume);
+	if (boosted)
+		carryfs_unboost_caller();
 }
 
 /* Commit open transactions every few seconds, as ext4's default commit=5. */
@@ -159,43 +169,134 @@ void carryfs_timer_stop(void *timer)
 	kfree(t);
 }
 
+/* Inodes closed after writing whose writeback starts in one batch. */
+#define CARRYFS_FLUSH_BATCH 64
+
 /*
- * Read the catalog ahead after mounting, as the FUSE adapter does and as
- * ext4 prefetches block bitmaps, so that first listings find it cached.
+ * A mount's background work: reading the catalog ahead after mounting, as
+ * the FUSE adapter does and as ext4 prefetches block bitmaps, so that
+ * first listings find it cached; and starting writeback of files closed
+ * after writing.
  */
-struct carryfs_prefetch {
-	struct work_struct work;
+struct carryfs_background {
 	struct super_block *sb;
+	struct work_struct prefetch;
+	struct kthread_work flush;
+	spinlock_t lock;
+	bool stopped;
+	unsigned int count;
+	struct inode *inodes[CARRYFS_FLUSH_BATCH];
 };
 
 static void carryfs_prefetch_fn(struct work_struct *work)
 {
-	struct carryfs_prefetch *prefetch =
-		container_of(work, struct carryfs_prefetch, work);
+	struct carryfs_background *bg =
+		container_of(work, struct carryfs_background, prefetch);
 
-	carryfs_prefetch_catalog(prefetch->sb);
+	carryfs_prefetch_catalog(bg->sb);
 }
 
-void *carryfs_prefetch_start(struct super_block *sb)
-{
-	struct carryfs_prefetch *prefetch = kzalloc(sizeof(*prefetch), GFP_KERNEL);
+/*
+ * Starts close-time writeback for every mount. A writer waits for it while
+ * it holds the volume lock, so it runs on a thread of its own with the
+ * utilization clamp FUSE's daemon gives its threads (fuse/src/fs.rs,
+ * run_at_full_speed): schedutil then clocks the CPU up while it works, as
+ * it does for the daemon. Kworkers of a workqueue take no clamp.
+ * one thread for all mounts; one per mount if volumes contend.
+ */
+static struct kthread_worker *carryfs_flush_worker;
 
-	if (!prefetch)
+/* Start writeback of the queued inodes under one plug, so their writes merge. */
+static void carryfs_flush_fn(struct kthread_work *work)
+{
+	struct carryfs_background *bg =
+		container_of(work, struct carryfs_background, flush);
+	struct inode *inodes[CARRYFS_FLUSH_BATCH];
+	struct blk_plug plug;
+	unsigned int count, i;
+
+	for (;;) {
+		spin_lock(&bg->lock);
+		count = bg->count;
+		memcpy(inodes, bg->inodes, count * sizeof(*inodes));
+		bg->count = 0;
+		spin_unlock(&bg->lock);
+		if (!count)
+			return;
+		blk_start_plug(&plug);
+		/* Errors stay on the mapping for a later fsync. */
+		for (i = 0; i < count; i++)
+			filemap_flush(inodes[i]->i_mapping);
+		blk_finish_plug(&plug);
+		for (i = 0; i < count; i++)
+			iput(inodes[i]);
+	}
+}
+
+void *carryfs_background_new(struct super_block *sb)
+{
+	struct carryfs_background *bg = kzalloc(sizeof(*bg), GFP_KERNEL);
+
+	if (!bg)
 		return NULL;
-	prefetch->sb = sb;
-	INIT_WORK(&prefetch->work, carryfs_prefetch_fn);
-	queue_work(system_unbound_wq, &prefetch->work);
-	return prefetch;
+	bg->sb = sb;
+	INIT_WORK(&bg->prefetch, carryfs_prefetch_fn);
+	kthread_init_work(&bg->flush, carryfs_flush_fn);
+	spin_lock_init(&bg->lock);
+	return bg;
 }
 
-void carryfs_prefetch_stop(void *prefetch)
+void carryfs_prefetch_queue(void *background)
 {
-	struct carryfs_prefetch *p = prefetch;
+	struct carryfs_background *bg = background;
 
-	if (!p)
+	queue_work(system_unbound_wq, &bg->prefetch);
+}
+
+/* Before unmounting evicts inodes: the queue holds references. */
+void carryfs_background_stop(void *background)
+{
+	struct carryfs_background *bg = background;
+
+	if (!bg)
 		return;
-	cancel_work_sync(&p->work);
-	kfree(p);
+	spin_lock(&bg->lock);
+	bg->stopped = true;
+	spin_unlock(&bg->lock);
+	cancel_work_sync(&bg->prefetch);
+	kthread_flush_work(&bg->flush);
+	/* Closes cannot queue more once stopped; drain what raced the stop. */
+	carryfs_flush_fn(&bg->flush);
+	kfree(bg);
+}
+
+/*
+ * At the last close of a file written through it, have a worker start its
+ * writeback, so its data is on its way before an fsync of it or its
+ * directory, as the FUSE adapter writes data before fsync and NFS writes
+ * back on close. The close itself does not wait.
+ */
+int carryfs_file_release(struct inode *inode, struct file *file)
+{
+	struct carryfs_background *bg = carryfs_volume_background(inode->i_sb);
+	bool queued = false;
+
+	if (!(file->f_mode & FMODE_WRITE) || !bg ||
+	    !mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY) || !igrab(inode))
+		return 0;
+	spin_lock(&bg->lock);
+	if (!bg->stopped && bg->count < CARRYFS_FLUSH_BATCH) {
+		bg->inodes[bg->count++] = inode;
+		queued = true;
+	}
+	spin_unlock(&bg->lock);
+	if (queued) {
+		kthread_queue_work(carryfs_flush_worker, &bg->flush);
+	} else {
+		filemap_flush(inode->i_mapping);
+		iput(inode);
+	}
+	return 0;
 }
 
 static struct file_system_type carryfs_fs_type = {
@@ -217,20 +318,41 @@ static struct workqueue_struct *carryfs_read_wq;
 
 int carryfs_register(void)
 {
+	struct sched_attr boost = {
+		.size = sizeof(boost),
+		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
+		.sched_util_min = SCHED_CAPACITY_SCALE,
+	};
 	int error;
 
 	carryfs_read_wq = alloc_workqueue("carryfs-io", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
 	if (!carryfs_read_wq)
 		return -ENOMEM;
+	carryfs_flush_worker = kthread_create_worker(0, "carryfs-flush");
+	if (IS_ERR(carryfs_flush_worker)) {
+		error = PTR_ERR(carryfs_flush_worker);
+		goto out_wq;
+	}
+	/* Before it first runs; older kernels start it on creation. */
+	error = sched_setattr_nocheck(carryfs_flush_worker->task, &boost);
+	if (error)
+		pr_warn("carryfs: flush thread runs without a clock clamp: %d\n", error);
+	wake_up_process(carryfs_flush_worker->task);
 	error = register_filesystem(&carryfs_fs_type);
 	if (error)
-		destroy_workqueue(carryfs_read_wq);
+		goto out_worker;
+	return 0;
+out_worker:
+	kthread_destroy_worker(carryfs_flush_worker);
+out_wq:
+	destroy_workqueue(carryfs_read_wq);
 	return error;
 }
 
 void carryfs_unregister(void)
 {
 	unregister_filesystem(&carryfs_fs_type);
+	kthread_destroy_worker(carryfs_flush_worker);
 	destroy_workqueue(carryfs_read_wq);
 }
 
@@ -305,6 +427,15 @@ int carryfs_submit_read(struct bio *bio, void *batch)
 }
 
 /* Block device geometry. */
+
+bool carryfs_bdev_nonrot(struct super_block *sb)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
+	return bdev_nonrot(sb->s_bdev);
+#else
+	return !bdev_rot(sb->s_bdev);
+#endif
+}
 
 u64 carryfs_bdev_bytes(struct super_block *sb)
 {
@@ -496,17 +627,29 @@ wait:
 }
 
 /*
- * At the last close of a file written through it, start writing it back
- * without waiting, so its data is on its way before an fsync of it or its
- * directory, as the FUSE adapter writes data before fsync. NFS writes back
- * on close too, and XFS after a truncate. Errors stay on the mapping for
- * a later fsync.
+ * A regular file's i_private holds the unit it last reserved, plus one,
+ * so that writes into a unit already reserved skip the volume lock. Every
+ * release of the file's reservations clears it before testing whether a
+ * unit is busy; a write tests it after locking its folio, which makes the
+ * unit busy. With a full barrier on each side, either the release sees
+ * the locked folio and keeps the unit, or the write sees the cleared hint
+ * and takes the lock.
  */
-int carryfs_file_release(struct inode *inode, struct file *file)
+bool carryfs_reserved_hint(struct inode *inode, u64 unit)
 {
-	if (file->f_mode & FMODE_WRITE)
-		filemap_flush(inode->i_mapping);
-	return 0;
+	smp_mb();
+	return (unsigned long)READ_ONCE(inode->i_private) == unit + 1;
+}
+
+void carryfs_set_reserved_hint(struct inode *inode, u64 unit)
+{
+	WRITE_ONCE(inode->i_private, (void *)(unsigned long)(unit + 1));
+}
+
+void carryfs_clear_reserved_hint(struct address_space *mapping)
+{
+	WRITE_ONCE(mapping->host->i_private, NULL);
+	smp_mb();
 }
 
 /* A durable cache flush: earlier writes reach media before later ones. */
@@ -642,6 +785,82 @@ void carryfs_clean_aliases(struct super_block *sb, u64 block, u64 count)
 	clean_bdev_aliases(sb->s_bdev, block, count);
 }
 
+/*
+ * Forget cached copies of @count blocks from @block, just written with bios
+ * that bypassed the buffer cache: small-file reads read data through it.
+ * Waits for a read in flight, which may have fetched the old contents.
+ * Walks the folios as clean_bdev_aliases() does, cheap when none are cached.
+ */
+void carryfs_forget_blocks(struct super_block *sb, u64 block, u64 count)
+{
+	struct address_space *mapping = sb->s_bdev->bd_mapping;
+	unsigned int shift = PAGE_SHIFT - sb->s_blocksize_bits;
+	pgoff_t index = block >> shift, end = (block + count - 1) >> shift;
+	struct folio_batch fbatch;
+	unsigned int i;
+
+	folio_batch_init(&fbatch);
+	while (filemap_get_folios(mapping, &index, end, &fbatch)) {
+		for (i = 0; i < folio_batch_count(&fbatch); i++) {
+			struct folio *folio = fbatch.folios[i];
+			struct buffer_head *head, *bh;
+
+			/* A folio read without buffers would lend them its state. */
+			folio_lock(folio);
+			folio_clear_uptodate(folio);
+			head = folio_buffers(folio);
+			bh = head;
+			while (bh) {
+				if (bh->b_blocknr >= block && bh->b_blocknr < block + count) {
+					lock_buffer(bh);
+					clear_buffer_uptodate(bh);
+					clear_bit(BH_Carryfs_Verified, &bh->b_state);
+					unlock_buffer(bh);
+				}
+				bh = bh->b_this_page;
+				if (bh == head)
+					break;
+			}
+			folio_unlock(folio);
+		}
+		folio_batch_release(&fbatch);
+		cond_resched();
+	}
+}
+
+/*
+ * Raise the calling task's utilization clamp to full for a driver call that
+ * reads the catalog, so schedutil clocks the CPU up for it as it does for
+ * the FUSE adapter's daemon threads (fuse/src/fs.rs, run_at_full_speed),
+ * which do that work for FUSE callers. A clamp the task chose itself is
+ * left alone, as are kernel threads. True if raised: the caller then calls
+ * carryfs_unboost_caller(), which returns the clamp to the default.
+ */
+bool carryfs_boost_caller(void)
+{
+	struct sched_attr attr = {
+		.size = sizeof(attr),
+		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
+		.sched_util_min = SCHED_CAPACITY_SCALE,
+	};
+
+	if ((current->flags & PF_KTHREAD) || current->uclamp_req[UCLAMP_MIN].user_defined)
+		return false;
+	return sched_setattr_nocheck(current, &attr) == 0;
+}
+
+void carryfs_unboost_caller(void)
+{
+	struct sched_attr attr = {
+		.size = sizeof(attr),
+		.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP_MIN,
+		/* -1 resets the clamp to the default, not user-defined. */
+		.sched_util_min = -1,
+	};
+
+	sched_setattr_nocheck(current, &attr);
+}
+
 /* A block plug for a batch of writes; NULL when out of memory. */
 void *carryfs_plug_start(void)
 {
@@ -667,10 +886,13 @@ void carryfs_file_allow_direct(struct file *file)
 
 /* Page cache. */
 
-/* The locked folio a buffered write fills, or an ERR_PTR. */
-struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos)
+/*
+ * The locked folio a buffered write of @len bytes at @pos fills, or an
+ * ERR_PTR: a new one as large as the write and the mapping allow.
+ */
+struct folio *carryfs_write_folio(struct address_space *mapping, loff_t pos, size_t len)
 {
-	return __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN,
+	return __filemap_get_folio(mapping, pos >> PAGE_SHIFT, FGP_WRITEBEGIN | fgf_set_order(len),
 				   mapping_gfp_mask(mapping));
 }
 
@@ -815,6 +1037,11 @@ void carryfs_folio_redirty(struct writeback_control *wbc, struct folio *folio)
 	folio_redirty_for_writepage(wbc, folio);
 }
 
+bool carryfs_wbc_background(struct writeback_control *wbc)
+{
+	return wbc->for_background;
+}
+
 void carryfs_mapping_error(struct address_space *mapping, int error)
 {
 	mapping_set_error(mapping, error);
@@ -860,6 +1087,25 @@ u64 carryfs_readahead_count(struct readahead_control *rac)
 struct folio *carryfs_readahead_folio(struct readahead_control *rac)
 {
 	return readahead_folio(rac);
+}
+
+/* Let @mapping use folios of orders 0 to @max. */
+void carryfs_set_folio_orders(struct address_space *mapping, unsigned int max)
+{
+	mapping_set_folio_order_range(mapping, 0, max);
+}
+
+unsigned long carryfs_folio_nr_pages(struct folio *folio)
+{
+	return folio_nr_pages(folio);
+}
+
+/* Zero @folio from file position @pos, inside it, to its end. */
+void carryfs_folio_zero_tail(struct folio *folio, loff_t pos)
+{
+	size_t from = offset_in_folio(folio, pos);
+
+	folio_zero_range(folio, from, folio_size(folio) - from);
 }
 
 loff_t carryfs_folio_pos(struct folio *folio)

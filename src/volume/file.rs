@@ -886,11 +886,10 @@ impl<D: BlockDevice> Volume<D> {
         let mut hint = self.data_hint;
         self.edit(|transaction| {
             let key = inode_key(object.0);
-            let value = transaction
+            let mut inode = transaction
                 .forest
-                .lookup(&transaction.catalog, TreeKind::Catalog, &key)?
+                .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            let mut inode = Inode::decode(&value)?;
             if inode.kind != ObjectKind::File {
                 return Err(Error::WrongType);
             }
@@ -936,11 +935,10 @@ impl<D: BlockDevice> Volume<D> {
         self.edit(|transaction| {
             let object = object.0;
             let key = inode_key(object);
-            let value = transaction
+            let mut inode = transaction
                 .forest
-                .lookup(&transaction.catalog, TreeKind::Catalog, &key)?
+                .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            let mut inode = Inode::decode(&value)?;
             if inode.kind != ObjectKind::File {
                 return Err(Error::WrongType);
             }
@@ -980,10 +978,14 @@ impl<D: BlockDevice> Volume<D> {
     pub fn read(&mut self, file: &Handle, offset: u64, out: &mut [u8]) -> Result<usize> {
         let object = self.handles.validate(file)?.0;
         self.read_catalog(|forest, catalog| {
-            let value = forest
-                .lookup(&catalog, TreeKind::Catalog, &inode_key(object))?
+            let inode = forest
+                .lookup_with(
+                    &catalog,
+                    TreeKind::Catalog,
+                    &inode_key(object),
+                    Inode::decode,
+                )?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            let inode = Inode::decode(&value)?;
             if inode.kind != ObjectKind::File {
                 return Err(Error::WrongType);
             }

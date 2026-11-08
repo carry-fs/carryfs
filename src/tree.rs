@@ -1216,8 +1216,19 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     }
 
     pub fn lookup(&mut self, root: &Edge, kind: TreeKind, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        if let Some(found) = self.lookup_at_finger(root, kind, key)? {
-            return Ok(found);
+        self.lookup_with(root, kind, key, |value| Ok(value.to_vec()))
+    }
+
+    /// Decode a value while its leaf is borrowed, avoiding an intermediate copy.
+    pub fn lookup_with<T>(
+        &mut self,
+        root: &Edge,
+        kind: TreeKind,
+        key: &[u8],
+        mut read: impl FnMut(&[u8]) -> Result<T>,
+    ) -> Result<Option<T>> {
+        if let Some(found) = self.lookup_at_finger(root, kind, key, &mut read)? {
+            return found.transpose();
         }
         let mut edge = root.clone();
         loop {
@@ -1228,7 +1239,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                     records
                         .search(key)
                         .ok()
-                        .map(|index| records.record(index).1.to_vec()),
+                        .map(|index| read(records.record(index).1)),
                 )),
                 Entries::Branch(children) => {
                     let index = children.partition_point(|child| child.minimum.as_ref() <= key);
@@ -1247,7 +1258,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                     {
                         cache.finger = Some(Finger { root, kind, leaf });
                     }
-                    return Ok(found);
+                    return found.transpose();
                 }
             }
         }
@@ -1258,12 +1269,13 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     /// the leaf's first and last keys. Leaves of one tree hold disjoint key
     /// ranges, so the key is in that leaf or nowhere. `None` means the
     /// descent has to run.
-    fn lookup_at_finger(
+    fn lookup_at_finger<T>(
         &mut self,
         root: &Edge,
         kind: TreeKind,
         key: &[u8],
-    ) -> Result<Option<Option<Vec<u8>>>> {
+        read: &mut impl FnMut(&[u8]) -> T,
+    ) -> Result<Option<Option<T>>> {
         let (Link::Disk(root), Some(cache)) = (root.link, self.cache.as_deref()) else {
             return Ok(None);
         };
@@ -1289,7 +1301,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         let found = records
             .search(key)
             .ok()
-            .map(|index| records.record(index).1.to_vec());
+            .map(|index| read(records.record(index).1));
         self.count_read()?;
         Ok(Some(found))
     }
@@ -3034,7 +3046,16 @@ mod tests {
             let (key, value) = extent(logical);
             let mut cached = Forest::cached(&mut device, &base, Some(&mut cache)).unwrap();
             let root = cached.root(base.catalog, TreeKind::Catalog).unwrap();
+            let mut calls = 0;
+            let length = cached
+                .lookup_with(&root, TreeKind::Catalog, &key, |value| {
+                    calls += 1;
+                    Ok(value.len())
+                })
+                .unwrap();
             let found = cached.lookup(&root, TreeKind::Catalog, &key).unwrap();
+            assert_eq!(length, found.as_ref().map(Vec::len));
+            assert_eq!(calls, usize::from(found.is_some()));
             drop(cached);
             let mut plain = Forest::new(&mut device, &base).unwrap();
             let root = plain.root(base.catalog, TreeKind::Catalog).unwrap();
@@ -3072,6 +3093,11 @@ mod tests {
             forest.lookup(&root, TreeKind::Catalog, &key).unwrap(),
             Some(value)
         );
+        forest.set_reads(MAX_READS);
+        let failed = forest.lookup_with(&root, TreeKind::Catalog, &key, |_| {
+            Err::<(), _>(Error::Corrupt("decoder failed"))
+        });
+        assert!(matches!(failed, Err(Error::LimitExceeded)));
     }
 
     #[test]

@@ -588,14 +588,15 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
             return Err(Error::NoSpace);
         }
         runs.sort_unstable_by_key(|(start, _)| *start);
-        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(runs.len());
-        for (start, count) in runs {
-            match merged.last_mut() {
-                Some((previous, length)) if *previous + *length == start => *length += count,
-                _ => merged.push((start, count)),
+        runs.dedup_by(|(start, count), (previous, length)| {
+            if *previous + *length == *start {
+                *length += *count;
+                true
+            } else {
+                false
             }
-        }
-        Ok(merged)
+        });
+        Ok(runs)
     }
 
     /// Queue the contents of a block allocated by this transaction. Data pages
@@ -1638,6 +1639,38 @@ mod tests {
             "retired data remains after maintenance"
         );
         assert_eq!(transaction.allocate_data(20, 0).unwrap(), runs);
+    }
+
+    #[test]
+    fn allocation_coalesces_runs_after_wrapping_inside_a_group() {
+        let mut device =
+            FaultDevice::new(formatted_volume().into_model_image(), MountMode::ReadWrite);
+        let base = selected(&device);
+        let mut transaction = Transaction::new(&mut device, &base).unwrap();
+        for (group, free) in [
+            (0u64, &[GROUP - 2, GROUP - 1][..]),
+            (1, &[GROUP, GROUP + 1, GROUP + 3][..]),
+        ] {
+            let mut bitmap = vec![0xff; BITMAP];
+            for &block in free {
+                set(&mut bitmap, block, false);
+            }
+            transaction.allocation = transaction
+                .forest
+                .put(
+                    transaction.allocation.clone(),
+                    TreeKind::Allocation,
+                    &group.to_be_bytes(),
+                    &bitmap,
+                )
+                .unwrap();
+        }
+        transaction.allocated.insert(GROUP + 2);
+        assert!(transaction.allocate_data(0, 0).unwrap().is_empty());
+        assert_eq!(
+            transaction.allocate_data(5, 0).unwrap(),
+            [(GROUP - 2, 4), (GROUP + 3, 1)]
+        );
     }
 
     #[test]

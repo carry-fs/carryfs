@@ -227,7 +227,7 @@ impl<D: BlockDevice> Volume<D> {
         size: u64,
         mut scan: FileScan<'_>,
     ) -> std::result::Result<(), ExtractionError> {
-        let mut start = group_key(object.0, 0);
+        let mut start = group_key(object.0, 0).to_vec();
         loop {
             let read = |forest: &mut Forest<'_, D>, catalog| {
                 let Some((key, value)) = forest.scan(&catalog, TreeKind::Catalog, &start, 1)?.pop()

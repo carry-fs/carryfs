@@ -16,14 +16,16 @@ pub(super) const INODE_BYTES: usize = 128;
 
 type RemovalGuard<'a> = Option<&'a mut dyn FnMut(&[u8]) -> Result<()>>;
 
-pub(super) fn inode_key(object: u64) -> Vec<u8> {
-    let mut key = object.to_be_bytes().to_vec();
-    key.push(1);
+pub(super) fn inode_key(object: u64) -> [u8; 9] {
+    let mut key = [0; 9];
+    key[..8].copy_from_slice(&object.to_be_bytes());
+    key[8] = 1;
     key
 }
 
 pub(super) fn dirent_key(parent: u64, folded: &[u8]) -> Vec<u8> {
-    let mut key = parent.to_be_bytes().to_vec();
+    let mut key = Vec::with_capacity(9 + folded.len());
+    key.extend_from_slice(&parent.to_be_bytes());
     key.push(2);
     key.extend_from_slice(folded);
     key
@@ -441,10 +443,11 @@ impl<D: BlockDevice> Volume<D> {
     pub fn lookup(&mut self, parent: ObjectId, name: &Name) -> Result<ObjectId> {
         let key = dirent_key(parent.0, &name.folded);
         self.read_catalog(|forest, catalog| {
-            let value = forest
-                .lookup(&catalog, TreeKind::Catalog, &key)?
-                .ok_or(Error::NotFound)?;
-            Ok(ObjectId(DirentValue::decode(&value)?.target))
+            forest
+                .lookup_with(&catalog, TreeKind::Catalog, &key, |value| {
+                    DirentValue::decode(value).map(|dirent| ObjectId(dirent.target))
+                })?
+                .ok_or(Error::NotFound)
         })
     }
 
@@ -456,19 +459,20 @@ impl<D: BlockDevice> Volume<D> {
     pub fn lookup_entry(&mut self, parent: ObjectId, name: &Name) -> Result<DirectoryEntry> {
         let key = dirent_key(parent.0, &name.folded);
         self.read_catalog(|forest, catalog| {
-            let value = forest
-                .lookup(&catalog, TreeKind::Catalog, &key)?
-                .ok_or(Error::NotFound)?;
-            let dirent = DirentValue::decode(&value)?;
-            validate_disk_name(dirent.stored_name, &key[9..])?;
-            Ok(DirectoryEntry {
-                name: Name {
-                    stored: dirent.stored_name.to_vec(),
-                    folded: name.folded.clone(),
-                },
-                object: ObjectId(dirent.target),
-                kind: dirent.kind,
-            })
+            forest
+                .lookup_with(&catalog, TreeKind::Catalog, &key, |value| -> Result<_> {
+                    let dirent = DirentValue::decode(value)?;
+                    validate_disk_name(dirent.stored_name, &key[9..])?;
+                    Ok(DirectoryEntry {
+                        name: Name {
+                            stored: dirent.stored_name.to_vec(),
+                            folded: name.folded.clone(),
+                        },
+                        object: ObjectId(dirent.target),
+                        kind: dirent.kind,
+                    })
+                })?
+                .ok_or(Error::NotFound)
         })
     }
 
@@ -484,24 +488,25 @@ impl<D: BlockDevice> Volume<D> {
     fn attributes_with_cache(&mut self, object: ObjectId, reuse: bool) -> Result<Attributes> {
         let key = inode_key(object.0);
         let read = |forest: &mut Forest<'_, D>, catalog| {
-            let value = forest
-                .lookup(&catalog, TreeKind::Catalog, &key)?
-                .ok_or(Error::NotFound)?;
-            let inode = Inode::decode(&value)?;
-            Ok(Attributes {
-                kind: inode.kind,
-                size: inode.size,
-                allocated_bytes: inode
-                    .allocated_blocks
-                    .checked_mul(4096)
-                    .ok_or(Error::Corrupt("allocated bytes overflow"))?,
-                parent: ObjectId(inode.parent),
-                creation: inode.creation,
-                modification: inode.modification,
-                metadata_change: inode.metadata_change,
-                orphan: inode.orphan,
-                directory_link: inode.directory_link,
-            })
+            forest
+                .lookup_with(&catalog, TreeKind::Catalog, &key, |value| -> Result<_> {
+                    let inode = Inode::decode(value)?;
+                    Ok(Attributes {
+                        kind: inode.kind,
+                        size: inode.size,
+                        allocated_bytes: inode
+                            .allocated_blocks
+                            .checked_mul(4096)
+                            .ok_or(Error::Corrupt("allocated bytes overflow"))?,
+                        parent: ObjectId(inode.parent),
+                        creation: inode.creation,
+                        modification: inode.modification,
+                        metadata_change: inode.metadata_change,
+                        orphan: inode.orphan,
+                        directory_link: inode.directory_link,
+                    })
+                })?
+                .ok_or(Error::NotFound)
         };
         if reuse {
             self.read_catalog(read)
@@ -545,10 +550,9 @@ impl<D: BlockDevice> Volume<D> {
     fn read_symlink_with_cache(&mut self, object: ObjectId, reuse: bool) -> Result<Vec<u8>> {
         let key = inode_key(object.0);
         let read = |forest: &mut Forest<'_, D>, catalog| {
-            let value = forest
-                .lookup(&catalog, TreeKind::Catalog, &key)?
+            let inode = forest
+                .lookup_with(&catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::NotFound)?;
-            let inode = Inode::decode(&value)?;
             if inode.kind != ObjectKind::Symlink {
                 return Err(Error::WrongType);
             }
@@ -766,22 +770,24 @@ impl<D: BlockDevice> Volume<D> {
         let mount = self.mount;
         let epoch = self.namespace_epoch;
         let read = |forest: &mut Forest<'_, D>, catalog| {
-            let inode_value = forest
-                .lookup(&catalog, TreeKind::Catalog, &inode_key(object.0))?
+            let kind = forest
+                .lookup_with(&catalog, TreeKind::Catalog, &inode_key(object.0), |value| {
+                    Inode::decode(value).map(|inode| inode.kind)
+                })?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            if Inode::decode(&inode_value)?.kind != ObjectKind::Directory {
+            if kind != ObjectKind::Directory {
                 return Err(Error::WrongType);
             }
             // Entries end where the directory's next record kind begins.
             let mut end = object.0.to_be_bytes().to_vec();
             end.push(3);
-            let raw = forest.scan_before(&catalog, TreeKind::Catalog, &start, Some(&end), 64)?;
-            let mut matched = Vec::with_capacity(raw.len());
-            for (key, value) in raw {
-                if !dirent_prefix_match(object.0, &key) {
-                    break;
-                }
-                matched.push((key, value));
+            let mut matched =
+                forest.scan_before(&catalog, TreeKind::Catalog, &start, Some(&end), 64)?;
+            if let Some(end) = matched
+                .iter()
+                .position(|(key, _)| !dirent_prefix_match(object.0, key))
+            {
+                matched.truncate(end);
             }
             // Keep one lookahead record so a full page needs no second tree walk.
             let needs_cursor = matched.len() == 64;
@@ -836,11 +842,10 @@ impl<D: BlockDevice> Volume<D> {
         let now = Timestamp::now()?;
         self.edit(|transaction| {
             let key = inode_key(object.0);
-            let value = transaction
+            let mut inode = transaction
                 .forest
-                .lookup(&transaction.catalog, TreeKind::Catalog, &key)?
+                .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            let mut inode = Inode::decode(&value)?;
             if let Some(creation) = creation {
                 inode.creation = creation;
             }
@@ -863,10 +868,11 @@ impl<D: BlockDevice> Volume<D> {
     pub fn open_directory(&mut self, object: ObjectId) -> Result<Handle> {
         let key = inode_key(object.0);
         let kind = self.read_catalog(|forest, catalog| {
-            let value = forest
-                .lookup(&catalog, TreeKind::Catalog, &key)?
-                .ok_or(Error::NotFound)?;
-            Ok(Inode::decode(&value)?.kind)
+            forest
+                .lookup_with(&catalog, TreeKind::Catalog, &key, |value| {
+                    Inode::decode(value).map(|inode| inode.kind)
+                })?
+                .ok_or(Error::NotFound)
         })?;
         if kind != ObjectKind::Directory {
             return Err(Error::WrongType);
@@ -941,11 +947,15 @@ fn remove_entry<D: BlockDevice>(
         return Err(Error::Corrupt("root cannot be removed"));
     }
     let target_key = inode_key(target);
-    let target_value = transaction
+    let mut target_inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &target_key)?
+        .lookup_with(
+            &transaction.catalog,
+            TreeKind::Catalog,
+            &target_key,
+            Inode::decode,
+        )?
         .ok_or(Error::Corrupt("directory entry has no inode"))?;
-    let mut target_inode = Inode::decode(&target_value)?;
     if (kind == RemoveKind::Directory) != (target_inode.kind == ObjectKind::Directory) {
         return Err(Error::WrongType);
     }
@@ -953,11 +963,15 @@ fn remove_entry<D: BlockDevice>(
         return Err(Error::DirectoryNotEmpty);
     }
     let parent_key = inode_key(parent);
-    let parent_value = transaction
+    let mut parent_inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &parent_key)?
+        .lookup_with(
+            &transaction.catalog,
+            TreeKind::Catalog,
+            &parent_key,
+            Inode::decode,
+        )?
         .ok_or(Error::Corrupt("parent inode is missing"))?;
-    let mut parent_inode = Inode::decode(&parent_value)?;
     parent_inode.child_count = parent_inode
         .child_count
         .checked_sub(1)
@@ -1008,19 +1022,27 @@ fn rename_spelling<D: BlockDevice>(
     let mut dirent = DirentValue::decode(&value)?;
     dirent.stored_name = &destination.stored;
     let target_key = inode_key(dirent.target);
-    let target_value = transaction
+    let mut target_inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &target_key)?
+        .lookup_with(
+            &transaction.catalog,
+            TreeKind::Catalog,
+            &target_key,
+            Inode::decode,
+        )?
         .ok_or(Error::Corrupt("directory entry has no inode"))?;
-    let mut target_inode = Inode::decode(&target_value)?;
     target_inode.metadata_change = now;
 
     let parent_key = inode_key(parent);
-    let parent_value = transaction
+    let mut parent_inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &parent_key)?
+        .lookup_with(
+            &transaction.catalog,
+            TreeKind::Catalog,
+            &parent_key,
+            Inode::decode,
+        )?
         .ok_or(Error::Corrupt("parent inode is missing"))?;
-    let mut parent_inode = Inode::decode(&parent_value)?;
     parent_inode.modification = now;
     parent_inode.metadata_change = now;
 
@@ -1064,15 +1086,15 @@ fn rename_move<D: BlockDevice>(
     let moved_kind = source_dirent.kind;
 
     let destination_parent_key = inode_key(destination_parent);
-    let destination_parent_value = transaction
+    let mut destination_parent_inode = transaction
         .forest
-        .lookup(
+        .lookup_with(
             &transaction.catalog,
             TreeKind::Catalog,
             &destination_parent_key,
+            Inode::decode,
         )?
         .ok_or(Error::NotFound)?;
-    let mut destination_parent_inode = Inode::decode(&destination_parent_value)?;
     if destination_parent_inode.kind != ObjectKind::Directory {
         return Err(Error::WrongType);
     }
@@ -1093,11 +1115,15 @@ fn rename_move<D: BlockDevice>(
                     "cannot move a directory into itself or a descendant",
                 ));
             }
-            let value = transaction
+            current = transaction
                 .forest
-                .lookup(&transaction.catalog, TreeKind::Catalog, &inode_key(current))?
+                .lookup_with(
+                    &transaction.catalog,
+                    TreeKind::Catalog,
+                    &inode_key(current),
+                    |value| Inode::decode(value).map(|inode| inode.parent),
+                )?
                 .ok_or(Error::Corrupt("directory ancestor is missing"))?;
-            current = Inode::decode(&value)?.parent;
         }
     }
 
@@ -1119,15 +1145,16 @@ fn rename_move<D: BlockDevice>(
             return Err(Error::WrongType);
         }
         if existing_dirent.kind == ObjectKind::Directory {
-            let existing_value = transaction
+            let child_count = transaction
                 .forest
-                .lookup(
+                .lookup_with(
                     &transaction.catalog,
                     TreeKind::Catalog,
                     &inode_key(existing_dirent.target),
+                    |value| Inode::decode(value).map(|inode| inode.child_count),
                 )?
                 .ok_or(Error::Corrupt("directory entry has no inode"))?;
-            if Inode::decode(&existing_value)?.child_count != 0 {
+            if child_count != 0 {
                 return Err(Error::DirectoryNotEmpty);
             }
         }
@@ -1135,17 +1162,25 @@ fn rename_move<D: BlockDevice>(
     }
 
     let source_parent_key = inode_key(source_parent);
-    let source_parent_value = transaction
+    let mut source_parent_inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &source_parent_key)?
+        .lookup_with(
+            &transaction.catalog,
+            TreeKind::Catalog,
+            &source_parent_key,
+            Inode::decode,
+        )?
         .ok_or(Error::Corrupt("parent inode is missing"))?;
-    let mut source_parent_inode = Inode::decode(&source_parent_value)?;
 
-    let moved_value = transaction
+    let mut moved_inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &inode_key(moved))?
+        .lookup_with(
+            &transaction.catalog,
+            TreeKind::Catalog,
+            &inode_key(moved),
+            Inode::decode,
+        )?
         .ok_or(Error::Corrupt("directory entry has no inode"))?;
-    let mut moved_inode = Inode::decode(&moved_value)?;
     moved_inode.parent = destination_parent;
     moved_inode.metadata_change = now;
 
@@ -1214,11 +1249,15 @@ fn rename_move<D: BlockDevice>(
     }
     if let Some(target) = replaced_target {
         let target_key = inode_key(target);
-        let target_value = transaction
+        let mut target_inode = transaction
             .forest
-            .lookup(&transaction.catalog, TreeKind::Catalog, &target_key)?
+            .lookup_with(
+                &transaction.catalog,
+                TreeKind::Catalog,
+                &target_key,
+                Inode::decode,
+            )?
             .ok_or(Error::Corrupt("directory entry has no inode"))?;
-        let mut target_inode = Inode::decode(&target_value)?;
         target_inode.orphan = true;
         target_inode.metadata_change = now;
         catalog = transaction.forest.put(
@@ -1248,11 +1287,15 @@ pub(super) fn create_in<D: BlockDevice>(
     now: Timestamp,
 ) -> Result<ObjectId> {
     let parent_key = inode_key(parent.0);
-    let parent_value = transaction
+    let mut parent_inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &parent_key)?
+        .lookup_with(
+            &transaction.catalog,
+            TreeKind::Catalog,
+            &parent_key,
+            Inode::decode,
+        )?
         .ok_or(Error::NotFound)?;
-    let mut parent_inode = Inode::decode(&parent_value)?;
     if parent_inode.kind != ObjectKind::Directory {
         return Err(Error::WrongType);
     }
@@ -1330,11 +1373,10 @@ fn make_symlink_in<D: BlockDevice>(
         .ok_or(Error::NotFound)?;
     let mut entry = DirentValue::decode(&entry_value)?;
     let key = inode_key(entry.target);
-    let value = transaction
+    let mut inode = transaction
         .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &key)?
+        .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
         .ok_or(Error::NotFound)?;
-    let mut inode = Inode::decode(&value)?;
     // An empty file has no extents or checksums, so only the inode changes.
     let empty = match inode.kind {
         ObjectKind::File => inode.size == 0 && inode.allocated_blocks == 0,

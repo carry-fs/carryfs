@@ -291,15 +291,13 @@ impl DataUnitCrc {
             .ok()
             .filter(|len| (1..=UNIT_BYTES as u32).contains(len))
             .ok_or(Error::InvalidInput("data unit valid length"))?;
-        let mut crc = extend(0xFFFF_FFFF, b"CFSXDATA");
-        for field in [
-            &uuid[..],
-            &object.to_le_bytes(),
-            &unit.to_le_bytes(),
-            &valid_len.to_le_bytes(),
-        ] {
-            crc = extend(crc, field);
-        }
+        let mut header = [0; 44];
+        header[..8].copy_from_slice(b"CFSXDATA");
+        header[8..24].copy_from_slice(uuid);
+        header[24..32].copy_from_slice(&object.to_le_bytes());
+        header[32..40].copy_from_slice(&unit.to_le_bytes());
+        header[40..].copy_from_slice(&valid_len.to_le_bytes());
+        let crc = extend(0xFFFF_FFFF, &header);
         Ok(Self {
             crc,
             valid,

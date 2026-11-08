@@ -19,17 +19,19 @@ pub(super) const MAX_TRANSFER_BYTES: usize = 1 << 20;
 const BLOCKS_PER_UNIT: u64 = (UNIT_BYTES / BLOCK_BYTES) as u64;
 const UNITS_PER_GROUP: u64 = 256;
 
-pub(super) fn extent_key(object: u64, logical_block: u64) -> Vec<u8> {
-    let mut key = object.to_be_bytes().to_vec();
-    key.push(3);
-    key.extend_from_slice(&logical_block.to_be_bytes());
+pub(super) fn extent_key(object: u64, logical_block: u64) -> [u8; 17] {
+    let mut key = [0; 17];
+    key[..8].copy_from_slice(&object.to_be_bytes());
+    key[8] = 3;
+    key[9..].copy_from_slice(&logical_block.to_be_bytes());
     key
 }
 
-pub(super) fn group_key(object: u64, group: u64) -> Vec<u8> {
-    let mut key = object.to_be_bytes().to_vec();
-    key.push(4);
-    key.extend_from_slice(&group.to_be_bytes());
+pub(super) fn group_key(object: u64, group: u64) -> [u8; 17] {
+    let mut key = [0; 17];
+    key[..8].copy_from_slice(&object.to_be_bytes());
+    key[8] = 4;
+    key[9..].copy_from_slice(&group.to_be_bytes());
     key
 }
 
@@ -409,8 +411,8 @@ fn rewrite_unit<D: BlockDevice>(
         allocated += 1;
     }
 
-    // The unit's new mapping, one run per contiguous stretch; the caller
-    // merges and records them.
+    // Coalesce the unit's mapping with runs from previous units.
+    // The caller joins these runs to their on-disk neighbours.
     for (index, &block) in physical[..count as usize].iter().enumerate() {
         match mapped.last_mut() {
             Some(run)
@@ -498,14 +500,7 @@ fn rewrite_units<D: BlockDevice>(
             && left.physical.checked_add(left.count) == Some(right.physical)
             && left.count + right.count <= u64::from(u32::MAX)
     };
-    let mut merged: Vec<Extent> = Vec::with_capacity(mapped.len());
-    for run in mapped {
-        match merged.last_mut() {
-            Some(last) if joins(last, &run) => last.count += run.count,
-            _ => merged.push(run),
-        }
-    }
-    for mut run in merged {
+    for mut run in mapped {
         let catalog = transaction.catalog.clone();
         if let Some(next) = transaction.forest.lookup(
             &catalog,
@@ -514,7 +509,7 @@ fn rewrite_units<D: BlockDevice>(
         )? {
             let next = Extent::of(
                 change.object,
-                &(extent_key(change.object, run.end()?), next),
+                &(extent_key(change.object, run.end()?).to_vec(), next),
             )?
             .ok_or(Error::Corrupt("extent record is malformed"))?;
             if joins(&run, &next) {
@@ -893,11 +888,10 @@ impl<D: BlockDevice> Volume<D> {
         let mut hint = self.data_hint;
         self.edit(|transaction| {
             let key = inode_key(object.0);
-            let value = transaction
+            let mut inode = transaction
                 .forest
-                .lookup(&transaction.catalog, TreeKind::Catalog, &key)?
+                .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            let mut inode = Inode::decode(&value)?;
             if inode.kind != ObjectKind::File {
                 return Err(Error::WrongType);
             }
@@ -943,11 +937,10 @@ impl<D: BlockDevice> Volume<D> {
         self.edit(|transaction| {
             let object = object.0;
             let key = inode_key(object);
-            let value = transaction
+            let mut inode = transaction
                 .forest
-                .lookup(&transaction.catalog, TreeKind::Catalog, &key)?
+                .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            let mut inode = Inode::decode(&value)?;
             if inode.kind != ObjectKind::File {
                 return Err(Error::WrongType);
             }
@@ -987,10 +980,14 @@ impl<D: BlockDevice> Volume<D> {
     pub fn read(&mut self, file: &Handle, offset: u64, out: &mut [u8]) -> Result<usize> {
         let object = self.handles.validate(file)?.0;
         self.read_catalog(|forest, catalog| {
-            let value = forest
-                .lookup(&catalog, TreeKind::Catalog, &inode_key(object))?
+            let inode = forest
+                .lookup_with(
+                    &catalog,
+                    TreeKind::Catalog,
+                    &inode_key(object),
+                    Inode::decode,
+                )?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            let inode = Inode::decode(&value)?;
             if inode.kind != ObjectKind::File {
                 return Err(Error::WrongType);
             }

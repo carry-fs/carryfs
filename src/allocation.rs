@@ -588,14 +588,15 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
             return Err(Error::NoSpace);
         }
         runs.sort_unstable_by_key(|(start, _)| *start);
-        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(runs.len());
-        for (start, count) in runs {
-            match merged.last_mut() {
-                Some((previous, length)) if *previous + *length == start => *length += count,
-                _ => merged.push((start, count)),
+        runs.dedup_by(|(start, count), (previous, length)| {
+            if *previous + *length == *start {
+                *length += *count;
+                true
+            } else {
+                false
             }
-        }
-        Ok(merged)
+        });
+        Ok(runs)
     }
 
     /// Queue the contents of a block allocated by this transaction. Data pages
@@ -649,8 +650,9 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
     /// Record a cleanup orphan marker for a just-unlinked object. Bounded
     /// maintenance later detaches its catalog interval and clears the marker.
     pub(crate) fn mark_orphan(&mut self, object: u64) -> Result<()> {
-        let mut key = vec![3];
-        key.extend_from_slice(&object.to_be_bytes());
+        let mut key = [0; 9];
+        key[0] = 3;
+        key[1..].copy_from_slice(&object.to_be_bytes());
         self.cleanup = self
             .forest
             .put(self.cleanup.clone(), TreeKind::Cleanup, &key, &[])?;
@@ -773,10 +775,11 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
 
     fn orphan(&mut self, key: Vec<u8>) -> Result<()> {
         let owner = u64_be(&key[1..])?;
-        let mut low = owner.to_be_bytes().to_vec();
-        low.push(1);
-        let mut high = owner.to_be_bytes().to_vec();
-        high.push(5);
+        let mut low = [0; 9];
+        low[..8].copy_from_slice(&owner.to_be_bytes());
+        low[8] = 1;
+        let mut high = low;
+        high[8] = 5;
         let inode = self
             .forest
             .lookup(&self.catalog, TreeKind::Catalog, &low)?
@@ -818,10 +821,11 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
     /// the job would have produced. Returns false, having changed nothing,
     /// for a larger object, which the caller detaches instead.
     pub(crate) fn remove_small_object(&mut self, owner: u64) -> Result<bool> {
-        let mut low = owner.to_be_bytes().to_vec();
-        low.push(1);
-        let mut high = owner.to_be_bytes().to_vec();
-        high.push(5);
+        let mut low = [0; 9];
+        low[..8].copy_from_slice(&owner.to_be_bytes());
+        low[8] = 1;
+        let mut high = low;
+        high[8] = 5;
         let records = self.forest.scan_before(
             &self.catalog,
             TreeKind::Catalog,
@@ -962,7 +966,7 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         }
         for job in &self.jobs {
             let reference = self.forest.resolve(&job.tree, &assignments)?;
-            let mut value = vec![0; 32];
+            let mut value = [0; 32];
             value[..8].copy_from_slice(&job.owner.to_le_bytes());
             value[8] = job.low;
             value[9] = job.high;
@@ -973,10 +977,11 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
                 .put(cleanup, TreeKind::Cleanup, &job.key, &value)?;
         }
         for range in &self.retired_data {
-            let mut key = vec![1];
-            key.extend_from_slice(&self.forest.generation.to_be_bytes());
-            key.extend_from_slice(&range.start.to_be_bytes());
-            let mut value = vec![0; 8];
+            let mut key = [0; 17];
+            key[0] = 1;
+            key[1..9].copy_from_slice(&self.forest.generation.to_be_bytes());
+            key[9..].copy_from_slice(&range.start.to_be_bytes());
+            let mut value = [0; 8];
             value[..4].copy_from_slice(
                 &u32::try_from(range.count)
                     .map_err(|_| Error::LimitExceeded)?
@@ -1182,8 +1187,9 @@ pub(crate) fn prepare_maintenance(
         // full windows plus a short one each side of the wrap.
         let mut wrapped = false;
         let candidates = loop {
-            let mut start = vec![3];
-            start.extend_from_slice(&next_cursor.to_be_bytes());
+            let mut start = [0; 9];
+            start[0] = 3;
+            start[1..].copy_from_slice(&next_cursor.to_be_bytes());
             let orphans = transaction.forest.scan(
                 &transaction.cleanup,
                 TreeKind::Cleanup,
@@ -1638,6 +1644,38 @@ mod tests {
             "retired data remains after maintenance"
         );
         assert_eq!(transaction.allocate_data(20, 0).unwrap(), runs);
+    }
+
+    #[test]
+    fn allocation_coalesces_runs_after_wrapping_inside_a_group() {
+        let mut device =
+            FaultDevice::new(formatted_volume().into_model_image(), MountMode::ReadWrite);
+        let base = selected(&device);
+        let mut transaction = Transaction::new(&mut device, &base).unwrap();
+        for (group, free) in [
+            (0u64, &[GROUP - 2, GROUP - 1][..]),
+            (1, &[GROUP, GROUP + 1, GROUP + 3][..]),
+        ] {
+            let mut bitmap = vec![0xff; BITMAP];
+            for &block in free {
+                set(&mut bitmap, block, false);
+            }
+            transaction.allocation = transaction
+                .forest
+                .put(
+                    transaction.allocation.clone(),
+                    TreeKind::Allocation,
+                    &group.to_be_bytes(),
+                    &bitmap,
+                )
+                .unwrap();
+        }
+        transaction.allocated.insert(GROUP + 2);
+        assert!(transaction.allocate_data(0, 0).unwrap().is_empty());
+        assert_eq!(
+            transaction.allocate_data(5, 0).unwrap(),
+            [(GROUP - 2, 4), (GROUP + 3, 1)]
+        );
     }
 
     #[test]

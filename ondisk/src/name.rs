@@ -81,6 +81,9 @@ fn lookup_mapping(
     table: &'static [(u32, &'static [u32])],
     code_point: u32,
 ) -> Option<&'static [u32]> {
+    if code_point < table.first()?.0 {
+        return None;
+    }
     let index = table
         .binary_search_by_key(&code_point, |(code_point, _)| *code_point)
         .ok()?;
@@ -88,6 +91,9 @@ fn lookup_mapping(
 }
 
 fn combining_class(code_point: u32) -> u8 {
+    if code_point < name_tables::COMBINING_CLASSES[0].0 {
+        return 0;
+    }
     let Ok(index) = name_tables::COMBINING_CLASSES
         .binary_search_by_key(&code_point, |(code_point, _)| *code_point)
     else {
@@ -113,6 +119,10 @@ fn is_disallowed_code_point(code_point: u32) -> bool {
 }
 
 fn compose(first: u32, second: u32) -> Option<u32> {
+    // Neither a table composition nor a Hangul continuation ends in ASCII.
+    if second < 0x80 {
+        return None;
+    }
     if (0x1100..0x1113).contains(&first) && (0x1161..0x1176).contains(&second) {
         return Some(0xAC00 + ((first - 0x1100) * 21 + second - 0x1161) * 28);
     }
@@ -207,6 +217,10 @@ fn normalize_nfc(input: &[u32], output: &mut CodePoints<'_>) -> Result<()> {
 fn full_case_fold(input: &[u32], output: &mut CodePoints<'_>) -> Result<()> {
     output.len = 0;
     for &code_point in input {
+        if code_point < 0x80 {
+            output.push(u32::from((code_point as u8).to_ascii_lowercase()))?;
+            continue;
+        }
         if let Some(mapping) = lookup_mapping(name_tables::CASE_FOLDINGS, code_point) {
             for &part in mapping {
                 output.push(part)?;
@@ -505,6 +519,12 @@ mod tests {
     /// against its correct key and against corrupted ones.
     #[test]
     fn ascii_names_take_the_same_path() {
+        assert_eq!(lookup_mapping(&[], 0), None);
+        assert!(
+            name_tables::COMPOSITIONS
+                .iter()
+                .all(|(_, second, _)| *second >= 0x80)
+        );
         let mut names: Vec<String> = Vec::new();
         for a in 0u8..128 {
             names.push((a as char).to_string());

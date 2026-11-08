@@ -724,7 +724,8 @@ impl Object {
 }
 
 fn catalog_key(owner: u64, kind: u8, suffix: Option<u64>) -> Vec<u8> {
-    let mut key = owner.to_be_bytes().to_vec();
+    let mut key = Vec::with_capacity(if suffix.is_some() { 17 } else { 9 });
+    key.extend_from_slice(&owner.to_be_bytes());
     key.push(kind);
     if let Some(suffix) = suffix {
         key.extend_from_slice(&suffix.to_be_bytes());
@@ -732,9 +733,10 @@ fn catalog_key(owner: u64, kind: u8, suffix: Option<u64>) -> Vec<u8> {
     key
 }
 
-fn cleanup_key(kind: u8, id: u64) -> Vec<u8> {
-    let mut key = vec![kind];
-    key.extend_from_slice(&id.to_be_bytes());
+fn cleanup_key(kind: u8, id: u64) -> [u8; 9] {
+    let mut key = [0; 9];
+    key[0] = kind;
+    key[1..].copy_from_slice(&id.to_be_bytes());
     key
 }
 

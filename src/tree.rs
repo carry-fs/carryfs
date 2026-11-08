@@ -188,6 +188,11 @@ impl Leaf {
     fn replace_value(&mut self, index: usize, value: &[u8]) -> Result<()> {
         let old = self.spans[index];
         let start = old.start as usize;
+        if value.len() == usize::from(old.value) {
+            let at = start + usize::from(old.key);
+            self.bytes[at..at + value.len()].copy_from_slice(value);
+            return Ok(());
+        }
         let key = self.bytes[start..start + usize::from(old.key)].to_vec();
         self.spans[index] = self.store(&key, value)?;
         self.dead += usize::from(old.key) + usize::from(old.value);
@@ -2258,6 +2263,11 @@ mod tests {
         ])
         .unwrap();
         leaf.insert(1, b"b", b"two").unwrap();
+        let before = leaf.clone();
+        leaf.replace_value(2, b"THREE").unwrap();
+        assert_eq!(leaf.record(2), (&b"c"[..], &b"THREE"[..]));
+        assert_eq!(before.record(2), (&b"c"[..], &b"three"[..]));
+        assert_eq!(leaf.record(3), before.record(3));
         leaf.replace_value(2, b"replacement").unwrap();
         leaf.remove(0);
         assert!(leaf.dead > 0);

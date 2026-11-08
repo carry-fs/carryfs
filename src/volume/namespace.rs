@@ -775,13 +775,13 @@ impl<D: BlockDevice> Volume<D> {
             // Entries end where the directory's next record kind begins.
             let mut end = object.0.to_be_bytes().to_vec();
             end.push(3);
-            let raw = forest.scan_before(&catalog, TreeKind::Catalog, &start, Some(&end), 64)?;
-            let mut matched = Vec::with_capacity(raw.len());
-            for (key, value) in raw {
-                if !dirent_prefix_match(object.0, &key) {
-                    break;
-                }
-                matched.push((key, value));
+            let mut matched =
+                forest.scan_before(&catalog, TreeKind::Catalog, &start, Some(&end), 64)?;
+            if let Some(end) = matched
+                .iter()
+                .position(|(key, _)| !dirent_prefix_match(object.0, key))
+            {
+                matched.truncate(end);
             }
             // Keep one lookahead record so a full page needs no second tree walk.
             let needs_cursor = matched.len() == 64;

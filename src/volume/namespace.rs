@@ -16,14 +16,16 @@ pub(super) const INODE_BYTES: usize = 128;
 
 type RemovalGuard<'a> = Option<&'a mut dyn FnMut(&[u8]) -> Result<()>>;
 
-pub(super) fn inode_key(object: u64) -> Vec<u8> {
-    let mut key = object.to_be_bytes().to_vec();
-    key.push(1);
+pub(super) fn inode_key(object: u64) -> [u8; 9] {
+    let mut key = [0; 9];
+    key[..8].copy_from_slice(&object.to_be_bytes());
+    key[8] = 1;
     key
 }
 
 pub(super) fn dirent_key(parent: u64, folded: &[u8]) -> Vec<u8> {
-    let mut key = parent.to_be_bytes().to_vec();
+    let mut key = Vec::with_capacity(9 + folded.len());
+    key.extend_from_slice(&parent.to_be_bytes());
     key.push(2);
     key.extend_from_slice(folded);
     key

@@ -259,7 +259,7 @@ fn check_rejects_extents_under_a_symlink() {
                 .unwrap();
             entry[8] = 3;
             let mut catalog = transaction.catalog.clone();
-            for (key, value) in [(key, inode.encode()), (entry_key, entry)] {
+            for (key, value) in [(key.to_vec(), inode.encode()), (entry_key, entry)] {
                 catalog = transaction.forest.put(
                     catalog,
                     crate::format::TreeKind::Catalog,

@@ -19,17 +19,19 @@ pub(super) const MAX_TRANSFER_BYTES: usize = 1 << 20;
 const BLOCKS_PER_UNIT: u64 = (UNIT_BYTES / BLOCK_BYTES) as u64;
 const UNITS_PER_GROUP: u64 = 256;
 
-pub(super) fn extent_key(object: u64, logical_block: u64) -> Vec<u8> {
-    let mut key = object.to_be_bytes().to_vec();
-    key.push(3);
-    key.extend_from_slice(&logical_block.to_be_bytes());
+pub(super) fn extent_key(object: u64, logical_block: u64) -> [u8; 17] {
+    let mut key = [0; 17];
+    key[..8].copy_from_slice(&object.to_be_bytes());
+    key[8] = 3;
+    key[9..].copy_from_slice(&logical_block.to_be_bytes());
     key
 }
 
-pub(super) fn group_key(object: u64, group: u64) -> Vec<u8> {
-    let mut key = object.to_be_bytes().to_vec();
-    key.push(4);
-    key.extend_from_slice(&group.to_be_bytes());
+pub(super) fn group_key(object: u64, group: u64) -> [u8; 17] {
+    let mut key = [0; 17];
+    key[..8].copy_from_slice(&object.to_be_bytes());
+    key[8] = 4;
+    key[9..].copy_from_slice(&group.to_be_bytes());
     key
 }
 
@@ -507,7 +509,7 @@ fn rewrite_units<D: BlockDevice>(
         )? {
             let next = Extent::of(
                 change.object,
-                &(extent_key(change.object, run.end()?), next),
+                &(extent_key(change.object, run.end()?).to_vec(), next),
             )?
             .ok_or(Error::Corrupt("extent record is malformed"))?;
             if joins(&run, &next) {

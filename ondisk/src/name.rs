@@ -81,6 +81,9 @@ fn lookup_mapping(
     table: &'static [(u32, &'static [u32])],
     code_point: u32,
 ) -> Option<&'static [u32]> {
+    if code_point < table.first()?.0 {
+        return None;
+    }
     let index = table
         .binary_search_by_key(&code_point, |(code_point, _)| *code_point)
         .ok()?;
@@ -88,6 +91,9 @@ fn lookup_mapping(
 }
 
 fn combining_class(code_point: u32) -> u8 {
+    if code_point < name_tables::COMBINING_CLASSES[0].0 {
+        return 0;
+    }
     let Ok(index) = name_tables::COMBINING_CLASSES
         .binary_search_by_key(&code_point, |(code_point, _)| *code_point)
     else {

@@ -409,8 +409,8 @@ fn rewrite_unit<D: BlockDevice>(
         allocated += 1;
     }
 
-    // The unit's new mapping, one run per contiguous stretch; the caller
-    // merges and records them.
+    // Coalesce the unit's mapping with runs from previous units.
+    // The caller joins these runs to their on-disk neighbours.
     for (index, &block) in physical[..count as usize].iter().enumerate() {
         match mapped.last_mut() {
             Some(run)
@@ -498,14 +498,7 @@ fn rewrite_units<D: BlockDevice>(
             && left.physical.checked_add(left.count) == Some(right.physical)
             && left.count + right.count <= u64::from(u32::MAX)
     };
-    let mut merged: Vec<Extent> = Vec::with_capacity(mapped.len());
-    for run in mapped {
-        match merged.last_mut() {
-            Some(last) if joins(last, &run) => last.count += run.count,
-            _ => merged.push(run),
-        }
-    }
-    for mut run in merged {
+    for mut run in mapped {
         let catalog = transaction.catalog.clone();
         if let Some(next) = transaction.forest.lookup(
             &catalog,

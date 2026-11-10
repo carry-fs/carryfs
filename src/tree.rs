@@ -486,13 +486,14 @@ pub(crate) enum Link {
     Draft(usize),
 }
 
-/// An edge's minimum key. Copying a branch to change one child copies every
-/// child's key, and dropping the superseded branch drops them. A key of up
-/// to `KEY_INLINE` bytes is stored in place, so both are plain memory moves:
-/// every fixed-width key fits, and so does a directory entry's with a folded
-/// name of up to 21 bytes. A longer key is shared, which costs an atomic
-/// reference-count update per copy and per drop instead of an allocation.
-/// With every key shared, those updates were 15% of the core benchmark.
+/// An edge's minimum key. Every descent copies the edge it follows, and a
+/// branch that takes a base of its own copies all its children's. A key of
+/// up to `KEY_INLINE` bytes is stored in place, so those copies are plain
+/// memory moves: every fixed-width key fits, and so does a directory entry's
+/// with a folded name of up to 21 bytes. A longer key is shared, which costs
+/// an atomic reference-count update per copy and per drop instead of an
+/// allocation. With every key shared, a file creation takes 4% longer and a
+/// removal 7%.
 #[derive(Clone, Debug)]
 pub(crate) enum Key {
     Inline { len: u8, bytes: [u8; KEY_INLINE] },
@@ -555,10 +556,140 @@ pub(crate) struct Edge {
     pub data_blocks: u64,
 }
 
+/// A branch's children in key order. An edit copies each node on its path to
+/// keep the version before it, and a copy of every child was a fifth of a
+/// file creation's time. So a copy shares `base` and holds only the children
+/// it replaced since, and gets a base of its own once those pass `PATCHES`
+/// or the children's number changes.
+#[derive(Clone, Default)]
+struct Branch {
+    base: Arc<[Edge]>,
+    /// Replaced children by index. They hide `base` at the same index.
+    patches: Vec<(usize, Edge)>,
+}
+
+/// Replaced children a branch holds before it copies its base.
+const PATCHES: usize = 8;
+
+impl From<Vec<Edge>> for Branch {
+    fn from(children: Vec<Edge>) -> Self {
+        Self {
+            base: children.into(),
+            patches: Vec::new(),
+        }
+    }
+}
+
+impl std::ops::Index<usize> for Branch {
+    type Output = Edge;
+
+    fn index(&self, index: usize) -> &Edge {
+        self.patches
+            .iter()
+            .find(|(at, _)| *at == index)
+            .map_or(&self.base[index], |(_, child)| child)
+    }
+}
+
+impl Branch {
+    fn len(&self) -> usize {
+        self.base.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.base.is_empty()
+    }
+
+    fn get(&self, index: usize) -> Option<&Edge> {
+        (index < self.len()).then(|| &self[index])
+    }
+
+    fn last(&self) -> Option<&Edge> {
+        self.get(self.len().checked_sub(1)?)
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = &Edge> + ExactSizeIterator {
+        (0..self.len()).map(|index| &self[index])
+    }
+
+    /// The number of leading children that satisfy `before`.
+    fn partition_point(&self, before: impl Fn(&Edge) -> bool) -> usize {
+        if self.patches.is_empty() {
+            return self.base.partition_point(before);
+        }
+        let (mut low, mut high) = (0, self.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if before(&self[middle]) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        low
+    }
+
+    fn into_vec(self) -> Vec<Edge> {
+        self.iter().cloned().collect()
+    }
+
+    /// Replace the child at `index`, in the base when no other version shares it.
+    fn set(&mut self, index: usize, child: Edge) {
+        if let Some(base) = Arc::get_mut(&mut self.base) {
+            for (at, patch) in self.patches.drain(..) {
+                base[at] = patch;
+            }
+            base[index] = child;
+        } else if let Some((_, patch)) = self.patches.iter_mut().find(|(at, _)| *at == index) {
+            *patch = child;
+        } else if self.patches.len() < PATCHES {
+            self.patches.push((index, child));
+        } else {
+            let mut children = std::mem::take(self).into_vec();
+            children[index] = child;
+            *self = children.into();
+        }
+    }
+
+    /// Renumber the children's links. Only a draft's own children link to
+    /// drafts, so a base shared with a published node stays as it is.
+    fn relink(&mut self, relink: impl Fn(&mut Link)) {
+        if self
+            .base
+            .iter()
+            .all(|child| matches!(child.link, Link::Disk(_)))
+        {
+            for (_, patch) in &mut self.patches {
+                relink(&mut patch.link);
+            }
+            return;
+        }
+        match Arc::get_mut(&mut self.base) {
+            // Apply the patches first: a child one hides may link to a
+            // draft that is gone, which has no new number.
+            Some(base) => {
+                for (at, patch) in self.patches.drain(..) {
+                    base[at] = patch;
+                }
+                for child in base {
+                    relink(&mut child.link);
+                }
+            }
+            None => {
+                let mut children = std::mem::take(self).into_vec();
+                for child in &mut children {
+                    relink(&mut child.link);
+                }
+                *self = children.into();
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Entries {
     Leaf(Leaf),
-    Branch(Vec<Edge>),
+    Branch(Branch),
 }
 
 #[derive(Clone)]
@@ -768,9 +899,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             }
             relink(&mut node.edge.link);
             if let Entries::Branch(children) = &mut node.entries {
-                for child in children {
-                    relink(&mut child.link);
-                }
+                children.relink(relink);
             }
             self.nodes.push(node);
         }
@@ -1062,7 +1191,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             .ok_or(Error::InvalidInput("unknown draft tree node"))?;
         let taken = Node {
             kind,
-            entries: Entries::Branch(Vec::new()),
+            entries: Entries::Branch(Branch::default()),
             edge: node.edge.clone(),
         };
         Ok(std::mem::replace(node, taken))
@@ -1134,7 +1263,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             if total != edge.data_blocks {
                 return Err(Error::Corrupt("subtree total mismatch"));
             }
-            Entries::Branch(children)
+            Entries::Branch(children.into())
         };
         let node = Node {
             kind,
@@ -1199,7 +1328,13 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             last = Some(&child.minimum);
         }
         let minimum = first.minimum.clone();
-        self.draft(kind, Entries::Branch(children), minimum, level, total)
+        self.draft(
+            kind,
+            Entries::Branch(children.into()),
+            minimum,
+            level,
+            total,
+        )
     }
 
     fn draft(
@@ -1455,10 +1590,9 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                     // `start`, so one child per record still wanted is enough.
                     let wanted = first + 1 + (limit - out.len());
                     pending.extend(
-                        children[first.min(last)..last.min(wanted)]
-                            .iter()
+                        (first.min(last)..last.min(wanted))
                             .rev()
-                            .cloned(),
+                            .map(|index| children[index].clone()),
                     );
                     false
                 }
@@ -1493,8 +1627,9 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                     Some(self.leaf(kind, right)?),
                 ))
             }
-            Entries::Branch(mut children) => {
+            Entries::Branch(children) => {
                 let at = children.partition_point(|child| child.minimum.as_ref() < key) - 1;
+                let mut children = children.into_vec();
                 let right_children = children.split_off(at + 1);
                 let boundary = children
                     .pop()
@@ -1573,24 +1708,27 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                     a.append(&b)?;
                     self.pack_leaves(kind, a, false)
                 }
-                (Entries::Branch(mut a), Entries::Branch(b)) => {
-                    a.extend(b);
+                (Entries::Branch(a), Entries::Branch(b)) => {
+                    let mut a = a.into_vec();
+                    a.extend(b.into_vec());
                     self.pack_branches(kind, a, false)
                 }
                 _ => Err(Error::Corrupt("equal tree levels have different kinds")),
             }
         } else if left.level > right.level {
-            let Entries::Branch(mut children) = self.load(&left, kind)?.entries else {
+            let Entries::Branch(children) = self.load(&left, kind)?.entries else {
                 return Err(Error::Corrupt("nonzero level is a leaf"));
             };
+            let mut children = children.into_vec();
             let boundary = children.pop().ok_or(Error::Corrupt("empty branch"))?;
             children.extend(self.join_nodes(boundary, right, kind)?);
             self.retire_root(&left);
             self.pack_branches(kind, children, false)
         } else {
-            let Entries::Branch(mut children) = self.load(&right, kind)?.entries else {
+            let Entries::Branch(children) = self.load(&right, kind)?.entries else {
                 return Err(Error::Corrupt("nonzero level is a leaf"));
             };
+            let mut children = children.into_vec();
             let boundary = children.remove(0);
             let mut joined = self.join_nodes(left, boundary, kind)?;
             joined.extend(children);
@@ -1674,7 +1812,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         &mut self,
         kind: TreeKind,
         edge: &Edge,
-        mut children: Vec<Edge>,
+        mut children: Branch,
         index: usize,
         mut replacements: Vec<Edge>,
     ) -> Result<Vec<Edge>> {
@@ -1682,7 +1820,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             .first()
             .map_or(0, |child| child.minimum.len())
             .saturating_sub(children[index].minimum.len());
-        let bytes = |children: &[Edge]| -> usize {
+        let bytes = |children: &Branch| -> usize {
             children.iter().map(|child| 20 + child.minimum.len()).sum()
         };
         // Every branch fits its page: it was decoded from one, packed into
@@ -1707,7 +1845,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                 .and_then(|total| total.checked_add(child.data_blocks))
                 .filter(|total| *total <= self.base.blocks)
                 .ok_or(Error::Corrupt("subtree total exceeds volume"))?;
-            children[index] = replacements.remove(0);
+            children.set(index, replacements.remove(0));
             let minimum = children[0].minimum.clone();
             return Ok(vec![self.draft(
                 kind,
@@ -1719,6 +1857,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         }
         // A split of the last child is an append at this branch's end too.
         let append = index + 1 == children.len();
+        let mut children = children.into_vec();
         children.splice(index..index + 1, replacements);
         self.pack_branches(kind, children, append)
     }
@@ -1732,9 +1871,10 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         &mut self,
         kind: TreeKind,
         edge: &Edge,
-        mut children: Vec<Edge>,
+        children: Branch,
         index: usize,
     ) -> Result<Edge> {
+        let mut children = children.into_vec();
         let child = children.remove(index);
         self.retire_root(&child);
         let total = edge
@@ -1742,7 +1882,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             .checked_sub(child.data_blocks)
             .ok_or(Error::Corrupt("subtree total underflow"))?;
         let minimum = children[0].minimum.clone();
-        self.draft(kind, Entries::Branch(children), minimum, 1, total)
+        self.draft(kind, Entries::Branch(children.into()), minimum, 1, total)
     }
 
     /// Data blocks a leaf record accounts for; only catalog extents have any.
@@ -2001,7 +2141,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                 Entries::Leaf(records) => Entries::Leaf(records.clone()),
                 Entries::Branch(children) => {
                     let mut resolved = Vec::with_capacity(children.len());
-                    for child in children {
+                    for child in children.iter() {
                         let child_ref = self.resolve(child, assignments)?;
                         let mut bytes = [0; 16];
                         bytes[..8].copy_from_slice(&child_ref.block.to_le_bytes());
@@ -2012,7 +2152,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                             ..child.clone()
                         });
                     }
-                    Entries::Branch(resolved)
+                    Entries::Branch(resolved.into())
                 }
             };
             let slices: Vec<(&[u8], &[u8])> = match &entries {
@@ -2088,7 +2228,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             Entries::Branch(children) => {
                 assert_eq!(decoded.records.len(), children.len(), "built branch length");
                 let mut total = 0u64;
-                for ((key, value), child) in decoded.records.iter().zip(children) {
+                for ((key, value), child) in decoded.records.iter().zip(children.iter()) {
                     assert_eq!(*key, child.minimum.as_ref(), "built child minimum");
                     let reference = tree_ref(value).expect("built child reference");
                     assert_eq!(Link::Disk(reference), child.link, "built child link");
@@ -2396,6 +2536,112 @@ mod tests {
         }
     }
 
+    /// Each version of a branch reads as its own children, whether it shares
+    /// its base, patches it, or has outgrown its patches.
+    #[test]
+    fn branch_versions_keep_their_own_children() {
+        let child = |link: Link, index: usize| Edge {
+            link,
+            minimum: Key::from(&[2 * index as u8 + 1][..]),
+            level: 0,
+            data_blocks: index as u64,
+        };
+        let seen = |edge: &Edge| (edge.link, edge.minimum.to_vec(), edge.data_blocks);
+        let same = |branch: &Branch, model: &[Edge]| {
+            let expected: Vec<_> = model.iter().map(seen).collect();
+            assert_eq!(branch.iter().map(seen).collect::<Vec<_>>(), expected);
+            assert_eq!(
+                branch
+                    .clone()
+                    .into_vec()
+                    .iter()
+                    .map(seen)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(branch.len(), model.len());
+            assert_eq!(branch.last().map(seen), expected.last().cloned());
+            assert!(branch.get(model.len()).is_none());
+            for key in 0..=2 * model.len() as u8 + 1 {
+                assert_eq!(
+                    branch.partition_point(|child| child.minimum.as_ref() <= &[key][..]),
+                    model.partition_point(|child| child.minimum.as_ref() <= &[key][..]),
+                );
+            }
+        };
+        let disk = |index: usize| {
+            Link::Disk(TreeRef {
+                block: 1000 + index as u64,
+                generation: 1,
+            })
+        };
+        let mut model: Vec<Edge> = (0..20).map(|index| child(disk(index), index)).collect();
+        let mut branch = Branch::from(model.clone());
+        let mut older: Vec<(Branch, Vec<Edge>)> = Vec::new();
+        for step in 0..300 {
+            // An older version usually shares the base, so the edit is a
+            // patch; with none left it is made in place.
+            older.push((branch.clone(), model.clone()));
+            if step % 7 == 6 {
+                older.clear();
+            }
+            let index = step * 7 % model.len();
+            let new = child(Link::Draft(step), index);
+            branch.set(index, new.clone());
+            model[index] = new;
+            assert!(branch.patches.len() <= PATCHES);
+            same(&branch, &model);
+            for (branch, model) in &older {
+                same(branch, model);
+            }
+            if step % 13 == 12 {
+                // As `compact` does: every draft link a live node holds.
+                let renumber = |link: &mut Link| {
+                    if let Link::Draft(id) = link {
+                        *id += 1000;
+                    }
+                };
+                branch.relink(renumber);
+                model.iter_mut().for_each(|child| renumber(&mut child.link));
+                same(&branch, &model);
+                for (branch, model) in &older {
+                    same(branch, model);
+                }
+            }
+        }
+    }
+
+    /// A child that a patch hides may link to a draft `compact` dropped,
+    /// which has no new number: renumbering must not reach it.
+    #[test]
+    fn renumbering_skips_children_that_patches_hide() {
+        let child = |id: usize| Edge {
+            link: Link::Draft(id),
+            minimum: Key::from(&b"k"[..]),
+            level: 0,
+            data_blocks: 0,
+        };
+        let renumber = |link: &mut Link| match link {
+            Link::Draft(7) => panic!("renumbered a hidden child"),
+            Link::Draft(id) => *id += 100,
+            Link::Disk(_) => {}
+        };
+        for shared in [true, false] {
+            let mut branch = Branch::from(vec![child(1), child(7)]);
+            let older = branch.clone();
+            branch.set(1, child(8));
+            assert_eq!(branch.patches.len(), 1);
+            // Dropped here unless shared, leaving the patch on an unshared base.
+            let older = shared.then_some(older);
+            branch.relink(renumber);
+            let links: Vec<Link> = branch.iter().map(|child| child.link).collect();
+            assert_eq!(links, [Link::Draft(101), Link::Draft(108)]);
+            if let Some(older) = older {
+                assert_eq!(older[1].link, Link::Draft(7));
+            }
+        }
+    }
+
     #[test]
     fn a_full_cache_drops_leaves_and_keeps_branches() {
         let node = |level: u8| Node {
@@ -2403,7 +2649,7 @@ mod tests {
             entries: if level == 0 {
                 Entries::Leaf(Leaf::default())
             } else {
-                Entries::Branch(Vec::new())
+                Entries::Branch(Branch::default())
             },
             edge: Edge {
                 link: Link::Draft(0),
@@ -2481,7 +2727,7 @@ mod tests {
             if let Entries::Branch(children) =
                 forest.load(&edge, TreeKind::Cleanup).unwrap().entries
             {
-                pending.extend(children);
+                pending.extend(children.into_vec());
             }
         }
         counts

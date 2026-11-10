@@ -104,7 +104,32 @@ fn combining_class(code_point: u32) -> u8 {
         .map_or(0, |(_, class)| *class)
 }
 
+/// `in_invalid_ranges` for each ASCII code point. An ASCII name checks every
+/// byte, and a table search for each was two thirds of the time to parse or
+/// validate one.
+const DISALLOWED_ASCII: [bool; 128] = {
+    let mut disallowed = [false; 128];
+    let mut range = 0;
+    while range < name_tables::INVALID_CODE_POINT_RANGES.len() {
+        let (start, end) = name_tables::INVALID_CODE_POINT_RANGES[range];
+        let mut code_point = start;
+        while code_point <= end && code_point < 128 {
+            disallowed[code_point as usize] = true;
+            code_point += 1;
+        }
+        range += 1;
+    }
+    disallowed
+};
+
 fn is_disallowed_code_point(code_point: u32) -> bool {
+    match DISALLOWED_ASCII.get(code_point as usize) {
+        Some(disallowed) => *disallowed,
+        None => in_invalid_ranges(code_point),
+    }
+}
+
+fn in_invalid_ranges(code_point: u32) -> bool {
     name_tables::INVALID_CODE_POINT_RANGES
         .binary_search_by(|(start, end)| {
             if code_point < *start {
@@ -400,6 +425,12 @@ pub fn validate_disk_name(stored: &[u8], folded: &[u8], scratch: &mut Scratch) -
     if folded.len() > MAX_FOLDED_BYTES {
         return Err(Error::Corrupt("folded disk name length"));
     }
+    // A valid ASCII name's key is its lowercase form, which is ASCII too, so
+    // neither needs a UTF-8 check. An invalid one takes the checks below in
+    // their order, for the same error as before.
+    if stored.is_ascii() && validate_ascii_disk_name(stored, folded).is_ok() {
+        return Ok(());
+    }
     let stored_text = str::from_utf8(stored).map_err(|_| Error::Corrupt("stored name UTF-8"))?;
     str::from_utf8(folded).map_err(|_| Error::Corrupt("folded name UTF-8"))?;
     if stored.is_ascii() {
@@ -431,11 +462,15 @@ fn validate_ascii_disk_name(stored: &[u8], folded: &[u8]) -> Result<()> {
     {
         return Err(Error::Corrupt("disallowed Unicode code point in disk name"));
     }
+    // Every byte is compared, without stopping at the first difference, so
+    // the loop compiles to vector compares.
     if folded.len() != stored.len()
         || stored
             .iter()
             .zip(folded)
-            .any(|(stored, folded)| stored.to_ascii_lowercase() != *folded)
+            .fold(false, |differs, (stored, folded)| {
+                differs | (stored.to_ascii_lowercase() != *folded)
+            })
     {
         return Err(Error::Corrupt("disk name comparison key mismatch"));
     }
@@ -511,6 +546,18 @@ mod tests {
 
     fn validate(stored: &[u8], folded: &[u8]) -> Result<()> {
         validate_disk_name(stored, folded, &mut scratch())
+    }
+
+    #[test]
+    fn the_ascii_table_matches_the_invalid_ranges() {
+        for code_point in 0..=0x10FFFF {
+            assert_eq!(
+                is_disallowed_code_point(code_point),
+                in_invalid_ranges(code_point),
+                "{code_point:#x}"
+            );
+        }
+        assert!(DISALLOWED_ASCII[0x1F] && DISALLOWED_ASCII[0x7F] && !DISALLOWED_ASCII[0x20]);
     }
 
     /// The ASCII shortcuts answer exactly as the code-point pipeline does,

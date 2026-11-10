@@ -153,11 +153,11 @@ impl Leaf {
     }
 
     /// The first key as an edge's minimum, sharing `old` when it is unchanged.
-    fn minimum(&self, old: Option<&Arc<[u8]>>) -> Arc<[u8]> {
+    fn minimum(&self, old: Option<&Key>) -> Key {
         match (self.spans.first(), old) {
-            (None, _) => Arc::from(&[][..]),
+            (None, _) => Key::from(&[][..]),
             (Some(first), Some(old)) if self.at(*first).0 == old.as_ref() => old.clone(),
-            (Some(first), _) => Arc::from(self.at(*first).0),
+            (Some(first), _) => Key::from(self.at(*first).0),
         }
     }
 
@@ -488,13 +488,71 @@ pub(crate) enum Link {
     Draft(usize),
 }
 
+/// An edge's minimum key. Copying a branch to change one child copies every
+/// child's key, and dropping the superseded branch drops them. A key of up
+/// to `KEY_INLINE` bytes is stored in place, so both are plain memory moves:
+/// every fixed-width key fits, and so does a directory entry's with a folded
+/// name of up to 21 bytes. A longer key is shared, which costs an atomic
+/// reference-count update per copy and per drop instead of an allocation.
+/// With every key shared, those updates were 15% of the core benchmark.
+#[derive(Clone, Debug)]
+pub(crate) enum Key {
+    Inline { len: u8, bytes: [u8; KEY_INLINE] },
+    Shared(Arc<[u8]>),
+}
+
+/// Makes `Key` 32 bytes. A bound of 62 covers longer names but made file
+/// creation 12% slower, because every copied edge grows with it.
+const KEY_INLINE: usize = 30;
+
+impl From<&[u8]> for Key {
+    fn from(key: &[u8]) -> Self {
+        if key.len() > KEY_INLINE {
+            return Self::Shared(Arc::from(key));
+        }
+        let mut bytes = [0; KEY_INLINE];
+        bytes[..key.len()].copy_from_slice(key);
+        Self::Inline {
+            // At most `KEY_INLINE`.
+            len: key.len() as u8,
+            bytes,
+        }
+    }
+}
+
+impl std::ops::Deref for Key {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Inline { len, bytes } => &bytes[..usize::from(*len)],
+            Self::Shared(key) => key,
+        }
+    }
+}
+
+impl AsRef<[u8]> for Key {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Edge {
     pub link: Link,
-    /// Shared, so copying a branch to change one child does not allocate a
-    /// key per child: copying and dropping branch nodes was a third of a file
-    /// creation's time.
-    pub minimum: Arc<[u8]>,
+    pub minimum: Key,
     pub level: u8,
     pub data_blocks: u64,
 }
@@ -1150,7 +1208,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         &mut self,
         kind: TreeKind,
         entries: Entries,
-        minimum: Arc<[u8]>,
+        minimum: Key,
         level: u8,
         data_blocks: u64,
     ) -> Result<Edge> {
@@ -1976,7 +2034,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                 link: Link::Disk(reference),
                 minimum: slices
                     .first()
-                    .map_or_else(|| Arc::from(&[][..]), |(key, _)| Arc::from(*key)),
+                    .map_or_else(|| Key::from(&[][..]), |(key, _)| Key::from(*key)),
                 level: node.edge.level,
                 data_blocks: node.edge.data_blocks,
             };
@@ -2310,6 +2368,22 @@ mod tests {
     }
 
     #[test]
+    fn keys_compare_by_their_bytes_inline_or_shared() {
+        let bytes: Vec<u8> = (0..=KEY_INLINE as u8 + 1).collect();
+        let keys: Vec<Key> = (0..=bytes.len())
+            .map(|len| Key::from(&bytes[..len]))
+            .collect();
+        assert!(matches!(keys[KEY_INLINE], Key::Inline { .. }));
+        assert!(matches!(keys[KEY_INLINE + 1], Key::Shared(_)));
+        for (len, key) in keys.iter().enumerate() {
+            assert_eq!(key.as_ref(), &bytes[..len]);
+            assert!(*key == key.clone());
+            // A prefix sorts first, across the inline bound too.
+            assert!(keys[..len].iter().all(|shorter| shorter < key));
+        }
+    }
+
+    #[test]
     fn a_full_cache_drops_leaves_and_keeps_branches() {
         let node = |level: u8| Node {
             kind: TreeKind::Catalog,
@@ -2320,7 +2394,7 @@ mod tests {
             },
             edge: Edge {
                 link: Link::Draft(0),
-                minimum: Arc::from(&b"k"[..]),
+                minimum: Key::from(&b"k"[..]),
                 level,
                 data_blocks: 0,
             },
@@ -2355,7 +2429,7 @@ mod tests {
                 .draft(
                     TreeKind::Cleanup,
                     Entries::Leaf(Leaf::default()),
-                    Arc::from(&[][..]),
+                    Key::from(&[][..]),
                     0,
                     0,
                 )

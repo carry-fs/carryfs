@@ -144,12 +144,10 @@ impl Leaf {
         4 + usize::from(span.key) + usize::from(span.value)
     }
 
-    /// The bytes these records take in a page.
+    /// The bytes these records take in a page: `bytes` holds every live
+    /// record's key and value once, and the `dead` ones besides.
     fn payload(&self) -> usize {
-        self.spans
-            .iter()
-            .map(|span| 4 + usize::from(span.key) + usize::from(span.value))
-            .sum()
+        4 * self.spans.len() + self.bytes.len() - self.dead
     }
 
     /// The first key as an edge's minimum, sharing `old` when it is unchanged.
@@ -1680,14 +1678,20 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
         index: usize,
         mut replacements: Vec<Edge>,
     ) -> Result<Vec<Edge>> {
-        let bytes: usize = children.iter().map(|child| 20 + child.minimum.len()).sum();
         let grown = replacements
             .first()
             .map_or(0, |child| child.minimum.len())
             .saturating_sub(children[index].minimum.len());
+        let bytes = |children: &[Edge]| -> usize {
+            children.iter().map(|child| 20 + child.minimum.len()).sum()
+        };
+        // Every branch fits its page: it was decoded from one, packed into
+        // one, or passed this check. So it still fits unless the key grew,
+        // and most edits skip a pass over all its children.
+        debug_assert!(bytes(&children) <= PAYLOAD);
         if let ([child], true) = (
             replacements.as_slice(),
-            children.len() >= 2 && bytes + grown <= PAYLOAD,
+            children.len() >= 2 && (grown == 0 || bytes(&children) + grown <= PAYLOAD),
         ) && child.level + 1 == edge.level
             && !child.minimum.is_empty()
             && index
@@ -2341,12 +2345,21 @@ mod tests {
         leaf.replace_value(2, b"replacement").unwrap();
         leaf.remove(0);
         assert!(leaf.dead > 0);
+        let counted = |leaf: &Leaf| -> usize {
+            leaf.iter()
+                .map(|(key, value)| 4 + key.len() + value.len())
+                .sum()
+        };
+        assert_eq!(leaf.payload(), counted(&leaf));
         let copy = leaf.clone();
         assert_eq!(copy.dead, 0);
         assert_eq!(copy.bytes.len(), leaf.bytes.len() - leaf.dead);
         assert_eq!(copy.slices(), leaf.slices());
+        assert_eq!(copy.payload(), counted(&copy));
         let right = leaf.split_off(1).unwrap();
+        assert_eq!(leaf.payload(), counted(&leaf));
         leaf.append(&right).unwrap();
+        assert_eq!(leaf.payload(), counted(&leaf));
         assert_eq!(leaf.slices(), copy.slices());
         assert_eq!(leaf.record(0), (&b"b"[..], &b"two"[..]));
         assert_eq!(leaf.record(1), (&b"c"[..], &b"replacement"[..]));

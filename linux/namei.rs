@@ -274,7 +274,6 @@ unsafe extern "C" fn create(
     dir: *mut bindings::inode,
     dentry: *mut bindings::dentry,
     _mode: bindings::umode_t,
-    _excl: bool,
 ) -> c_int {
     // SAFETY: The VFS holds `dir` locked and `dentry` referenced.
     let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
@@ -286,6 +285,48 @@ unsafe extern "C" fn create(
         },
         Err(error) => error.to_errno(),
     }
+}
+
+/// `create` as the headers declare `->create`: 7.3 dropped the trailing
+/// `excl` flag, which this filesystem ignores. Picking the entry by its type
+/// follows the headers, including distro backports, with no version check.
+trait CreateOp {
+    const OP: Self;
+}
+
+type Create = unsafe extern "C" fn(
+    *mut bindings::mnt_idmap,
+    *mut bindings::inode,
+    *mut bindings::dentry,
+    bindings::umode_t,
+) -> c_int;
+
+type CreateExcl = unsafe extern "C" fn(
+    *mut bindings::mnt_idmap,
+    *mut bindings::inode,
+    *mut bindings::dentry,
+    bindings::umode_t,
+    bool,
+) -> c_int;
+
+impl CreateOp for Create {
+    const OP: Self = create;
+}
+
+impl CreateOp for CreateExcl {
+    const OP: Self = {
+        unsafe extern "C" fn create_excl(
+            idmap: *mut bindings::mnt_idmap,
+            dir: *mut bindings::inode,
+            dentry: *mut bindings::dentry,
+            mode: bindings::umode_t,
+            _excl: bool,
+        ) -> c_int {
+            // SAFETY: The VFS's arguments pass through unchanged.
+            unsafe { create(idmap, dir, dentry, mode) }
+        }
+        create_excl
+    };
 }
 
 unsafe extern "C" fn mkdir(
@@ -524,7 +565,7 @@ pub(crate) unsafe extern "C" fn d_revalidate(
 pub(crate) static DIRECTORY_INODE_OPERATIONS: inode::Ops<bindings::inode_operations> =
     inode::Ops(bindings::inode_operations {
         lookup: Some(inode::lookup),
-        create: Some(create),
+        create: Some(CreateOp::OP),
         mkdir: Some(mkdir),
         symlink: Some(symlink),
         unlink: Some(unlink),

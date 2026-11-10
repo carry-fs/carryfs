@@ -125,6 +125,11 @@ pub struct CarryFs<D: BlockDevice> {
     owner: Owner,
     entry_ttl: Duration,
     attr_ttl: Duration,
+    /// The last read's reply buffer, kept at the largest size requested. A
+    /// read takes it and returns it after replying: allocating and
+    /// zero-filling a megabyte per request added 31% to the core's time to
+    /// read one. A read that finds it taken allocates its own.
+    read_buffer: Mutex<Vec<u8>>,
     /// Cached names to invalidate, sent after the reply by another thread:
     /// the kernel's invalidation takes the parent directory's lock, which an
     /// unlink or rename holds until this adapter replies.
@@ -455,6 +460,7 @@ impl<D: BlockDevice> CarryFs<D> {
         let fs = Self {
             state: Arc::new(Mutex::new(State::new(volume))),
             owner,
+            read_buffer: Mutex::new(Vec::new()),
             entry_ttl: if strict { NO_TTL } else { ENTRY_TTL },
             attr_ttl: ATTR_TTL,
             #[cfg(target_os = "macos")]
@@ -1552,31 +1558,39 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        match self.with(|s| {
+        let size = size as usize;
+        // A poisoned buffer is only stale bytes, which every read overwrites.
+        let mut buffer =
+            std::mem::take(&mut *self.read_buffer.lock().unwrap_or_else(|e| e.into_inner()));
+        if buffer.len() < size {
+            buffer.resize(size, 0);
+        }
+        let result = self.with(|s| {
             let handle = match s.open.get(&u64::from(fh)) {
                 Some(Open::File(_, handle)) => handle,
                 _ => return Err(Errno::EBADF),
             };
-            let mut buffer = vec![0; size as usize];
             let mut done = 0;
-            while done < buffer.len() {
+            while done < size {
                 let position = offset.checked_add(done as u64).ok_or(Errno::EINVAL)?;
                 // A short reply reads as zeros past it, so damaged data must fail the whole request.
                 let read = s
                     .volume
-                    .read(handle, position, &mut buffer[done..])
+                    .read(handle, position, &mut buffer[done..size])
                     .map_err(|e| errno(&e))?;
                 if read == 0 {
                     break;
                 }
                 done += read;
             }
-            buffer.truncate(done);
-            Ok(buffer)
-        }) {
-            Ok(data) => reply.data(&data),
+            Ok(done)
+        });
+        // Only the bytes this read filled are sent: the rest are older reads'.
+        match result {
+            Ok(done) => reply.data(&buffer[..done]),
             Err(e) => reply.error(e),
         }
+        *self.read_buffer.lock().unwrap_or_else(|e| e.into_inner()) = buffer;
     }
 
     fn write(

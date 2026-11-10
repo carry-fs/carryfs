@@ -1190,6 +1190,10 @@ fn validate_internal_record(
     Ok(reference)
 }
 
+/// Bits in the filter `validate_records` keeps of an internal page's child
+/// blocks: ten times the children a page holds, in 256 bytes of stack.
+const CHILD_BLOCK_BITS: usize = 2048;
+
 fn validate_records(
     bytes: &[u8],
     payload_bytes: usize,
@@ -1216,6 +1220,8 @@ fn validate_records(
     let mut position = payload_start;
     let mut data_blocks = 0u64;
     let mut previous: Option<&[u8]> = None;
+    // Which low bits the earlier children's blocks have, for internal pages.
+    let mut seen = [0u64; CHILD_BLOCK_BITS / 64];
 
     for _ in 0..count {
         let key_bytes = usize::from(read_u16_le(bytes, position, "record key length")?);
@@ -1257,18 +1263,25 @@ fn validate_records(
         } else {
             let reference =
                 validate_internal_record(kind, key, value, blocks, page_generation, mode)?;
-            // At most a few hundred children fit a page, so a rescan of the
-            // earlier ones costs less than a set would.
-            let earlier = Records {
-                payload: &bytes[payload_start..position],
-                remaining: usize::MAX,
-            };
-            if earlier
-                .filter_map(|(_, value)| value.get(..8))
-                .any(|block| *block == reference.block.to_le_bytes())
-            {
-                return Err(violation(mode, "internal children share a block"));
+            // A child shares a block only with an earlier one whose block
+            // has the same low bits, so the rescan of the earlier children
+            // runs for those alone. Rescanning for every child took four
+            // fifths of the time to validate an internal page.
+            let bit = (reference.block % CHILD_BLOCK_BITS as u64) as usize;
+            let mask = 1u64 << (bit % 64);
+            if seen[bit / 64] & mask != 0 {
+                let earlier = Records {
+                    payload: &bytes[payload_start..position],
+                    remaining: usize::MAX,
+                };
+                if earlier
+                    .filter_map(|(_, value)| value.get(..8))
+                    .any(|block| *block == reference.block.to_le_bytes())
+                {
+                    return Err(violation(mode, "internal children share a block"));
+                }
             }
+            seen[bit / 64] |= mask;
         }
         previous = Some(key);
         position = record_end;
@@ -1717,6 +1730,67 @@ pub fn encode_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page whose children share a block is refused wherever the two
+    /// stand, and children whose blocks share only their low bits are not.
+    #[test]
+    fn internal_children_on_one_block_are_refused() {
+        const CHILDREN: usize = 5;
+        let reference = TreeRef {
+            block: 1024,
+            generation: 2,
+        };
+        let uuid = [7; 16];
+        let blocks = 1 << 18;
+        let decode = |child_blocks: [u64; CHILDREN]| {
+            let keys: [[u8; 9]; CHILDREN] =
+                core::array::from_fn(|index| [3, 0, 0, 0, 0, 0, 0, 0, index as u8 + 1]);
+            let values: [[u8; 16]; CHILDREN] = core::array::from_fn(|index| {
+                let mut value = [0; 16];
+                value[..8].copy_from_slice(&(3000 + index as u64).to_le_bytes());
+                value[8..].copy_from_slice(&1u64.to_le_bytes());
+                value
+            });
+            let records: [(&[u8], &[u8]); CHILDREN] =
+                core::array::from_fn(|index| (&keys[index][..], &values[index][..]));
+            let mut page = [0; BLOCK_BYTES];
+            encode_node(
+                &mut page,
+                reference,
+                &uuid,
+                TreeKind::Cleanup,
+                &records,
+                blocks,
+                1,
+                0,
+            )
+            .unwrap();
+            // Point the children at `child_blocks` and reseal the page.
+            for (index, block) in child_blocks.iter().enumerate() {
+                let at = PAGE_PAYLOAD_OFFSET + index * 29 + 13;
+                page[at..at + 8].copy_from_slice(&block.to_le_bytes());
+            }
+            put_u32_le(&mut page, 64, 0);
+            let crc = crc32c(&page);
+            put_u32_le(&mut page, 64, crc);
+            decode_page(&page, reference, &uuid, TreeKind::Cleanup, 2, None, blocks)
+                .map(|view| view.len())
+        };
+        let step = CHILD_BLOCK_BITS as u64;
+        let distinct = [2000, 2000 + step, 2000 + 2 * step, 2001, 2001 + step];
+        assert_eq!(decode(distinct), Ok(CHILDREN));
+        for first in 0..CHILDREN {
+            for second in first + 1..CHILDREN {
+                let mut shared = distinct;
+                shared[second] = shared[first];
+                assert_eq!(
+                    decode(shared),
+                    Err(Error::Corrupt("internal children share a block")),
+                    "{first} and {second}"
+                );
+            }
+        }
+    }
 
     /// Binary and linear floor searches agree on every key, present or not.
     #[test]

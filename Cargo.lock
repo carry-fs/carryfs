@@ -72,7 +72,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "fuser"
 version = "0.18.0"
-source = "git+https://github.com/carry-fs/fuser?branch=master#64e1ba449d66d01a541f829c4f934d41b5fbbc54"
+source = "git+https://github.com/carry-fs/fuser?branch=master#0c11248417a294c6f9aafcd7e04dc41a08f43fd7"
 dependencies = [
  "bitflags",
  "libc",

@@ -266,6 +266,9 @@ impl Object {
 fn catalog(sb: *mut super_block, state: &State) -> Result {
     let catalog = Tree::catalog(sb, state);
     let mut object: Option<Object> = None;
+    // The last parent whose chain reached the root: its other children need
+    // no second walk. A directory's objects mostly follow one another.
+    let mut rooted = 1;
     catalog.scan(&[], &mut |key, value| {
         let owner = be_u64(key, 0);
         if owner >= state.root.next_object {
@@ -278,7 +281,13 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
             if key[8] != tree::INODE {
                 return Err(bad("object has no inode"));
             }
-            let inode = record(sb, state, owner)?;
+            // The scan is on the inode record, whose key is the bare
+            // prefix: no lookup.
+            if key.len() != 9 {
+                return Err(bad("missing inode record"));
+            }
+            let mut inode = KVec::new();
+            tree::append(&mut inode, value)?;
             let mut orphan = [3; 9];
             orphan[1..].copy_from_slice(&owner.to_be_bytes());
             let marker = Tree::new(sb, state, TreeKind::Cleanup)
@@ -293,8 +302,9 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                 }
             } else if !marker {
                 let mut seen = KVec::new();
-                let mut parent = le_u64(&inode, 8);
-                while parent != 1 {
+                let direct = le_u64(&inode, 8);
+                let mut parent = direct;
+                while parent != 1 && parent != rooted {
                     if seen.contains(&parent) {
                         return Err(bad("directory parent cycle"));
                     }
@@ -305,6 +315,7 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                     }
                     parent = le_u64(&ancestor, 8);
                 }
+                rooted = direct;
             }
             object = Some(Object {
                 id: owner,
@@ -347,22 +358,36 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                 }
                 current.end = logical + count;
                 current.blocks += count;
-                for unit in logical / 16..(logical + count).div_ceil(16) {
+                // One lookup for the extent's units in each checksum group.
+                let last = (logical + count).div_ceil(16);
+                let mut unit = logical / 16;
+                while unit < last {
+                    let next = ((unit / 256 + 1) * 256).min(last);
                     let key = tree::numbered_key(owner, tree::CHECKSUMS, unit / 256);
-                    let checksum = catalog
-                        .get(&key, |group| {
-                            checksum_slot(group, (unit % 256) as usize).map_err(crate::errno)
-                        })?
-                        .flatten();
-                    if checksum.is_none() {
+                    let present = catalog.get(&key, |group| {
+                        for unit in unit..next {
+                            if checksum_slot(group, (unit % 256) as usize)
+                                .map_err(crate::errno)?
+                                .is_none()
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        Ok(true)
+                    })?;
+                    if present != Some(true) {
                         return Err(bad("backed range has no checksum"));
                     }
+                    unit = next;
                 }
             }
             tree::CHECKSUMS => {
                 if current.inode[0] != 1 {
                     return Err(bad("non-file has checksums"));
                 }
+                // The last extent found, as its first block and its end:
+                // it backs every block up to its end without another lookup.
+                let mut held = (0, 0);
                 for slot in 0..256 {
                     if checksum_slot(value, slot).map_err(crate::errno)?.is_none() {
                         continue;
@@ -375,21 +400,23 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                     }
                     let mut block = first;
                     while block < end {
-                        let covered = catalog
-                            .floor(
-                                &tree::numbered_key(owner, tree::EXTENT, block),
-                                |key, extent| {
-                                    let start = be_u64(key, 9);
-                                    let count = le_u64(extent, 8) & u64::from(u32::MAX);
-                                    Ok((key.starts_with(&tree::prefix(owner, tree::EXTENT))
-                                        && start <= block
-                                        && start + count > block)
-                                        .then_some(start + count))
-                                },
-                            )?
-                            .flatten()
-                            .ok_or_else(|| bad("checksum refers to a hole"))?;
-                        block = covered;
+                        if !(held.0..held.1).contains(&block) {
+                            held = catalog
+                                .floor(
+                                    &tree::numbered_key(owner, tree::EXTENT, block),
+                                    |key, extent| {
+                                        let start = be_u64(key, 9);
+                                        let count = le_u64(extent, 8) & u64::from(u32::MAX);
+                                        Ok((key.starts_with(&tree::prefix(owner, tree::EXTENT))
+                                            && start <= block
+                                            && start + count > block)
+                                            .then_some((start, start + count)))
+                                    },
+                                )?
+                                .flatten()
+                                .ok_or_else(|| bad("checksum refers to a hole"))?;
+                        }
+                        block = held.1;
                     }
                 }
             }

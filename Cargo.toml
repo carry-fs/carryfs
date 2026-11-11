@@ -24,6 +24,10 @@ path = "src/main.rs"
 name = "core"
 harness = false
 
+[[bench]]
+name = "ondisk"
+harness = false
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
@@ -47,7 +51,8 @@ codegen-units = 1
 # fuser 0.18.0 drops macFUSE rename flags and does not dispatch FUSE_SYNCFS.
 # The fork retains upstream's syncfs and rename flags, before_destroy so
 # publication finishes before the unmount reply (cberner/fuser#757), and
-# separate name/attribute TTLs for create and readdirplus (cberner/fuser#756).
-# Return to upstream once all four are available.
+# separate name/attribute TTLs for create and readdirplus (cberner/fuser#756),
+# and a spin budget for the event loop (`Config::spin`).
+# Return to upstream once all five are available.
 [patch.crates-io]
 fuser = { git = "https://github.com/carry-fs/fuser", branch = "master" }

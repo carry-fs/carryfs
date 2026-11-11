@@ -6,6 +6,7 @@ import hashlib
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,9 @@ class MountedVolume(unittest.TestCase):
 
     def test_namespace_io_and_clean_unmount(self):
         self.mount()
+        with self.assertRaises(OSError):
+            os.mknod(self.point / "device", stat.S_IFCHR | 0o600, os.makedev(0, 0))
+        self.assertFalse((self.point / "device").exists())
         directory = self.point / "Folder"
         directory.mkdir()
         payload = bytes(range(251)) * 12000
@@ -189,34 +193,35 @@ class MountedVolume(unittest.TestCase):
 
     def test_directory_fsync_survives_daemon_crash(self):
         for operation in ("create", "rename", "unlink"):
-            with self.subTest(operation=operation):
-                self.mount()
-                before = self.point / "before"
-                with before.open("wb") as file:
-                    file.write(b"preserved")
-                    file.flush()
-                    os.fsync(file.fileno())
-                if operation == "create":
-                    (self.point / "after").touch()
-                elif operation == "rename":
-                    before.rename(self.point / "after")
-                else:
-                    before.unlink()
-                directory = os.open(self.point, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(directory)
-                    self.daemon.kill()
-                finally:
-                    os.close(directory)
-                self.daemon.wait(timeout=20)
-                self.daemon = None
-                run("umount", "-f", self.point)
-                result = run(CLI, "get", "--bytes", BYTES, self.device, "/", self.work / operation, stdout=self.log)
-                self.assertEqual(result.returncode, 0)
-                expected = {"create": {"before", "after"}, "rename": {"after"}, "unlink": {}}[operation]
-                self.assertEqual({p.name for p in (self.work / operation).iterdir()}, set(expected))
-                # Reset the disposable device for the next independent operation.
-                run(FUSE, "mkfs", "-f", self.device, stdout=self.log)
+            for datasync in (False, True):
+                with self.subTest(operation=operation, datasync=datasync):
+                    self.mount()
+                    before = self.point / "before"
+                    with before.open("wb") as file:
+                        file.write(b"preserved")
+                        file.flush()
+                        os.fsync(file.fileno())
+                    if operation == "create":
+                        (self.point / "after").touch()
+                    elif operation == "rename":
+                        before.rename(self.point / "after")
+                    else:
+                        before.unlink()
+                    directory = os.open(self.point, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        (os.fdatasync if datasync else os.fsync)(directory)
+                        self.daemon.kill()
+                    finally:
+                        os.close(directory)
+                    self.daemon.wait(timeout=20)
+                    self.daemon = None
+                    run("umount", "-f", self.point)
+                    result = run(CLI, "get", "--bytes", BYTES, self.device, "/", self.work / f"{operation}-{datasync}", stdout=self.log)
+                    self.assertEqual(result.returncode, 0)
+                    expected = {"create": {"before", "after"}, "rename": {"after"}, "unlink": {}}[operation]
+                    self.assertEqual({p.name for p in (self.work / f"{operation}-{datasync}").iterdir()}, set(expected))
+                    # Reset the disposable device for the next independent operation.
+                    run(FUSE, "mkfs", "-f", self.device, stdout=self.log)
 
     def test_flush_failure_reaches_fsync(self):
         marker = self.work / "fail-flush"

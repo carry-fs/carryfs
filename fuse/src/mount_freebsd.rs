@@ -111,9 +111,9 @@ pub fn serve(device: &Path, directory: &Path, text: &str) -> Result<()> {
     let stopper = fs.finisher();
     let mut config = Config::default();
     config.acl = SessionACL::All;
+    // FreeBSD has no nodev mount flag; CarryFS rejects device-node creation.
     config.mount_options = vec![
         MountOption::FSName(device.to_string_lossy().into_owned()),
-        MountOption::NoDev,
         MountOption::NoSuid,
         if options.read_only {
             MountOption::RO

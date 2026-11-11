@@ -998,13 +998,14 @@ fn runs(pending: BTreeMap<u64, Vec<u8>>) -> Vec<(u64, Vec<Vec<u8>>)> {
         .collect()
 }
 
-/// A sent run: its device offset and its writes in order.
-type Run = Arc<(u64, Vec<Vec<u8>>)>;
+/// A sent run: its device offset, its writes in order, and their total
+/// length. Every read asks which queued runs overlap it, and summing each
+/// run's writes for that took 25 microseconds with the Linux queue full.
+type Run = Arc<(u64, Vec<Vec<u8>>, usize)>;
 
 /// The oldest run that no writer has taken and that overlaps no older run.
 fn next_run(state: &Queued) -> Option<Run> {
-    let overlaps =
-        |a: &Run, b: &Run| a.0 < b.0 + run_len(&b.1) as u64 && b.0 < a.0 + run_len(&a.1) as u64;
+    let overlaps = |a: &Run, b: &Run| a.0 < b.0 + b.2 as u64 && b.0 < a.0 + a.2 as u64;
     state
         .runs
         .iter()
@@ -1118,7 +1119,7 @@ impl Queue {
             return Err(failed(code));
         }
         state.bytes += len;
-        state.runs.push_back(Arc::new((offset, pieces)));
+        state.runs.push_back(Arc::new((offset, pieces, len)));
         self.changed.notify_all();
         Ok(())
     }
@@ -1148,7 +1149,7 @@ impl Queue {
         Ok(state
             .runs
             .iter()
-            .filter(|run| run.0 < end && run.0 + run_len(&run.1) as u64 > offset)
+            .filter(|run| run.0 < end && run.0 + run.2 as u64 > offset)
             .cloned()
             .collect())
     }
@@ -1179,7 +1180,7 @@ impl Queue {
             // A failure cleared the queue; this run is no longer in it.
             if let Some(index) = state.runs.iter().position(|other| Arc::ptr_eq(other, &run)) {
                 state.runs.remove(index);
-                state.bytes -= run_len(&run.1);
+                state.bytes -= run.2;
             }
             if let Err(error) = result {
                 state
@@ -1690,7 +1691,7 @@ mod tests {
     /// for it, and one that overlaps nothing older goes out beside it.
     #[test]
     fn writers_take_a_run_only_after_older_runs_it_overlaps() {
-        let run = |offset, byte| Arc::new((offset, vec![vec![byte; 4096]]));
+        let run = |offset, byte| Arc::new((offset, vec![vec![byte; 4096]], 4096));
         let (old, apart, newer) = (run(0, 1), run(8192, 2), run(0, 3));
         let mut state = Queued::default();
         state.runs.extend([&old, &apart, &newer].map(Arc::clone));

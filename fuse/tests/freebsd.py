@@ -50,6 +50,8 @@ class MountedVolume(unittest.TestCase):
         if self.device is not None:
             run("mdconfig", "-d", "-u", Path(self.device).name)
         self.log.close()
+        # Extraction creates private directories; VM synchronization runs as the CI user.
+        run("chmod", "-R", "-P", "a+rX", self.work)
 
     def mount(self, options="rw", extra_env=None):
         env = os.environ.copy()

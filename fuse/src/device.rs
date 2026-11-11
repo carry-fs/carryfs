@@ -1,10 +1,13 @@
-//! Disk backend for the Linux block device or the macOS raw disk node. On
+//! Disk backend for Linux block devices, macOS raw nodes, and FreeBSD GEOM. On
 //! Linux, ownership comes from the kernel's `fuseblk` mount claim, taken
 //! before this device is opened. macFUSE mounts are not tied to a device, so
 //! on macOS `Disk::open` takes an exclusive `flock` on the raw node instead.
+//! FreeBSD locks the canonical GEOM provider through the shared core helper.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(any(test, not(target_os = "freebsd")))]
+use std::fs::OpenOptions;
 use std::io::{self, IoSlice};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
@@ -25,7 +28,7 @@ const MAX_RUN: usize = 1 << 20;
 /// unmeasured with more than one.
 #[cfg(target_os = "macos")]
 const WRITERS: usize = 2;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 const WRITERS: usize = 1;
 /// Concurrent reads a read-ahead window is split into. Cold sequential reads
 /// on a USB SSD: 252 MiB/s with one, 270 with two, 282 with four, 277 with
@@ -55,7 +58,7 @@ const METADATA_READS: usize = 8;
 const MAX_HELD: usize = 4 << 20;
 /// Sent bytes the writer thread may have queued before a sender waits, so
 /// preparing a held batch can overlap the device writing this queue.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 const MAX_QUEUED: usize = 8 << 20;
 // Large enough to match exFAT's buffered writes on a USB SSD, with the daemon
 // below 174 MiB RSS.
@@ -138,6 +141,7 @@ pub struct Disk {
 
 impl Disk {
     pub fn open(path: &Path, mode: MountMode) -> Result<Self> {
+        #[cfg(not(target_os = "freebsd"))]
         let file = OpenOptions::new()
             .read(true)
             .write(mode == MountMode::ReadWrite)
@@ -146,6 +150,8 @@ impl Disk {
                 operation: "open block device",
                 source,
             })?;
+        #[cfg(target_os = "freebsd")]
+        let file = carryfs_core::freebsd::open_device(path, mode)?;
         let geometry = geometry(&file)?;
         // A second daemon on the same disk would publish over this one.
         // SAFETY: flock takes an open descriptor and no pointers.
@@ -548,6 +554,12 @@ impl BlockDevice for Disk {
         Ok(())
     }
 
+    #[cfg(target_os = "freebsd")]
+    fn read_exact_at(&mut self, offset: u64, out: &mut [u8]) -> Result<()> {
+        self.check_range(offset, out.len())?;
+        fetch(&self.file, &self.queue, &self.pending, offset, out)
+    }
+
     /// Metadata, which names no run: the core reads file data through
     /// `read_data_exact_at`.
     #[cfg(target_os = "macos")]
@@ -873,6 +885,18 @@ fn start_writeback(file: &File, offset: u64, len: usize) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[cfg(target_os = "freebsd")]
+fn geometry(file: &File) -> Result<Geometry> {
+    carryfs_core::freebsd::geometry(file)
+}
+
+#[cfg(target_os = "freebsd")]
+fn flush_device(file: &File) -> io::Result<()> {
+    #[cfg(feature = "fault-injection")]
+    injected_failure("CARRYFS_FAIL_FLUSHES")?;
+    carryfs_core::freebsd::flush_device(file)
 }
 
 /// Ask the drive to write out its volatile cache.

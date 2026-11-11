@@ -3,7 +3,7 @@
 #
 #   packaging/stage-release.sh PLATFORM OUTDIR
 #
-# PLATFORM is linux-x86_64, macos-arm64, or windows-x86_64. Run it after
+# PLATFORM is linux-x86_64, macos-arm64, freebsd{14,15}-{x86_64,arm64}, or windows-x86_64. Run it after
 # building the release binaries; the cargo commands mirror install.sh --local.
 set -euo pipefail
 [ "$#" = 2 ] || { echo "usage: $0 PLATFORM OUTDIR" >&2; exit 2; }
@@ -27,6 +27,10 @@ case $platform in
         cp "$target/carryfs-util" "$resources/carryfs.util"
         cp "$target/newfs_carryfs" "$target/fsck_carryfs" "$resources/"
         cp "$target/carryfs-fuse" "$resources/mount_carryfs"
+        cp packaging/install-unix.sh "$out/install-system.sh"
+        ;;
+    freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64)
+        cp "$target/carryfs" "$target/carryfs-fuse" "$out/"
         cp packaging/install-unix.sh "$out/install-system.sh"
         ;;
     windows-x86_64)

@@ -45,6 +45,17 @@ class ReleaseIndexTests(unittest.TestCase):
                   release("0.1.2-rc.1"), release("00.1.3"), release("0.1.4", assets=[]), uploading]]
         self.assertEqual(self.generate(pages), "")
 
+    def test_freebsd_releases_require_every_freebsd_payload(self):
+        complete = release("0.1.1")
+        freebsd = [dict(name=f"carryfs-0.1.1-{platform}.tar.gz", state="uploaded") for platform in
+                   ("freebsd14-x86_64", "freebsd14-arm64", "freebsd15-x86_64", "freebsd15-arm64")]
+        complete["assets"].extend(freebsd)
+        self.assertEqual(self.generate([[release("0.1.0"), complete]]), "0.1.0\n0.1.1\n")
+        for missing in freebsd:
+            with self.subTest(missing=missing["name"]):
+                assets = [asset for asset in complete["assets"] if asset != missing]
+                self.assertEqual(self.generate([[release("0.1.1", assets=assets)]]), "")
+
     def test_empty_repository_has_empty_index(self):
         self.assertEqual(self.generate([[]]), "")
 

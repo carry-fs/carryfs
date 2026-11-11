@@ -1,5 +1,5 @@
 //! Exercise the actual CLI with disposable images and host directories.
-#![cfg(any(target_os = "linux", target_os = "macos"))]
+#![cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 
 use std::fs;
 use std::path::{Path, PathBuf};

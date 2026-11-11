@@ -11,7 +11,7 @@ use std::path::{Component, Path};
 
 use carryfs_core::{Attributes, Error, ExtractionSink, Name, Result};
 
-// Linux asm-generic/fcntl.h and Apple's xnu bsd/sys/fcntl.h.
+// Platform fcntl.h values and C mode_t types.
 #[cfg(target_os = "linux")]
 mod flags {
     pub const DIRECTORY: i32 = 0o200000;
@@ -27,6 +27,16 @@ mod flags {
     pub const DIRECTORY: i32 = 0x00100000;
     pub const NOFOLLOW: i32 = 0x100;
     pub const CLOEXEC: i32 = 0x01000000;
+    pub const CREATE: i32 = 0x200 | 0x800 | 1;
+    pub const NONBLOCK: i32 = 4;
+    pub type Mode = u16;
+    pub type OpenMode = i32;
+}
+#[cfg(target_os = "freebsd")]
+mod flags {
+    pub const DIRECTORY: i32 = 0x00020000;
+    pub const NOFOLLOW: i32 = 0x100;
+    pub const CLOEXEC: i32 = 0x00100000;
     pub const CREATE: i32 = 0x200 | 0x800 | 1;
     pub const NONBLOCK: i32 = 4;
     pub type Mode = u16;

@@ -9,7 +9,7 @@
 //! creation. So `flush` is left to fuser's default `ENOSYS`, after which Linux
 //! and macFUSE stop sending FLUSH for the mount, one round trip fewer per close.
 //!
-//! Linux publishes in `before_destroy`, while the mount still owns the
+//! Linux and FreeBSD publish in `before_destroy`, while the mount still owns the
 //! device, and fuser waits for it before replying to DESTROY. `destroy`
 //! runs after that reply and issues no Linux writes. The Linux syncfs
 //! callback also publishes and returns publication errors to the caller.
@@ -38,11 +38,14 @@ use carryfs_core::{
     RemoveKind, Replace, Timestamp, Volume,
 };
 use fuser::{
-    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
-    KernelConfig, LockOwner, Notifier, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
+    KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
     ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
+
+#[cfg(not(target_os = "freebsd"))]
+use fuser::{InitFlags, Notifier};
 
 #[cfg(target_os = "macos")]
 use crate::eject_macos::Failure;
@@ -53,7 +56,7 @@ use crate::eject_macos::Failure;
 // only an entry's stored spelling is ever given a lifetime, and every change
 // made through any other spelling invalidates cached names. Linux increments
 // the connection epoch before mutation; macOS queues per-name invalidation.
-// Older Linux kernels use zero entry TTL.
+// Older Linux kernels and FreeBSD use zero entry TTL.
 // Other spellings and missing names are never cached. Caching exact names let
 // `stat` skip the lookup round trip. Attributes
 // belong to the inode, and this mount is the only writer; the kernel drops
@@ -96,7 +99,7 @@ const MAX_WRITE: u32 = 1 << 20;
 /// `iosize` mount option nor the statfs block size changed that.
 #[cfg(target_os = "macos")]
 const IO_BYTES: u32 = MAX_WRITE;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 const IO_BYTES: u32 = 4096;
 #[cfg(target_os = "macos")]
 const MACFUSE_CASE_INSENSITIVE: u64 = 1 << 29;
@@ -450,12 +453,16 @@ impl<D: BlockDevice> CarryFs<D> {
         strict: bool,
     ) -> (Self, Receiver<(INodeNo, OsString)>) {
         let (stale, forgotten) = channel();
-        #[cfg(target_os = "linux")]
+        #[cfg(not(target_os = "macos"))]
         drop(stale);
         let fs = Self {
             state: Arc::new(Mutex::new(State::new(volume))),
             owner,
-            entry_ttl: if strict { NO_TTL } else { ENTRY_TTL },
+            entry_ttl: if strict || cfg!(target_os = "freebsd") {
+                NO_TTL
+            } else {
+                ENTRY_TTL
+            },
             attr_ttl: ATTR_TTL,
             #[cfg(target_os = "macos")]
             stale,
@@ -500,7 +507,7 @@ impl<D: BlockDevice> CarryFs<D> {
         requested: &OsStr,
         stored: &[u8],
     ) -> Duration {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             let _ = (state, parent);
             name_ttl(requested, stored, self.entry_ttl)
@@ -1182,7 +1189,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
 
     /// Publish while the mount still owns the device, before unmount can
     /// return. A failed publication must allow removal, with a warning.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn before_destroy(&self) {
         let result = self.with(|state| {
             state.ended = true;
@@ -1309,7 +1316,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             // macOS copies restore mode and timestamps together. Accept mode
             // as a no-op so Finder can clear its unfinished-copy timestamp;
             // reported permissions stay synthetic.
-            if (cfg!(target_os = "linux")
+            if (cfg!(any(target_os = "linux", target_os = "freebsd"))
                 && mode.is_some_and(|mode| mode & 0o7777 != u32::from(shown.perm)))
                 || uid.is_some_and(|uid| uid != shown.uid)
                 || gid.is_some_and(|gid| gid != shown.gid)
@@ -1414,6 +1421,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                 let (source_parent, source) = (id(parent)?, parse(name)?);
                 let (destination_parent, destination) = (id(newparent)?, parse(newname)?);
                 let moved = s.volume.lookup_entry(source_parent, &source).ok();
+                #[cfg(not(target_os = "freebsd"))]
                 let replaced = s.volume.lookup_entry(destination_parent, &destination).ok();
                 #[cfg(target_os = "linux")]
                 self.invalidate_names(
@@ -1764,7 +1772,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                                 // iterate_dir holds i_rwsem until fuse_readdir has
                                 // linked these names. An alias mutation cannot
                                 // overtake this reply in the same directory.
-                                #[cfg(target_os = "linux")]
+                                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                                 let ttl = self.entry_ttl;
                                 #[cfg(target_os = "macos")]
                                 let ttl = if guarded.contains(name.as_bytes()) {
@@ -1870,7 +1878,7 @@ impl<D: BlockDevice> CarryFs<D> {
             let result = s.volume.remove_with(directory, &parsed, kind, |stored| {
                 self.invalidate_names(&mut s.notifier, name.as_bytes() != stored)
             });
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "freebsd"))]
             let result = s.volume.remove(directory, &parsed, kind);
             match result {
                 Err(Error::WrongType) if kind == RemoveKind::File => return Err(Errno::EISDIR),
@@ -1923,6 +1931,15 @@ fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
         Ok(Replace::Allowed)
     } else if flags == RenameFlags::RENAME_NOREPLACE {
         Ok(Replace::Forbidden)
+    } else {
+        Err(Errno::EINVAL)
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
+    if flags.is_empty() {
+        Ok(Replace::Allowed)
     } else {
         Err(Errno::EINVAL)
     }

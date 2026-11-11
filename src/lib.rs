@@ -20,6 +20,8 @@ mod check;
 mod device;
 mod error;
 mod format;
+#[cfg(target_os = "freebsd")]
+pub mod freebsd;
 mod name;
 mod tree;
 mod volume;

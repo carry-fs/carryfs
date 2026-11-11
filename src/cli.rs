@@ -2,16 +2,16 @@
 
 use std::ffi::OsStr;
 use std::path::Path;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::{fs, io::Read, os::unix::ffi::OsStrExt};
 
 use carryfs_core::{Finding, ImageDevice, MountMode, Volume};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use carryfs_core::{Name, ObjectId, ROOT};
 
 #[cfg(target_os = "macos")]
 mod authopen;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 mod host;
 #[cfg(target_os = "linux")]
 mod image_linux;
@@ -36,7 +36,7 @@ pub(super) fn report(finding: Finding<'_>) {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn names(path: &OsStr) -> Result<Vec<Name>> {
     let path = path.to_str().ok_or("CarryFS path must be UTF-8")?;
     if !path.starts_with('/') {
@@ -51,7 +51,7 @@ fn names(path: &OsStr) -> Result<Vec<Name>> {
         .collect()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn resolve(volume: &mut Volume<ImageDevice>, path: &[Name]) -> Result<ObjectId> {
     let mut object = ROOT;
     for name in path {
@@ -138,8 +138,21 @@ fn open_exclusive(path: &Path) -> Result<std::fs::File> {
     }
 }
 
+#[cfg(target_os = "freebsd")]
+fn open_exclusive(path: &Path) -> Result<std::fs::File> {
+    Ok(carryfs_core::freebsd::open_device(
+        path,
+        MountMode::ReadOnly,
+    )?)
+}
+
 /// Other platforms open the device without excluding a mount.
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    windows
+)))]
 fn open_exclusive(path: &Path) -> Result<std::fs::File> {
     Ok(std::fs::File::open(path)?)
 }
@@ -170,7 +183,7 @@ pub(super) fn scrub(image: &Path, device_bytes: Option<u64>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(super) fn get(
     image: &Path,
     device_bytes: Option<u64>,
@@ -192,12 +205,12 @@ pub(super) fn get(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub(super) fn get(_: &Path, _: Option<u64>, _: &OsStr, _: &Path) -> Result<()> {
     Err("secure extraction is implemented only on Linux and macOS".into())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn import_file(
     volume: &mut Volume<ImageDevice>,
     source: &Path,
@@ -256,7 +269,7 @@ fn import_file(
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()> {
     let path = names(destination)?;
     let (name, parents) = path
@@ -314,7 +327,7 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
     result.map_err(|error| format!("import failed; partial destination may remain: {error}").into())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub(super) fn put(_: &Path, _: &Path, _: &OsStr) -> Result<()> {
     Err("offline import is implemented only on Linux and macOS".into())
 }

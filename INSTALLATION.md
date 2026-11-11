@@ -70,6 +70,55 @@ signature enforcement or kernel lockdown requires a trusted signature.
 After a kernel upgrade, rerun `./install.sh --local --native` for the new
 running kernel. There is no automatic rebuild.
 
+### FreeBSD
+
+FreeBSD 15.1 and 14.5 are supported on amd64 and arm64. Release packages are
+built separately for FreeBSD 14 and 15. Load the base system's FUSE module:
+
+```sh
+sudo kldload fusefs
+```
+
+To load it at boot, add `fusefs_load="YES"` to `/boot/loader.conf`.
+No libfuse package is required. Install with the same `install.sh` command as
+Linux and macOS, or build this checkout with `./install.sh --local`.
+Source builds need Rust 1.89 or newer, available through `pkg install rust`.
+
+The installer places the CLI in `/usr/local/bin/carryfs` and the helpers in
+`/usr/local/sbin`. Mount an existing CarryFS partition with:
+
+```sh
+sudo mkdir -p /mnt/carryfs
+sudo mount_carryfs -o uid=$(id -u),gid=$(id -g) /dev/da0p1 /mnt/carryfs
+sudo umount /mnt/carryfs
+```
+
+For mount(8) or fstab integration, explicitly select the helper:
+
+```sh
+sudo mount -t carryfs -o mountprog=/usr/local/sbin/mount_carryfs /dev/da0p1 /mnt/carryfs
+```
+
+A corresponding `/etc/fstab` entry is:
+
+```fstab
+/dev/da0p1 /mnt/carryfs carryfs rw,noauto,mountprog=/usr/local/sbin/mount_carryfs 0 0
+```
+
+`newfs_carryfs [-f] [-L LABEL] DEVICE` formats an unmounted GEOM provider.
+It refuses existing data unless `-f` is given, and refuses whole disks with
+partition tables. The CLI also supports regular images and offline transfers.
+For a foreground daemon, use
+`/usr/local/libexec/carryfs/carryfs-fuse serve DEVICE DIRECTORY OPTIONS`.
+
+FreeBSD uses ordinary directory listings and disables name caching because its
+FUSE implementation lacks the invalidation required for case-insensitive names.
+Device aliases share a canonical-provider advisory lock across CarryFS tools.
+Other raw-device programs must honor this lock to coordinate with CarryFS;
+root access can otherwise overwrite a mounted volume. Writable GEOM opens also
+conflict with writable native mounts. Unmount other filesystems before accessing
+a provider through CarryFS, including for offline inspection.
+
 ### macOS
 
 You need macOS 15.6 or later on Apple Silicon.

@@ -33,3 +33,45 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - name: Test
         run: cargo test --locked --workspace --all-features
+
+  freebsd:
+    name: FreeBSD ${{ matrix.version }} (${{ matrix.architecture }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '15.1'
+            architecture: x86-64
+          - version: '14.5'
+            architecture: x86-64
+          - version: '15.1'
+            architecture: arm64
+          - version: '14.5'
+            architecture: arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: |
+            build/cargo-freebsd
+            target
+          key: freebsd-${{ matrix.version }}-${{ matrix.architecture }}-${{ hashFiles('Cargo.lock') }}
+      - name: FreeBSD VM
+        uses: cross-platform-actions/action@ef53f0d3fd471648f2758f3fcdc3cb2aa40c87cb # v1.7.0
+        with:
+          operating_system: freebsd
+          version: ${{ matrix.version }}
+          architecture: ${{ matrix.architecture }}
+      - name: Build and test on FreeBSD
+        shell: cpa.sh {0}
+        run: |
+          sudo pkg install -y rust python3 bash
+          sudo kldload fusefs
+          CARGO_HOME="$PWD/build/cargo-freebsd" sh scripts/check-freebsd.sh
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: freebsd-${{ matrix.version }}-${{ matrix.architecture }}
+          path: build/freebsd-*/daemon.log

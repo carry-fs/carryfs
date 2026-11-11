@@ -15,8 +15,11 @@
 use std::error::Error as StdError;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
+#[cfg(target_os = "linux")]
 use std::io::ErrorKind;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use carryfs_core::{Error, MountMode, Volume, VolumeLabel, has_root_magic};
@@ -34,9 +37,13 @@ enum Request {
     Wipe,
 }
 
+#[cfg(target_os = "linux")]
 const USAGE: &str = "usage: mkfs.carryfs [-f] [-L LABEL] DEVICE | mkfs.carryfs --wipe DEVICE";
 
-/// Arguments as mkfs(8) passes them: options, then the device.
+#[cfg(target_os = "freebsd")]
+const USAGE: &str = "usage: newfs_carryfs [-f] [-L LABEL] DEVICE | newfs_carryfs --wipe DEVICE";
+
+/// Format options, then the device.
 pub fn main(args: &[OsString]) -> Result<()> {
     // Validate before opening or erasing the device.
     let Some((device, options)) = args.split_last() else {
@@ -74,6 +81,7 @@ fn run(device: &Path, request: Request) -> Result<String> {
     // The kernel's exclusive claim, which a mounted filesystem holds: it fails
     // while the device is mounted and keeps a mount from starting until the
     // erase ends. `Disk` opens without it, as it does behind a mount's claim.
+    #[cfg(target_os = "linux")]
     let claim = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_EXCL)
@@ -84,21 +92,29 @@ fn run(device: &Path, request: Request) -> Result<String> {
         }
         result => result?,
     };
-    let mut disk = Disk::open(device, MountMode::ReadWrite)?;
+    #[cfg(target_os = "freebsd")]
+    let claim = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(device)?;
     let partitions = partitions(&claim)?;
     if !partitions.is_empty() {
         return Err(format!(
-            "the disk holds partitions {}: use one of them, or erase the partition table with wipefs first",
+            "the disk holds partitions {}: use one of them, or erase the partition table with the platform disk tools first",
             partitions.join(", ")
         )
         .into());
     }
+    let mut disk = Disk::open(device, MountMode::ReadWrite)?;
     match request {
         Request::Wipe => {
             // Anything else is wipefs's to erase; this keeps a mistyped
             // device name from losing the start of another filesystem.
             if !has_root_magic(&mut disk) {
-                return Err("no CarryFS volume found: use wipefs for other filesystems".into());
+                return Err(
+                    "no CarryFS volume found: use the platform disk tools for other filesystems"
+                        .into(),
+                );
             }
             carryfs_core::erase_reserved_bands(&mut disk)?;
             Ok(format!(
@@ -135,6 +151,7 @@ fn run(device: &Path, request: Request) -> Result<String> {
 
 /// The partitions the kernel found on a whole disk, whose table formatting it
 /// would erase. A partition has none.
+#[cfg(target_os = "linux")]
 fn partitions(device: &File) -> Result<Vec<String>> {
     let number = device.metadata()?.rdev();
     let disk = format!(
@@ -151,6 +168,43 @@ fn partitions(device: &File) -> Result<Vec<String>> {
     }
     names.sort();
     Ok(names)
+}
+
+#[cfg(target_os = "freebsd")]
+fn partitions(device: &File) -> Result<Vec<String>> {
+    use std::os::fd::AsRawFd;
+    let mut name = [0u8; 1024];
+    // SAFETY: DIOCGPROVIDERNAME writes at most MAXPATHLEN bytes into name.
+    if unsafe {
+        libc::ioctl(
+            device.as_raw_fd(),
+            0x4400_648au64 as libc::c_ulong,
+            name.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let name = std::ffi::CStr::from_bytes_until_nul(&name)?.to_str()?;
+    let output = std::process::Command::new("/sbin/gpart")
+        .args(["show", "-p"])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "gpart show failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let text = std::str::from_utf8(&output.stdout)?;
+    // A header is '=> START SIZE PROVIDER SCHEME ...'.
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (fields.first() == Some(&"=>") && fields.get(3) == Some(&name)).then(|| name.to_owned())
+        })
+        .collect())
 }
 
 #[cfg(test)]

@@ -31,6 +31,12 @@ type Result<T> = std::result::Result<T, Box<dyn StdError>>;
 
 /// The owner reported when udisks passes no `uid` or `gid`.
 const ROOT: Owner = Owner { uid: 0, gid: 0 };
+/// How long the request thread keeps reading the FUSE device before it
+/// sleeps, while requests follow one another this closely (fuser's
+/// `Config::spin`). Waking the sleeping thread is a large part of a short
+/// operation's round trip. The cost is up to this much CPU once, at the end
+/// of each run of requests.
+const SPIN: Duration = Duration::from_micros(100);
 
 /// `mount.carryfs DEVICE DIR [-s] [-n] [-v] [-f] [-o OPTIONS]`, as mount(8) calls it.
 pub fn helper(args: &[OsString]) -> Result<()> {
@@ -169,7 +175,12 @@ pub fn serve(device: &Path, directory: &Path, options: &str) -> Result<()> {
             stopper.checkpoint();
             detach(&point);
         })?;
-        let config = Config::default();
+        let mut config = Config::default();
+        // On a single processor the reading thread would hold it from the
+        // caller whose request it waits for.
+        if std::thread::available_parallelism().is_ok_and(|count| count.get() > 1) {
+            config.spin = SPIN;
+        }
         let session = Session::from_fd(fs, OwnedFd::from(fuse), SessionACL::All, config)?;
         names.set_notifier(session.notifier())?;
         Ok(session)

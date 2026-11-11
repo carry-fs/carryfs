@@ -608,15 +608,23 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         bindings::set_default_d_op(sb, &names::DENTRY_OPERATIONS.0);
     }
     {
-        let mut state = of(sb).lock();
+        let state = of(sb).lock();
         for kind in [TreeKind::Catalog, TreeKind::Allocation, TreeKind::Cleanup] {
             Tree::new(sb, &state, kind).check_root()?;
         }
-        if writable {
-            commit::open(sb, &mut state, [a, b])?;
-        }
+    }
+    // SSD mounts prefetch synchronously to avoid competing with first listings.
+    // Writable mounts warm the catalog; read-only mounts warm its first leaves.
+    // Rotating disks use background prefetch to keep mount latency bounded.
+    // SAFETY: `sb` holds its block device.
+    let ssd = unsafe { glue::carryfs_bdev_nonrot(sb) };
+    if ssd && writable {
+        // Before validation, which walks the whole catalog: cold, it would
+        // wait for each page in turn.
+        let _ = committed_catalog(sb).prefetch(PREFETCH_PAGES, true);
     }
     if writable {
+        commit::open(sb, &mut of(sb).lock(), [a, b])?;
         let orphans = commit::orphans(sb, &of(sb).lock())?;
         for object in orphans.iter() {
             crate::namei::remove_object(sb, *object)?;
@@ -629,16 +637,9 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         of(sb).lock().timer = timer as usize;
     }
 
-    // SSD mounts prefetch synchronously to avoid competing with first listings.
-    // Writable mounts warm the catalog; read-only mounts warm its first leaves.
-    // Rotating disks use background prefetch to keep mount latency bounded.
-    // SAFETY: `sb` holds its block device.
-    let ssd = unsafe { glue::carryfs_bdev_nonrot(sb) };
-    if ssd && writable {
-        let _ = committed_catalog(sb).prefetch(PREFETCH_PAGES, true);
-    } else if ssd {
+    if ssd && !writable {
         let _ = committed_catalog(sb).read_first_leaves(MOUNT_READ_ONLY_LEAVES);
-    } else if of(sb).background != 0 {
+    } else if !ssd && of(sb).background != 0 {
         // SAFETY: `kill_sb` stops the work before the volume goes away.
         unsafe { glue::carryfs_prefetch_queue(of(sb).background as *mut c_void) };
     }

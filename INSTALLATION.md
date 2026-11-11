@@ -76,6 +76,7 @@ FreeBSD 15.1 and 14.5 are supported on amd64 and arm64. Release packages are
 built separately for FreeBSD 14 and 15. Load the base system's FUSE module:
 
 ```sh
+sudo pkg install curl
 sudo kldload fusefs
 ```
 

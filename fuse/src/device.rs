@@ -955,8 +955,8 @@ fn read_device(file: &File, offset: u64, out: &mut [u8]) -> io::Result<()> {
     })
 }
 
-/// Read from the device, then lay queued runs and held writes over the bytes,
-/// so a read never returns bytes older than a write. std retries EINTR and
+/// Read held bytes directly when one write covers the request. Otherwise read
+/// the device and overlay queued runs and held writes. std retries EINTR and
 /// reports zero progress as UnexpectedEof.
 fn fetch(
     file: &File,
@@ -968,6 +968,14 @@ fn fetch(
     // Listed before the device is read, so a run the writer finishes in
     // between is overlaid with the same bytes rather than missed.
     let queued = queue.overlapping(offset, out.len())?;
+    // Held bytes are newer than every queued run; the failure check still applies.
+    if let Some((&at, data)) = pending.range(..=offset).next_back()
+        && let Ok(skip) = usize::try_from(offset - at)
+        && let Some(bytes) = data.get(skip..).and_then(|bytes| bytes.get(..out.len()))
+    {
+        out.copy_from_slice(bytes);
+        return Ok(());
+    }
     read_device(file, offset, out).map_err(|source| Error::Io {
         operation: "read_exact_at",
         source,
@@ -997,10 +1005,9 @@ fn overlay(pending: &BTreeMap<u64, Vec<u8>>, offset: u64, out: &mut [u8]) {
     }
 }
 
-/// Group writes that end where the next begins into runs of at most `MAX_RUN`,
-/// keeping each write's buffer: the writer sends a run as one `pwritev`, so
-/// nothing is copied into a merged buffer. A write longer than that is sent
-/// alone.
+/// Group adjacent writes into runs of at most `MAX_RUN`, keeping each write's
+/// buffer until the writer sends it. FreeBSD coalesces the pieces in `write_run`.
+/// A write longer than the bound is sent alone.
 fn runs(pending: BTreeMap<u64, Vec<u8>>) -> Vec<(u64, Vec<Vec<u8>>)> {
     let mut runs: Vec<(u64, Vec<Vec<u8>>, usize)> = Vec::new();
     for (offset, data) in pending {
@@ -1067,6 +1074,11 @@ fn overlay_run(run: &Run, offset: u64, out: &mut [u8]) {
 fn write_run(file: &File, mut offset: u64, pieces: &[Vec<u8>]) -> io::Result<()> {
     #[cfg(feature = "fault-injection")]
     injected_failure("CARRYFS_FAIL_WRITES")?;
+    // FreeBSD physio waits for each iovec separately; give GEOM one contiguous run.
+    #[cfg(target_os = "freebsd")]
+    let contiguous = (pieces.len() > 1).then(|| pieces.concat());
+    #[cfg(target_os = "freebsd")]
+    let pieces = contiguous.as_ref().map_or(pieces, std::slice::from_ref);
     let mut slices: Vec<IoSlice<'_>> = pieces.iter().map(|piece| IoSlice::new(piece)).collect();
     let mut slices = &mut slices[..];
     while !slices.is_empty() {
@@ -1569,6 +1581,38 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
+    #[test]
+    fn a_read_wholly_inside_a_held_write_needs_no_device_read() {
+        let path = std::env::temp_dir().join(format!("carryfs-held-only-{}", std::process::id()));
+        let disk = disk_over(&path);
+        let queue = Queue::default();
+        queue.send(4096, vec![vec![9; 8192]]).unwrap();
+        let pending = BTreeMap::from([(4096, vec![3; 8192])]);
+        // A zero-length backing file makes any device read fail.
+        disk.file.set_len(0).unwrap();
+        let mut out = [0; 4096];
+        fetch(&disk.file, &queue, &pending, 6144, &mut out).unwrap();
+        assert_eq!(out, [3; 4096]);
+        drop(disk);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_fully_held_read_still_reports_a_failed_writer() {
+        let path =
+            std::env::temp_dir().join(format!("carryfs-held-failure-{}", std::process::id()));
+        let mut disk = disk_over(&path);
+        disk.write_all_at(4096, &[3; 4096]).unwrap();
+        disk.queue.lock().failure = Some(libc::EIO);
+        let error =
+            fetch(&disk.file, &disk.queue, &disk.pending, 4096, &mut [0; 4096]).unwrap_err();
+        assert!(
+            matches!(error, Error::Io { source, .. } if source.raw_os_error() == Some(libc::EIO))
+        );
+        drop(disk);
+        std::fs::remove_file(path).unwrap();
+    }
+
     /// Held writes past `MAX_HELD` are sent without waiting for a flush, so
     /// memory stays bounded however long a write runs between checkpoints.
     #[test]
@@ -1801,9 +1845,9 @@ mod tests {
         assert!(fake.bytes.lock().unwrap().iter().all(|&byte| byte == 3));
     }
 
-    /// `pwritev` writes every piece of a run at its offset.
+    /// Every piece reaches the requested offset, including runs beyond IOV_MAX.
     #[test]
-    fn a_run_is_written_piece_by_piece() {
+    fn a_run_writes_all_pieces_at_the_requested_offset() {
         let path = std::env::temp_dir().join(format!("carryfs-disk-run-{}", std::process::id()));
         let file = OpenOptions::new()
             .read(true)

@@ -5,6 +5,7 @@ import errno
 import hashlib
 import os
 from pathlib import Path
+import select
 import signal
 import stat
 import subprocess
@@ -58,13 +59,13 @@ class MountedVolume(unittest.TestCase):
         env.update(extra_env or {})
         self.daemon = subprocess.Popen(
             [str(FUSE), "serve", self.device, str(self.point), options],
-            stdout=self.log, stderr=self.log, env=env,
+            stdout=subprocess.PIPE, stderr=self.log, env=env,
         )
-        deadline = time.monotonic() + 45
-        while not os.path.ismount(self.point):
-            if self.daemon.poll() is not None or time.monotonic() > deadline:
+        # A stat during nmount can hold the vnode that the FUSE handshake needs.
+        with self.daemon.stdout:
+            ready, _, _ = select.select([self.daemon.stdout], [], [], 45)
+            if not ready or self.daemon.stdout.readline().strip() != b"ready":
                 raise AssertionError(f"mount failed; see {self.work / 'daemon.log'}")
-            time.sleep(.01)
 
     def unmount(self):
         run("umount", self.point)

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import select
 import subprocess
 import sys
 import time
@@ -29,14 +30,14 @@ def run(*args, **kwargs):
 
 def mount(binary, device, point, log):
     daemon = subprocess.Popen(
-        [str(binary), "serve", device, str(point), "rw"], stdout=log, stderr=log
+        [str(binary), "serve", device, str(point), "rw"], stdout=subprocess.PIPE, stderr=log
     )
     try:
-        deadline = time.monotonic() + 60
-        while not os.path.ismount(point):
-            if daemon.poll() is not None or time.monotonic() > deadline:
+        # A stat during nmount can hold the vnode that the FUSE handshake needs.
+        with daemon.stdout:
+            ready, _, _ = select.select([daemon.stdout], [], [], 60)
+            if not ready or daemon.stdout.readline().strip() != b"ready":
                 raise RuntimeError(f"mount failed; see {log.name}")
-            time.sleep(.01)
         return daemon
     except BaseException:
         daemon.kill()

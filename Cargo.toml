@@ -21,6 +21,10 @@ path = "src/main.rs"
 name = "core"
 harness = false
 
+[[bench]]
+name = "ondisk"
+harness = false
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 

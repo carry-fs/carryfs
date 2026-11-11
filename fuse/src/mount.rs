@@ -176,7 +176,11 @@ pub fn serve(device: &Path, directory: &Path, options: &str) -> Result<()> {
             detach(&point);
         })?;
         let mut config = Config::default();
-        config.spin = SPIN;
+        // On a single processor the reading thread would hold it from the
+        // caller whose request it waits for.
+        if std::thread::available_parallelism().is_ok_and(|count| count.get() > 1) {
+            config.spin = SPIN;
+        }
         let session = Session::from_fd(fs, OwnedFd::from(fuse), SessionACL::All, config)?;
         names.set_notifier(session.notifier())?;
         Ok(session)

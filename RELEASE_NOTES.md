@@ -13,8 +13,9 @@
   feature in this release.
 
 **Update CarryFS on every computer that uses a volume before upgrading it.**
-CarryFS 0.1.0 cannot mount an upgraded volume, and on macOS it reports the
-disk as unreadable. An upgrade cannot be undone.
+CarryFS 0.1.0 cannot mount an upgraded volume, and on macOS it does not
+recognize the disk, so macOS may offer to initialize it: do not accept. An
+upgrade cannot be undone.
 
 # CarryFS 0.1.0
 

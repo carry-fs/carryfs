@@ -711,9 +711,10 @@ impl<D: BlockDevice> CarryFs<D> {
     }
 
     /// Creation and last-write times, hidden, and read-only are stored. A
-    /// zero time means "unchanged", as do zero and `INVALID_FILE_ATTRIBUTES`
-    /// for the attributes; other attribute bits, access time, and change time
-    /// are accepted and ignored.
+    /// zero time means "unchanged"; for the attributes only
+    /// `INVALID_FILE_ATTRIBUTES` does. WinFsp passes zero for
+    /// `FILE_ATTRIBUTE_NORMAL`, which clears both. Other attribute bits,
+    /// access time, and change time are accepted and ignored.
     pub fn set_basic_info(
         &self,
         context: u64,
@@ -723,23 +724,21 @@ impl<D: BlockDevice> CarryFs<D> {
     ) -> Reply<FileInfo> {
         self.change(|s| {
             let open = get(&s.open, context)?;
-            let mut change = if s.volume.stores_attributes()
-                && file_attributes != 0
-                && file_attributes != INVALID_FILE_ATTRIBUTES
-            {
-                let current = s
-                    .volume
-                    .handle_attributes(&open.handle)
-                    .map_err(|e| status(&e))?;
-                attribute_change(
-                    &current,
-                    last_component(open.path.as_deref().unwrap_or_default()),
-                    file_attributes & FILE_ATTRIBUTE_HIDDEN != 0,
-                    file_attributes & FILE_ATTRIBUTE_READONLY != 0,
-                )
-            } else {
-                AttributeChange::default()
-            };
+            let mut change =
+                if s.volume.stores_attributes() && file_attributes != INVALID_FILE_ATTRIBUTES {
+                    let current = s
+                        .volume
+                        .handle_attributes(&open.handle)
+                        .map_err(|e| status(&e))?;
+                    attribute_change(
+                        &current,
+                        last_component(open.path.as_deref().unwrap_or_default()),
+                        file_attributes & FILE_ATTRIBUTE_HIDDEN != 0,
+                        file_attributes & FILE_ATTRIBUTE_READONLY != 0,
+                    )
+                } else {
+                    AttributeChange::default()
+                };
             change.creation = (creation != 0).then(|| timestamp(creation)).transpose()?;
             change.modification = (last_write != 0)
                 .then(|| timestamp(last_write))
@@ -3295,13 +3294,12 @@ mod tests {
             .unwrap();
         assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_HIDDEN);
         assert_eq!(mode(&fs, file), 0o750);
-        // Zero and INVALID_FILE_ATTRIBUTES change nothing.
-        for unchanged in [0, INVALID_FILE_ATTRIBUTES] {
-            fs.set_basic_info(file, unchanged, 0, 0).unwrap();
-            assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_HIDDEN);
-        }
-        fs.set_basic_info(file, FILE_ATTRIBUTE_NORMAL, 0, 0)
+        // INVALID_FILE_ATTRIBUTES changes nothing.
+        fs.set_basic_info(file, INVALID_FILE_ATTRIBUTES, 0, 0)
             .unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_HIDDEN);
+        // WinFsp passes FILE_ATTRIBUTE_NORMAL as zero; it clears them.
+        fs.set_basic_info(file, 0, 0, 0).unwrap();
         assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
         assert_eq!(mode(&fs, file), 0o750);
         fs.cleanup(file, None, 0);

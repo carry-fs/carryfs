@@ -207,3 +207,71 @@ fn fingerprint(path: &Path) -> u64 {
         hash.write(&buffer[..len]);
     }
 }
+
+#[test]
+fn cli_keeps_modes_on_images_that_store_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+    let set = |path: &Path, bits: u32| {
+        fs::set_permissions(path, fs::Permissions::from_mode(bits)).unwrap()
+    };
+    let temp = Temp::new();
+    let source = temp.0.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("script"), b"#!/bin/sh\n").unwrap();
+    set(&source.join("script"), 0o755);
+    fs::write(source.join("private"), b"secret").unwrap();
+    set(&source.join("private"), 0o600);
+    fs::create_dir(source.join("locked")).unwrap();
+    fs::write(source.join("locked/inside"), b"kept").unwrap();
+    set(&source.join("locked/inside"), 0o640);
+    set(&source.join("locked"), 0o500);
+    set(&source, 0o750);
+
+    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/tree"]);
+    let attr = |args: &[&str]| String::from_utf8(temp.pass(args).stdout).unwrap();
+    assert_eq!(attr(&["attr", "image", "/tree/script"]), "file 0755\n");
+    assert_eq!(attr(&["attr", "image", "/tree/locked"]), "directory 0500\n");
+    assert_eq!(
+        attr(&["attr", "image", "/tree/private", "mode=640", "hidden=yes"]),
+        "file 0640 hidden\n"
+    );
+    assert!(
+        !temp
+            .run(&["attr", "image", "/tree/private", "mode=4755"])
+            .status
+            .success()
+    );
+    temp.pass(&["check", "image"]);
+
+    temp.pass(&["get", "image", "/tree", "out"]);
+    let out = temp.0.join("out");
+    assert_eq!(
+        [
+            &out,
+            &out.join("script"),
+            &out.join("private"),
+            &out.join("locked"),
+            &out.join("locked/inside")
+        ]
+        .map(|path| mode(path)),
+        [0o750, 0o755, 0o640, 0o500, 0o640]
+    );
+    assert_eq!(fs::read(out.join("locked/inside")).unwrap(), b"kept");
+    for root in [&source, &out] {
+        set(&root.join("locked"), 0o700);
+    }
+
+    // An image without the feature reads defaults and refuses changes.
+    temp.pass(&["mkfs", "plain", "268435456"]);
+    temp.pass(&["put", "plain", "source", "/tree"]);
+    assert_eq!(attr(&["attr", "plain", "/tree/script"]), "file 0644\n");
+    let refused = temp.run(&["attr", "plain", "/tree/script", "mode=755"]);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("carryfs upgrade"));
+    temp.pass(&["upgrade", "plain"]);
+    assert_eq!(
+        attr(&["attr", "plain", "/tree/script", "mode=755"]),
+        "file 0755\n"
+    );
+}

@@ -1,6 +1,6 @@
 mod cli;
 
-use std::{env, path::Path, process::ExitCode};
+use std::{env, ffi::OsString, path::Path, process::ExitCode};
 
 use carryfs_core::{ImageDevice, Volume};
 
@@ -25,19 +25,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => None,
     };
     match args.as_slice() {
-        [command, path, bytes] if command == "mkfs" => {
-            let bytes: u64 = bytes
-                .to_str()
-                .ok_or("image size must be a byte count")?
-                .parse()?;
-            let device = ImageDevice::create_new(Path::new(path), bytes)?;
-            let mut volume = Volume::format(device)?;
-            let info = volume.info()?;
-            volume.eject()?;
-            println!(
-                "Created {} byte CarryFS image, generation {}",
-                info.byte_len, info.generation
-            );
+        [command, path, bytes] if command == "mkfs" => mkfs(path, bytes, false)?,
+        [command, flag, path, bytes] if command == "mkfs" && flag == "--attributes" => {
+            mkfs(path, bytes, true)?
         }
         [command, path] if command == "dump" => {
             let device = cli::open_read_only(Path::new(path), device_bytes)?;
@@ -65,6 +55,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         [command, image] if command == "scrub" => cli::scrub(Path::new(image), device_bytes)?,
         [command, image] if command == "upgrade" => cli::upgrade(Path::new(image))?,
+        [command, image, path, changes @ ..] if command == "attr" => {
+            cli::attr(Path::new(image), path, changes)?
+        }
         [command, image, source, destination] if command == "put" => {
             cli::put(Path::new(image), Path::new(source), destination)?;
         }
@@ -72,10 +65,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli::get(Path::new(image), device_bytes, source, Path::new(destination))?;
         }
         _ => return Err(
-            "usage: carryfs mkfs NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
+            "usage: carryfs mkfs [--attributes] NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no] | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
                 .into(),
         ),
     }
+    Ok(())
+}
+
+/// Create an image; with `attributes`, one that stores modes and the hidden
+/// attribute from the start.
+fn mkfs(
+    path: &OsString,
+    bytes: &OsString,
+    attributes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes: u64 = bytes
+        .to_str()
+        .ok_or("image size must be a byte count")?
+        .parse()?;
+    let device = ImageDevice::create_new(Path::new(path), bytes)?;
+    let mut volume = Volume::format(device)?;
+    if attributes {
+        volume.upgrade()?;
+    }
+    let info = volume.info()?;
+    volume.eject()?;
+    println!(
+        "Created {} byte CarryFS image, generation {}",
+        info.byte_len, info.generation
+    );
     Ok(())
 }
 

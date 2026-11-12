@@ -278,7 +278,10 @@ maps to Finder's hidden flag and to Windows' hidden attribute. Windows also
 shows macOS's own bookkeeping files, such as `.DS_Store` and `._name`, as
 hidden. CarryFS 0.1.0 cannot mount an upgraded volume, so update CarryFS on
 every computer that uses the volume before upgrading it. Without the upgrade,
-files read as `0644` and directories as `0755`.
+files read as `0644` and directories as `0755`. For images,
+`carryfs mkfs --attributes` creates one with the feature, `carryfs put` and
+`carryfs get` keep modes, and `carryfs attr IMAGE /PATH [mode=OCTAL]
+[hidden=yes|no]` shows or changes them.
 
 CarryFS does not store owners, setuid, setgid or sticky bits, ACLs, extended
 attributes, resource forks, or alternate data streams, and it is not a

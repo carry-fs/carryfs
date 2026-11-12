@@ -5,3 +5,5 @@
 .DS_Store
 /build/
 __pycache__/
+
+/manager/target/

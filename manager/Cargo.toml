@@ -1,0 +1,28 @@
+[package]
+name = "carryfs-manager"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR GPL-2.0-only"
+default-run = "carryfs-manager"
+
+[workspace]
+
+[dependencies]
+carryfs-core = { path = ".." }
+serde_json = "1"
+rune = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "native-file-dialog"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
+
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
+
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
+
+[[bin]]
+name = "carryfs"
+path = "../src/main.rs"

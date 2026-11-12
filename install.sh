@@ -3,6 +3,8 @@ set -eu
 
 repository=carry-fs/carryfs
 release_index=https://carryfs.com/releases.txt
+# The last release with no package for this system, if any; set per platform.
+unpackaged_through=
 work=
 
 die() { printf 'carryfs: %s\n' "$*" >&2; exit 1; }
@@ -145,6 +147,8 @@ prerequisites() {
                 *) die 'FreeBSD packages support amd64 and arm64 only.' ;;
             esac
             platform=freebsd$major-$architecture
+            # FreeBSD packages start after 0.1.0; release.yml cannot publish without them.
+            unpackaged_through=0.1.0
             marker=/usr/local/libexec/carryfs/VERSION
             adapter=/usr/local/libexec/carryfs/carryfs-fuse
             for tool in sha256 pgrep mount_fusefs; do
@@ -162,21 +166,29 @@ prerequisites() {
 
 select_release() {
     if [ -n "$requested" ]; then
+        if [ -n "$unpackaged_through" ] && ! newer_version "$requested" "$unpackaged_through"; then
+            die "CarryFS $requested has no package for this system. Choose a later release, or build this checkout with ./install.sh --local."
+        fi
         tag=v$requested
     else
         download "$release_index" "$work/versions"
         major=
         if [ -n "$installed" ] && [ "$upgrade" = 0 ]; then major=${installed%%.*}; fi
-        tag=$(awk -v major="$major" '
+        tag=$(awk -v major="$major" -v unpackaged="$unpackaged_through" '
+            BEGIN { split(unpackaged, u, ".") }
             { sub(/\r$/, "") }
             $0 == "" { next }
             $0 !~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { exit 1 }
             { split($0,n,".") }
             major != "" && n[1] != major { next }
+            unpackaged != "" && (n[1]+0<u[1]+0 || (n[1]+0==u[1]+0 && (n[2]+0<u[2]+0 || (n[2]+0==u[2]+0 && n[3]+0<=u[3]+0)))) { next }
             !best || n[1]+0>a || (n[1]+0==a && n[2]+0>b) || (n[1]+0==a && n[2]+0==b && n[3]+0>c) {
                 best=$0; a=n[1]+0; b=n[2]+0; c=n[3]+0
             }
             END { if(best) print "v" best }' "$work/versions") || die 'Invalid release index from carryfs.com.'
+        if [ -z "$tag" ] && [ -n "$unpackaged_through" ]; then
+            die 'No published release has a package for this system yet. Build this checkout with ./install.sh --local.'
+        fi
         [ -n "$tag" ] || die 'No published stable release matches this installation. Use --version for an explicit published tag.'
     fi
     selected=${tag#v}

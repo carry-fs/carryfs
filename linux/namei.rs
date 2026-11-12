@@ -14,7 +14,9 @@ use kernel::prelude::*;
 use crate::commit::{self, COMMIT_DRAFTS};
 use crate::edit::{Disk, Txn};
 use crate::glue;
-use crate::ondisk::format::{TreeKind, MAINTENANCE_RESERVE, MAX_ID};
+use crate::ondisk::format::{
+    TreeKind, FEATURE_ATTRIBUTES, INODE_MODE, MAINTENANCE_RESERVE, MAX_ID, MODE_RECORDED,
+};
 use crate::tree::{self, le_u64, Tree};
 use crate::vfs::{Dentry, Inode};
 use crate::volume::{self, State};
@@ -38,6 +40,18 @@ const CHILDREN: usize = 32;
 const CREATED: usize = 40;
 const MODIFIED: usize = 56;
 const CHANGED: usize = 72;
+
+/// Whether the volume stores modes: root feature bit 0. Without it the mode
+/// field stays zero, as a reader that predates the feature requires.
+pub(crate) fn stores_attributes(state: &State) -> bool {
+    state.root.features & FEATURE_ATTRIBUTES != 0
+}
+
+/// Record `mode`'s nine permission bits in an inode record.
+pub(crate) fn set_mode(record: &mut [u8], mode: u32) {
+    let field = MODE_RECORDED | (mode & 0o777) as u16;
+    record[INODE_MODE..INODE_MODE + 2].copy_from_slice(&field.to_le_bytes());
+}
 
 pub(crate) fn set_u64(record: &mut [u8], offset: usize, value: u64) {
     record[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
@@ -226,11 +240,13 @@ fn parse_name(dentry: &Dentry) -> Result<(KVec<u8>, KVec<u8>)> {
 }
 
 /// Create an object of `kind` named by `dentry` in `dir`; its new inode.
+/// `mode` is the one the VFS passed, umask applied; a symlink has none.
 fn create_object(
     dir: &Inode,
     dentry: &Dentry,
     kind: u8,
     target: &[u8],
+    mode: Option<bindings::umode_t>,
 ) -> Result<*mut bindings::inode> {
     let (stored, folded) = parse_name(dentry)?;
     let (sb, parent) = (dir.super_block().as_ptr(), dir.object());
@@ -252,6 +268,9 @@ fn create_object(
         let mut record = KVec::with_capacity(128 + target.len(), GFP_KERNEL)?;
         record.resize(128, 0, GFP_KERNEL)?;
         record[0] = kind;
+        if let Some(mode) = mode.filter(|_| stores_attributes(state)) {
+            set_mode(&mut record, mode.into());
+        }
         set_u64(&mut record, PARENT, parent);
         set_u64(&mut record, SIZE, target.len() as u64);
         set_time(&mut record, CREATED, time);
@@ -273,11 +292,11 @@ unsafe extern "C" fn create(
     _idmap: *mut bindings::mnt_idmap,
     dir: *mut bindings::inode,
     dentry: *mut bindings::dentry,
-    _mode: bindings::umode_t,
+    mode: bindings::umode_t,
 ) -> c_int {
     // SAFETY: The VFS holds `dir` locked and `dentry` referenced.
     let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
-    match create_object(dir_ref, dentry_ref, FILE, &[]) {
+    match create_object(dir_ref, dentry_ref, FILE, &[], Some(mode)) {
         // SAFETY: `d_instantiate` takes the new inode's reference.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -333,11 +352,11 @@ unsafe extern "C" fn mkdir(
     _idmap: *mut bindings::mnt_idmap,
     dir: *mut bindings::inode,
     dentry: *mut bindings::dentry,
-    _mode: bindings::umode_t,
+    mode: bindings::umode_t,
 ) -> *mut bindings::dentry {
     // SAFETY: As in `create`.
     let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
-    match create_object(dir_ref, dentry_ref, DIRECTORY, &[]) {
+    match create_object(dir_ref, dentry_ref, DIRECTORY, &[], Some(mode)) {
         // SAFETY: As in `create`.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -363,7 +382,7 @@ unsafe extern "C" fn symlink(
     }
     // SAFETY: As in `create`.
     let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
-    match create_object(dir_ref, dentry_ref, SYMLINK, target) {
+    match create_object(dir_ref, dentry_ref, SYMLINK, target, None) {
         // SAFETY: As in `create`.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Check stored modes through a real FUSE mount on Linux.
+"""Check stored modes through a real FUSE mount on Linux, or through the
+kernel module with --kernel (load it first, preferably in a VM).
 
-Run after a release build: sudo python3 fuse/tests/permissions.py
+Run after a release build: sudo python3 fuse/tests/permissions.py [--kernel]
 The mount belongs to uid 1000; uid 65534 stands in for a second account.
 Evidence remains under /var/tmp/carryfs-permissions-*, a place the second
 account can reach; no existing device or mount is used.
 """
 import os
+import sys
 from pathlib import Path
 import stat
 import subprocess
@@ -17,6 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 CLI = REPO / "target/release/carryfs"
 FUSE = REPO / "target/release/carryfs-fuse"
 OWNER, OTHER = 1000, 65534
+KERNEL = "--kernel" in sys.argv[1:]
 
 
 def run(*args, **options):
@@ -47,9 +50,13 @@ class Mount:
         self.image = image
         self.loop = subprocess.check_output(["losetup", "-f", "--show", image], text=True).strip()
         self.point = point
-        self.daemon = subprocess.Popen(
-            [FUSE, "serve", self.loop, point, f"rw,uid={OWNER},gid={OWNER}"],
-            stdout=log, stderr=log)
+        options = f"rw,uid={OWNER},gid={OWNER}"
+        if KERNEL:
+            self.daemon = None
+            run("mount", "-i", "-t", "carryfs", "-o", options, self.loop, point)
+        else:
+            self.daemon = subprocess.Popen([FUSE, "serve", self.loop, point, options],
+                                           stdout=log, stderr=log)
         deadline = time.monotonic() + 30
         while not os.path.ismount(point):
             if self.daemon.poll() is not None or time.monotonic() > deadline:
@@ -60,7 +67,7 @@ class Mount:
     def close(self):
         if os.path.ismount(self.point):
             run("umount", self.point)
-        if self.daemon.poll() is None:
+        if self.daemon is not None and self.daemon.poll() is None:
             self.daemon.wait(timeout=60)
         run("losetup", "-d", self.loop)
         # The kernel detaches a loop device after the call returns.

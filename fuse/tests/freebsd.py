@@ -257,23 +257,102 @@ class MountedVolume(unittest.TestCase):
         self.assertIn(b"in use", result.stderr.lower(), result.stderr)
         run("umount", self.point)
 
+    def wait_until_released(self, device):
+        """Poll until the daemon exits and an offline reader may open `device`."""
+        deadline = time.monotonic() + 20
+        while True:
+            result = subprocess.run([str(CLI), "check", "--bytes", str(BYTES), device], capture_output=True)
+            if result.returncode == 0:
+                return
+            if time.monotonic() > deadline:
+                self.fail(result.stderr.decode())
+            time.sleep(.01)
+
     def test_mount_helper_and_raw_formatter(self):
         run(FUSE, "mkfs", "-f", "-L", "FreeBSD test", self.device, stdout=self.log)
         helper = self.work / "mount_carryfs"
         helper.symlink_to(FUSE)
-        run("mount", "-t", "carryfs", "-o", f"mountprog={helper},rw,sync", self.device, self.point)
+        logs = self.work / "helper-logs"
+        logs.mkdir()
+        env = {**os.environ, "TMPDIR": str(logs)}
+        run("mount", "-t", "carryfs", "-o", f"mountprog={helper},rw,sync", self.device, self.point, env=env)
         self.assertTrue(os.path.ismount(self.point))
         (self.point / "helper").write_bytes(b"mounted")
         run("umount", self.point)
-        deadline = time.monotonic() + 20
-        while True:
-            result = subprocess.run([str(CLI), "check", "--bytes", str(BYTES), self.device], capture_output=True)
-            if result.returncode == 0:
-                break
-            if time.monotonic() > deadline:
-                self.fail(result.stderr.decode())
-            time.sleep(.01)
+        self.wait_until_released(self.device)
+        # A daemon that exits cleanly with nothing to report leaves no log.
+        self.assertEqual(list(logs.iterdir()), [])
         self.assertEqual((self.recover() / "helper").read_bytes(), b"mounted")
+
+    def test_fstab_entry_mounts(self):
+        helper = self.work / "mount_carryfs"
+        helper.symlink_to(FUSE)
+        fstab = self.work / "fstab"
+        fstab.write_text(f"{self.device} {self.point} carryfs rw,noauto,late,failok,mountprog={helper} 0 0\n")
+        run("mount", "-F", fstab, self.point)
+        self.assertTrue(os.path.ismount(self.point))
+        (self.point / "fstab").write_bytes(b"mounted")
+        run("umount", self.point)
+        self.wait_until_released(self.device)
+        self.assertEqual((self.recover() / "fstab").read_bytes(), b"mounted")
+
+    def test_other_accounts_cannot_write(self):
+        # A mount point every account can reach, so a refusal is the mount's.
+        point = Path(tempfile.mkdtemp(prefix="carryfs-users-"))
+        point.chmod(0o755)
+        self.addCleanup(lambda: os.path.ismount(point) or point.rmdir())
+        self.point = point
+        self.mount()
+        (point / "shared").write_bytes(b"readable")
+
+        def nobody(*command):
+            def drop():
+                os.setgroups([])
+                os.setgid(65534)
+                os.setuid(65534)
+            return subprocess.run(command, capture_output=True, timeout=20, preexec_fn=drop)
+
+        self.assertEqual(nobody("cat", str(point / "shared")).stdout, b"readable")
+        for command in [("touch", str(point / "new")),
+                        ("rm", "-f", str(point / "shared")),
+                        ("truncate", "-s", "0", str(point / "shared"))]:
+            result = nobody(*command)
+            self.assertNotEqual(result.returncode, 0, command)
+        self.assertEqual((point / "shared").read_bytes(), b"readable")
+        self.assertFalse((point / "new").exists())
+        self.unmount()
+
+    def test_label_and_provider_names_share_one_lock(self):
+        run("gpart", "create", "-s", "GPT", self.device, stdout=self.log)
+        label = f"carryfs{os.getpid()}"
+        run("gpart", "add", "-t", "freebsd-ufs", "-l", label, self.device, stdout=self.log)
+        partition = self.device + "p1"
+        run(FUSE, "mkfs", "-f", partition, stdout=self.log)
+        # GEOM removes a label while its provider is open for writing.
+        labelled = Path("/dev/gpt") / label
+        deadline = time.monotonic() + 20
+        while not labelled.exists():
+            if time.monotonic() > deadline:
+                self.fail(f"{labelled} did not appear")
+            time.sleep(.05)
+        self.device, md = str(labelled), self.device
+        try:
+            self.mount()
+            (self.point / "kept").write_bytes(b"preserved")
+            other = self.work / "other"
+            other.mkdir()
+            for args in [
+                [FUSE, "serve", partition, other, "rw"],
+                [FUSE, "mkfs", "-f", partition],
+                [CLI, "check", "--bytes", BYTES, partition],
+            ]:
+                result = subprocess.run([str(arg) for arg in args], capture_output=True, timeout=20)
+                self.assertNotEqual(result.returncode, 0, args)
+                self.assertIn(b"in use", result.stderr.lower(), result.stderr)
+            self.assertEqual((self.point / "kept").read_bytes(), b"preserved")
+            self.unmount()
+        finally:
+            self.device = md
 
 
 if __name__ == "__main__":

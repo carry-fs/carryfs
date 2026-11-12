@@ -21,6 +21,9 @@ use crate::signals;
 type Result<T> = std::result::Result<T, Box<dyn StdError>>;
 
 const READY: &str = "ready";
+/// The helper names the daemon's log here, so a daemon that exits cleanly
+/// without writing to it can remove it.
+const LOG: &str = "CARRYFS_LOG";
 
 fn default_owner() -> Owner {
     // SAFETY: these functions take no pointers and cannot fail.
@@ -69,6 +72,7 @@ pub fn helper(args: &[OsString]) -> Result<()> {
         .mode(0o600)
         .open(&log_path)?;
     let mut child = Command::new(std::env::current_exe()?)
+        .env(LOG, &log_path)
         .arg0("carryfs-fuse")
         .arg("serve")
         .args([device, directory])
@@ -112,8 +116,11 @@ pub fn serve(device: &Path, directory: &Path, text: &str) -> Result<()> {
     let mut config = Config::default();
     config.acl = SessionACL::All;
     // FreeBSD has no nodev mount flag; CarryFS rejects device-node creation.
+    // The daemon checks no permissions: with allow_other, FreeBSD checks them
+    // only under default_permissions, as Linux does.
     config.mount_options = vec![
         MountOption::FSName(device.to_string_lossy().into_owned()),
+        MountOption::DefaultPermissions,
         MountOption::NoSuid,
         if options.read_only {
             MountOption::RO
@@ -135,6 +142,13 @@ pub fn serve(device: &Path, directory: &Path, text: &str) -> Result<()> {
     writeln!(io::stdout(), "{READY}")?;
     io::stdout().flush()?;
     session.run()?;
+    // An empty log records nothing; one with warnings stays for the user. A
+    // failed removal leaves an empty file behind, so it is not an error.
+    if let Some(log) = std::env::var_os(LOG)
+        && std::fs::metadata(&log).is_ok_and(|log| log.len() == 0)
+    {
+        let _ = std::fs::remove_file(log);
+    }
     Ok(())
 }
 

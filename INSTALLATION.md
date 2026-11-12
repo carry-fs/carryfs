@@ -114,8 +114,10 @@ For a foreground daemon, use
 
 FreeBSD uses ordinary directory listings and disables name caching because its
 FUSE implementation lacks the invalidation required for case-insensitive names.
-Device aliases share a canonical-provider advisory lock across CarryFS tools.
-Other raw-device programs must honor this lock to coordinate with CarryFS;
+CarryFS tools lock both the canonical provider and the volume's UUID, so every
+name for one partition, including GEOM labels such as `/dev/gpt/NAME`, shares
+one lock.
+Other raw-device programs must honor these locks to coordinate with CarryFS;
 root access can otherwise overwrite a mounted volume. Writable GEOM opens also
 conflict with writable native mounts. Unmount other filesystems before accessing
 a provider through CarryFS, including for offline inspection.

@@ -170,41 +170,22 @@ fn partitions(device: &File) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// A provider holds partitions when gpart knows a partition table on it.
+/// Asking about this provider alone works on a host with no tables at all.
 #[cfg(target_os = "freebsd")]
 fn partitions(device: &File) -> Result<Vec<String>> {
-    use std::os::fd::AsRawFd;
-    let mut name = [0u8; 1024];
-    // SAFETY: DIOCGPROVIDERNAME writes at most MAXPATHLEN bytes into name.
-    if unsafe {
-        libc::ioctl(
-            device.as_raw_fd(),
-            0x4400_648au64 as libc::c_ulong,
-            name.as_mut_ptr(),
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let name = std::ffi::CStr::from_bytes_until_nul(&name)?.to_str()?;
+    let name = carryfs_core::freebsd::provider_name(device)?;
     let output = std::process::Command::new("/sbin/gpart")
-        .args(["show", "-p"])
+        .args(["show", "-p", &name])
         .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "gpart show failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+    if output.status.success() {
+        return Ok(vec![name]);
     }
-    let text = std::str::from_utf8(&output.stdout)?;
-    // A header is '=> START SIZE PROVIDER SCHEME ...'.
-    Ok(text
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            (fields.first() == Some(&"=>") && fields.get(3) == Some(&name)).then(|| name.to_owned())
-        })
-        .collect())
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No such geom") {
+        return Ok(Vec::new());
+    }
+    Err(format!("gpart show {name} failed: {stderr}").into())
 }
 
 #[cfg(test)]

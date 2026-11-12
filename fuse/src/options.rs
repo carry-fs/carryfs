@@ -61,6 +61,9 @@ pub fn parse_options(text: &str, owner: Owner) -> Result<Options> {
                 // Always applied, or meaningless: access times are not stored,
                 // and ownership is neither stored nor checked (DiskArbitration
                 // passes noowners on macOS).
+                // FreeBSD fstab options for mount(8) itself.
+                #[cfg(target_os = "freebsd")]
+                "late" | "failok" => {}
                 "nodev" | "nosuid" | "defaults" | "auto" | "noauto" | "nofail" | "atime"
                 | "noatime" | "relatime" | "strictatime" | "nodiratime" | "lazytime" | "owners"
                 | "noowners" => {}

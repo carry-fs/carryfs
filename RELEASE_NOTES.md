@@ -1,3 +1,21 @@
+# Unreleased
+
+## Permissions and hidden files
+
+- Volumes can store Unix permission bits and a hidden attribute. Linux and
+  macOS show and enforce the permission bits for the account that mounts the
+  volume, so executables keep their execute bit. Windows maps the owner write
+  bit to read-only, and hidden to its hidden attribute.
+- Windows shows macOS's own files, such as `.DS_Store` and `._name`, as
+  hidden.
+- Existing volumes are unchanged until upgraded with `carryfs upgrade IMAGE`
+  or `carryfs-fuse upgrade DEVICE`. New volumes are formatted without the
+  feature in this release.
+
+**Update CarryFS on every computer that uses a volume before upgrading it.**
+CarryFS 0.1.0 cannot mount an upgraded volume, and on macOS it reports the
+disk as unreadable. An upgrade cannot be undone.
+
 # CarryFS 0.1.0
 
 CarryFS is an open-source filesystem for sharing data drives across macOS,

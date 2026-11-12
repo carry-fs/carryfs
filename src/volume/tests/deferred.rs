@@ -620,6 +620,7 @@ fn a_failed_edit_leaves_the_batch_as_it_was() {
             name("ghost"),
             ObjectKind::File,
             &[],
+            Default::default(),
             now,
         )?;
         taken = Some(ghost);

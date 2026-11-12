@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::format::{
-    BLOCK_BYTES, Page, ROOT_MAGIC, Root, TreeKind, TreeRef, decode_page, encode_leaf,
+    BLOCK_BYTES, FEATURE_ATTRIBUTES, Page, ROOT_MAGIC, Root, TreeKind, TreeRef, decode_page,
+    encode_leaf,
 };
 use crate::{BlockDevice, Error, Geometry, MountMode, Result};
 
@@ -166,7 +167,90 @@ impl Timestamp {
     }
 }
 
-/// Type, size, and stored timestamps of a catalog object.
+/// Permission bits `0o000..=0o777`. Holds no file type and no setuid,
+/// setgid or sticky bit, so no adapter can store one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mode(u16);
+
+impl Mode {
+    /// What a file with no recorded mode reads as.
+    pub const FILE: Mode = Mode(0o644);
+    /// What a directory with no recorded mode reads as.
+    pub const DIRECTORY: Mode = Mode(0o755);
+    /// What a symlink reads as. A symlink stores no mode.
+    pub const SYMLINK: Mode = Mode(0o777);
+
+    /// The low nine bits of a host mode. Higher bits are dropped.
+    pub fn from_host(mode: u32) -> Mode {
+        Mode((mode & 0o777) as u16)
+    }
+
+    /// The nine permission bits.
+    pub fn bits(self) -> u16 {
+        self.0
+    }
+
+    /// Whether the owner write bit is set.
+    pub fn owner_writable(self) -> bool {
+        self.0 & 0o200 != 0
+    }
+
+    /// `false` clears all three write bits. `true` sets the owner's.
+    pub fn with_owner_write(self, writable: bool) -> Mode {
+        if writable {
+            Mode(self.0 | 0o200)
+        } else {
+            Mode(self.0 & !0o222)
+        }
+    }
+
+    /// The default mode for `kind`.
+    pub fn default_for(kind: ObjectKind) -> Mode {
+        match kind {
+            ObjectKind::File => Mode::FILE,
+            ObjectKind::Directory => Mode::DIRECTORY,
+            ObjectKind::Symlink => Mode::SYMLINK,
+        }
+    }
+
+    /// The stored field: zero means the type's default.
+    pub(crate) fn decode(kind: ObjectKind, field: u16) -> Mode {
+        if field == 0 || kind == ObjectKind::Symlink {
+            Mode::default_for(kind)
+        } else {
+            Mode(field & 0o777)
+        }
+    }
+
+    pub(crate) fn encode(self) -> u16 {
+        carryfs_ondisk::format::MODE_RECORDED | self.0
+    }
+}
+
+/// What a new file or directory starts with. The default records nothing:
+/// the object reads with its type's default mode, not hidden.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NewAttributes {
+    /// The mode to record; `None` leaves the type's default.
+    pub mode: Option<Mode>,
+    /// Whether the object starts hidden.
+    pub hidden: bool,
+}
+
+/// A change to an object's attributes. Fields left `None` keep their value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttributeChange {
+    /// New creation time.
+    pub creation: Option<Timestamp>,
+    /// New modification time.
+    pub modification: Option<Timestamp>,
+    /// New mode. Dropped for a symlink, which stores none.
+    pub mode: Option<Mode>,
+    /// New hidden state.
+    pub hidden: Option<bool>,
+}
+
+/// Type, size, stored timestamps, mode and hidden state of a catalog object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attributes {
     /// Whether this object is a file, a directory, or a symlink.
@@ -189,6 +273,10 @@ pub struct Attributes {
     /// `None` for any other object or a link made elsewhere. Only the Windows
     /// adapter reads it; other OSes do not type links.
     pub directory_link: Option<bool>,
+    /// Stored mode, or the type's default.
+    pub mode: Mode,
+    /// Hidden from directory listings by hosts that honor it.
+    pub hidden: bool,
 }
 
 /// Read or read-write access requested when opening a file.
@@ -595,6 +683,39 @@ impl<D: BlockDevice> Volume<D> {
         next.label = Some(label);
         self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
         self.sync_publication()
+    }
+
+    /// Whether this volume stores modes and the hidden attribute. Without
+    /// it, every object reads with its type's default mode, not hidden, and
+    /// a change to either is refused with `InvalidInput`.
+    pub fn stores_attributes(&self) -> bool {
+        self.root
+            .as_ref()
+            .is_some_and(|root| root.features & FEATURE_ATTRIBUTES != 0)
+    }
+
+    /// Let this volume store modes and the hidden attribute. Publishes one
+    /// root and rewrites no inode. Returns `false` when the volume already
+    /// had the feature. Adapters older than this feature refuse to mount the
+    /// volume afterwards.
+    pub fn upgrade(&mut self) -> Result<bool> {
+        self.writable()?;
+        if self.stores_attributes() {
+            return Ok(false);
+        }
+        self.seal_batch()?;
+        let mut next = self
+            .root
+            .clone()
+            .ok_or(Error::InvalidInput("volume is not published"))?;
+        next.generation = next
+            .generation
+            .checked_add(1)
+            .ok_or(Error::InvalidInput("generation exhausted"))?;
+        next.features |= FEATURE_ATTRIBUTES;
+        self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
+        self.sync_publication()?;
+        Ok(true)
     }
 
     /// Report capacity for adapter statistics. Available space excludes the
@@ -1179,6 +1300,7 @@ fn bootstrap(
     let root = Root {
         label: None,
         uuid,
+        features: 0,
         generation: 1,
         blocks: geometry.blocks(),
         catalog: reference(512),

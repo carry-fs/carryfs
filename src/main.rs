@@ -64,6 +64,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("File data checksums were not scrubbed.");
         }
         [command, image] if command == "scrub" => cli::scrub(Path::new(image), device_bytes)?,
+        [command, image] if command == "upgrade" => cli::upgrade(Path::new(image))?,
         [command, image, source, destination] if command == "put" => {
             cli::put(Path::new(image), Path::new(source), destination)?;
         }
@@ -71,7 +72,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli::get(Path::new(image), device_bytes, source, Path::new(destination))?;
         }
         _ => return Err(
-            "usage: carryfs mkfs NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
+            "usage: carryfs mkfs NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
                 .into(),
         ),
     }

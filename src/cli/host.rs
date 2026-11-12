@@ -224,6 +224,8 @@ mod tests {
             metadata_change: time,
             orphan: false,
             directory_link: None,
+            mode: carryfs_core::Mode::DIRECTORY,
+            hidden: false,
         }
     }
 

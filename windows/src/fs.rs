@@ -21,8 +21,8 @@ use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use carryfs_core::{
-    Access, Attributes, BlockDevice, DirectoryEntry, Error, Handle, Name, ObjectId, ObjectKind,
-    ROOT, RemoveKind, Replace, Timestamp, Volume,
+    Access, AttributeChange, Attributes, BlockDevice, DirectoryEntry, Error, Handle, Mode, Name,
+    NewAttributes, ObjectId, ObjectKind, ROOT, RemoveKind, Replace, Timestamp, Volume,
 };
 
 use crate::waits::{Waits, Window};
@@ -61,9 +61,13 @@ pub const STATUS_TOO_MANY_OPENED_FILES: NtStatus = nt(0xC000_011F);
 pub const STATUS_DEVICE_BUSY: NtStatus = nt(0x8000_0011);
 pub const STATUS_FILE_TOO_LARGE: NtStatus = nt(0xC000_0904);
 
+pub const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+pub const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 pub const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+/// `SetBasicInfo`'s "leave the attributes as they are".
+pub const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 pub const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
 /// `SymbolicLinkReparseBuffer.Flags`: the target is relative to the link.
 const SYMLINK_FLAG_RELATIVE: u32 = 1;
@@ -198,7 +202,9 @@ struct Open {
     object: ObjectId,
     kind: ObjectKind,
     handle: Handle,
-    /// For a file, the path WinFsp knows it by.
+    /// The path WinFsp knows the object by. It gives a file's pages to
+    /// Windows' cache bookkeeping, and every object its name for the hidden
+    /// rule (`macos_own_name`).
     path: Option<Vec<u16>>,
     /// The core handle is open for writing.
     writable: bool,
@@ -443,7 +449,7 @@ impl<D: BlockDevice> CarryFs<D> {
         self.with(|s| {
             let (object, _, _) = s.locate(path)?;
             let attributes = s.known.attributes(&mut s.volume, object)?;
-            Ok(file_info(&mut s.volume, object, &attributes).file_attributes)
+            Ok(file_info(&mut s.volume, object, &attributes, last_component(path)).file_attributes)
         })
     }
 
@@ -454,21 +460,32 @@ impl<D: BlockDevice> CarryFs<D> {
         path: &[u16],
         directory: bool,
         write_through: bool,
+        file_attributes: u32,
     ) -> Reply<(u64, FileInfo, Vec<u16>)> {
         self.change(|s| {
             let (parent, name, mut normalized) = s.parent(path)?;
+            let new = NewAttributes {
+                // Windows does not honor read-only on a directory.
+                mode: (!directory && file_attributes & FILE_ATTRIBUTE_READONLY != 0)
+                    .then(|| Mode::FILE.with_owner_write(false)),
+                hidden: file_attributes & FILE_ATTRIBUTE_HIDDEN != 0
+                    && !macos_own_name(last_component(path)),
+            };
             let (object, handle) = if directory {
-                let object =
-                    with_space(&mut s.volume, |v| v.create_directory(parent, name.clone()))
-                        .map_err(|e| status(&e))?;
+                let object = with_space(&mut s.volume, |v| {
+                    v.create_directory_with(parent, name.clone(), new)
+                })
+                .map_err(|e| status(&e))?;
                 let handle = s
                     .volume
                     .open_object(object, Access::Read)
                     .map_err(|e| open_status(&e))?;
                 (object, handle)
             } else {
-                let handle = with_space(&mut s.volume, |v| v.create_file(parent, name.clone()))
-                    .map_err(|e| open_status(&e))?;
+                let handle = with_space(&mut s.volume, |v| {
+                    v.create_file_with(parent, name.clone(), new)
+                })
+                .map_err(|e| open_status(&e))?;
                 match s.volume.lookup(parent, &name) {
                     Ok(object) => (object, handle),
                     // The file stays created, as after any failed publication-side step.
@@ -489,9 +506,14 @@ impl<D: BlockDevice> CarryFs<D> {
             if write_through {
                 s.publish()?;
             }
-            let known = (!directory).then(|| path.to_vec());
-            let (context, info) =
-                s.insert(object, kind, handle, known, !directory, write_through)?;
+            let (context, info) = s.insert(
+                object,
+                kind,
+                handle,
+                Some(path.to_vec()),
+                !directory,
+                write_through,
+            )?;
             Ok((context, info, normalized))
         })
     }
@@ -514,19 +536,43 @@ impl<D: BlockDevice> CarryFs<D> {
                 .volume
                 .open_object(object, access)
                 .map_err(|e| open_status(&e))?;
-            let known = (kind == ObjectKind::File).then(|| path.to_vec());
             let writable = access == Access::ReadWrite;
-            let (context, info) = s.insert(object, kind, handle, known, writable, write_through)?;
+            let (context, info) = s.insert(
+                object,
+                kind,
+                handle,
+                Some(path.to_vec()),
+                writable,
+                write_through,
+            )?;
             Ok((context, info, normalized))
         })
     }
 
     /// Truncate for `CREATE_ALWAYS`, `TRUNCATE_EXISTING`, and supersede.
-    /// Attribute bits are not stored.
-    pub fn overwrite(&self, context: u64) -> Reply<FileInfo> {
+    /// Hidden and read-only come from `file_attributes`: replacing the old
+    /// ones when `replace` is set, added to them otherwise.
+    pub fn overwrite(&self, context: u64, file_attributes: u32, replace: bool) -> Reply<FileInfo> {
         self.change(|s| {
             let open = get(&s.open, context)?;
             with_space(&mut s.volume, |v| v.truncate(&open.handle, 0)).map_err(|e| status(&e))?;
+            if s.volume.stores_attributes() {
+                let current = s
+                    .volume
+                    .handle_attributes(&open.handle)
+                    .map_err(|e| status(&e))?;
+                let name = last_component(open.path.as_deref().unwrap_or_default());
+                let hidden =
+                    file_attributes & FILE_ATTRIBUTE_HIDDEN != 0 || (!replace && current.hidden);
+                let read_only = file_attributes & FILE_ATTRIBUTE_READONLY != 0
+                    || (!replace && !current.mode.owner_writable());
+                let change = attribute_change(&current, name, hidden, read_only);
+                if change != AttributeChange::default() {
+                    s.volume
+                        .set_attributes(&open.handle, change)
+                        .map_err(|e| status(&e))?;
+                }
+            }
             s.publish_if_write_through(context)?;
             s.info(context)
         })
@@ -664,18 +710,43 @@ impl<D: BlockDevice> CarryFs<D> {
         self.with(|s| s.info(context))
     }
 
-    /// Only creation and last-write times are stored. Zero means "unchanged";
-    /// attribute bits, access time, and change time are accepted and ignored.
-    pub fn set_basic_info(&self, context: u64, creation: u64, last_write: u64) -> Reply<FileInfo> {
+    /// Creation and last-write times, hidden, and read-only are stored. A
+    /// zero time means "unchanged", as do zero and `INVALID_FILE_ATTRIBUTES`
+    /// for the attributes; other attribute bits, access time, and change time
+    /// are accepted and ignored.
+    pub fn set_basic_info(
+        &self,
+        context: u64,
+        file_attributes: u32,
+        creation: u64,
+        last_write: u64,
+    ) -> Reply<FileInfo> {
         self.change(|s| {
-            let creation = (creation != 0).then(|| timestamp(creation)).transpose()?;
-            let modification = (last_write != 0)
+            let open = get(&s.open, context)?;
+            let mut change = if s.volume.stores_attributes()
+                && file_attributes != 0
+                && file_attributes != INVALID_FILE_ATTRIBUTES
+            {
+                let current = s
+                    .volume
+                    .handle_attributes(&open.handle)
+                    .map_err(|e| status(&e))?;
+                attribute_change(
+                    &current,
+                    last_component(open.path.as_deref().unwrap_or_default()),
+                    file_attributes & FILE_ATTRIBUTE_HIDDEN != 0,
+                    file_attributes & FILE_ATTRIBUTE_READONLY != 0,
+                )
+            } else {
+                AttributeChange::default()
+            };
+            change.creation = (creation != 0).then(|| timestamp(creation)).transpose()?;
+            change.modification = (last_write != 0)
                 .then(|| timestamp(last_write))
                 .transpose()?;
-            if creation.is_some() || modification.is_some() {
-                let handle = &get(&s.open, context)?.handle;
+            if change != AttributeChange::default() {
                 s.volume
-                    .set_times(handle, creation, modification)
+                    .set_attributes(&open.handle, change)
                     .map_err(|e| status(&e))?;
             }
             s.info(context)
@@ -808,14 +879,17 @@ impl<D: BlockDevice> CarryFs<D> {
                     None | Some(".") | Some("..") if object == ROOT => None,
                     None | Some(".") => {
                         if text.is_none()
-                            && !add(&utf16("."), &file_info(&mut s.volume, object, &attributes))
+                            && !add(
+                                &utf16("."),
+                                &file_info(&mut s.volume, object, &attributes, &[]),
+                            )
                         {
                             return Ok(false);
                         }
                         let parent = s.known.attributes(&mut s.volume, attributes.parent)?;
                         if !add(
                             &utf16(".."),
-                            &file_info(&mut s.volume, attributes.parent, &parent),
+                            &file_info(&mut s.volume, attributes.parent, &parent, &[]),
                         ) {
                             return Ok(false);
                         }
@@ -847,7 +921,10 @@ impl<D: BlockDevice> CarryFs<D> {
                 let child = s.known.attributes(&mut s.volume, entry.object)?;
                 let mut name = Vec::new();
                 push_alias(&mut name, &entry.name)?;
-                if !add(&name, &file_info(&mut s.volume, entry.object, &child)) {
+                if !add(
+                    &name,
+                    &file_info(&mut s.volume, entry.object, &child, &name),
+                ) {
                     break false;
                 }
                 returned = Some(name);
@@ -972,7 +1049,19 @@ impl<D: BlockDevice> State<D> {
     fn info(&mut self, context: u64) -> Reply<FileInfo> {
         let object = self.object(context)?;
         let attributes = self.known.attributes(&mut self.volume, object)?;
-        Ok(file_info(&mut self.volume, object, &attributes))
+        // After cleanup the context has no path; the name rule then waits for
+        // the next lookup by name.
+        let path = self
+            .open
+            .get(&context)
+            .and_then(|open| open.path.as_deref())
+            .unwrap_or_default();
+        Ok(file_info(
+            &mut self.volume,
+            object,
+            &attributes,
+            last_component(path),
+        ))
     }
 
     /// Resolve a path as `resolve_entry` does, but through `directory`, so
@@ -1512,13 +1601,56 @@ fn utf16(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
+/// Names macOS keeps its own bookkeeping in. Windows reports them hidden
+/// whatever is stored, as Samba's `hide files` does, and stores nothing:
+/// they work the same on a volume without the attributes feature.
+fn macos_own_name(name: &[u16]) -> bool {
+    const NAMES: [&str; 5] = [
+        ".DS_Store",
+        ".Trashes",
+        ".fseventsd",
+        ".Spotlight-V100",
+        ".TemporaryItems",
+    ];
+    let Ok(name) = String::from_utf16(name) else {
+        return false;
+    };
+    name.starts_with("._") || NAMES.iter().any(|known| known.eq_ignore_ascii_case(&name))
+}
+
+/// The last component of a WinFsp path; empty for the root.
+fn last_component(path: &[u16]) -> &[u16] {
+    split(path).map_or(&[], |(_, last)| last)
+}
+
+/// The change that makes `current` report `hidden` and `read_only`. Only
+/// what differs is written, so a request that toggles hidden leaves a mode
+/// set on another OS alone. Read-only applies to files: setting it clears
+/// all three write bits, clearing it sets the owner's. Hidden is never
+/// stored for macOS's own names, which are hidden by name.
+fn attribute_change(
+    current: &Attributes,
+    name: &[u16],
+    hidden: bool,
+    read_only: bool,
+) -> AttributeChange {
+    AttributeChange {
+        hidden: (hidden != current.hidden && !macos_own_name(name)).then_some(hidden),
+        mode: (current.kind == ObjectKind::File && read_only == current.mode.owner_writable())
+            .then(|| current.mode.with_owner_write(!read_only)),
+        ..AttributeChange::default()
+    }
+}
+
+/// `name` is the object's last path component, for the hidden rule.
 fn file_info<D: BlockDevice>(
     volume: &mut Volume<D>,
     object: ObjectId,
     attributes: &Attributes,
+    name: &[u16],
 ) -> FileInfo {
-    let (file_attributes, reparse_tag) = match attributes.kind {
-        ObjectKind::File => (FILE_ATTRIBUTE_NORMAL, 0),
+    let (mut file_attributes, reparse_tag) = match attributes.kind {
+        ObjectKind::File => (0, 0),
         ObjectKind::Directory => (FILE_ATTRIBUTE_DIRECTORY, 0),
         ObjectKind::Symlink
             if attributes
@@ -1532,6 +1664,15 @@ fn file_info<D: BlockDevice>(
         }
         ObjectKind::Symlink => (FILE_ATTRIBUTE_REPARSE_POINT, IO_REPARSE_TAG_SYMLINK),
     };
+    if attributes.kind == ObjectKind::File && !attributes.mode.owner_writable() {
+        file_attributes |= FILE_ATTRIBUTE_READONLY;
+    }
+    if attributes.hidden || macos_own_name(name) {
+        file_attributes |= FILE_ATTRIBUTE_HIDDEN;
+    }
+    if file_attributes == 0 {
+        file_attributes = FILE_ATTRIBUTE_NORMAL;
+    }
     let modification = filetime(attributes.modification);
     FileInfo {
         file_attributes,
@@ -1882,7 +2023,7 @@ mod tests {
         let (_image, fs) = mount("name-timing");
         for index in 0..100 {
             let (context, _, _) = fs
-                .create(&w(&format!("\\file{index:03}")), false, false)
+                .create(&w(&format!("\\file{index:03}")), false, false, 0)
                 .unwrap();
             fs.close(context);
         }
@@ -1912,11 +2053,11 @@ mod tests {
     fn stat_and_listing_timing() {
         const FILES: usize = 10_000;
         let (_image, fs) = mount("stat-timing");
-        let (directory, _, _) = fs.create(&w("\\d"), true, false).unwrap();
+        let (directory, _, _) = fs.create(&w("\\d"), true, false, 0).unwrap();
         fs.close(directory);
         let paths: Vec<Vec<u16>> = (0..FILES).map(|i| w(&format!("\\d\\f{i:05}"))).collect();
         for path in &paths {
-            let (context, _, _) = fs.create(path, false, false).unwrap();
+            let (context, _, _) = fs.create(path, false, false, 0).unwrap();
             fs.write(context, 0, &[7; 4096], false, false).unwrap();
             fs.close(context);
         }
@@ -2014,9 +2155,9 @@ mod tests {
     #[test]
     fn paths_resolve_case_insensitively_and_report_the_missing_component() {
         let (_image, fs) = mount("paths");
-        let (dir, info, _) = fs.create(&w("\\Docs"), true, false).unwrap();
+        let (dir, info, _) = fs.create(&w("\\Docs"), true, false, 0).unwrap();
         assert_eq!(info.file_attributes, FILE_ATTRIBUTE_DIRECTORY);
-        let (file, _, _) = fs.create(&w("\\Docs\\Notes.txt"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\Docs\\Notes.txt"), false, false, 0).unwrap();
         fs.close(file);
         fs.close(dir);
         let (again, info, _) = fs.open(&w("\\DOCS\\notes.TXT"), false, false).unwrap();
@@ -2037,15 +2178,16 @@ mod tests {
             Err(STATUS_OBJECT_NAME_INVALID)
         );
         assert_eq!(
-            fs.create(&w("\\docs\\NOTES.txt"), false, false).map(|_| ()),
+            fs.create(&w("\\docs\\NOTES.txt"), false, false, 0)
+                .map(|_| ()),
             Err(STATUS_OBJECT_NAME_COLLISION)
         );
         assert_eq!(
-            fs.create(&w("\\missing\\new"), false, false).map(|_| ()),
+            fs.create(&w("\\missing\\new"), false, false, 0).map(|_| ()),
             Err(STATUS_OBJECT_PATH_NOT_FOUND)
         );
         assert_eq!(
-            fs.create(&w("\\docs\\notes.txt\\new"), true, false)
+            fs.create(&w("\\docs\\notes.txt\\new"), true, false, 0)
                 .map(|_| ()),
             Err(STATUS_OBJECT_PATH_NOT_FOUND)
         );
@@ -2054,9 +2196,9 @@ mod tests {
     #[test]
     fn opening_through_an_alias_reports_the_stored_spelling() {
         let (_image, fs) = mount("normalized");
-        let (dir, _, created) = fs.create(&w("\\Docs"), true, false).unwrap();
+        let (dir, _, created) = fs.create(&w("\\Docs"), true, false, 0).unwrap();
         assert_eq!(String::from_utf16(&created).unwrap(), "\\Docs");
-        let (file, _, created) = fs.create(&w("\\docs\\Notes.TXT"), false, false).unwrap();
+        let (file, _, created) = fs.create(&w("\\docs\\Notes.TXT"), false, false, 0).unwrap();
         // The parent keeps its stored spelling; a new entry keeps the requested one.
         assert_eq!(String::from_utf16(&created).unwrap(), "\\Docs\\Notes.TXT");
         fs.close(file);
@@ -2090,10 +2232,10 @@ mod tests {
     #[test]
     fn set_reparse_point_turns_new_objects_into_symlinks() {
         let (_image, fs) = mount("reparse");
-        let (dir, _, _) = fs.create(&w("\\dir"), true, false).unwrap();
+        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
         fs.close(dir);
         // mklink creates an empty file, then sets the reparse point on it.
-        let (link, _, _) = fs.create(&w("\\file-link"), false, false).unwrap();
+        let (link, _, _) = fs.create(&w("\\file-link"), false, false, 0).unwrap();
         fs.set_reparse(
             link,
             &w("\\file-link"),
@@ -2110,7 +2252,7 @@ mod tests {
         fs.close(link);
 
         // mklink /D creates an empty directory; a target that is one reports it.
-        let (link, _, _) = fs.create(&w("\\dir-link"), true, false).unwrap();
+        let (link, _, _) = fs.create(&w("\\dir-link"), true, false, 0).unwrap();
         fs.set_reparse(link, &w("\\dir-link"), &symlink_buffer("dir", 1), 0)
             .unwrap();
         assert_eq!(
@@ -2123,7 +2265,7 @@ mod tests {
             Err(STATUS_NOT_A_REPARSE_POINT)
         );
 
-        let (other, _, _) = fs.create(&w("\\absolute"), false, false).unwrap();
+        let (other, _, _) = fs.create(&w("\\absolute"), false, false, 0).unwrap();
         assert_eq!(
             fs.set_reparse(
                 other,
@@ -2167,7 +2309,7 @@ mod tests {
     #[test]
     fn links_made_elsewhere_take_their_kind_from_the_target() {
         let (_image, fs) = mount("inferred");
-        let (dir, _, _) = fs.create(&w("\\dir"), true, false).unwrap();
+        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
         fs.close(dir);
         fs.with(|s| {
             for (link, target) in [("up", "dir/../dir"), ("root", "/dir"), ("gone", "missing")] {
@@ -2192,13 +2334,13 @@ mod tests {
     #[test]
     fn listing_resumes_by_marker_while_entries_are_deleted() {
         let (_image, fs) = mount("listing");
-        let (dir, _, _) = fs.create(&w("\\d"), true, false).unwrap();
+        let (dir, _, _) = fs.create(&w("\\d"), true, false, 0).unwrap();
         fs.close(dir);
         let mut expected = vec![".".to_string(), "..".to_string()];
         for index in 0..150 {
             let name = format!("f{index:03}");
             let (file, _, _) = fs
-                .create(&w(&format!("\\d\\{name}")), false, false)
+                .create(&w(&format!("\\d\\{name}")), false, false, 0)
                 .unwrap();
             fs.close(file);
             expected.push(name);
@@ -2210,7 +2352,7 @@ mod tests {
     }
 
     fn make(fs: &CarryFs<ImageDevice>, path: &str, directory: bool) {
-        let (context, _, _) = fs.create(&w(path), directory, false).unwrap();
+        let (context, _, _) = fs.create(&w(path), directory, false, 0).unwrap();
         fs.close(context);
     }
 
@@ -2263,7 +2405,7 @@ mod tests {
         let (_image, fs) = mount("known-attributes");
         make(&fs, "\\d", true);
         let path = w("\\d\\file");
-        let (writer, _, _) = fs.create(&path, false, false).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
         let (reader, _, _) = fs.open(&path, false, false).unwrap();
         // The size by name, through another handle, and in a listing.
         let sizes = || {
@@ -2285,11 +2427,12 @@ mod tests {
         assert_eq!(sizes(), (5000, 5000));
         fs.set_file_size(writer, 100, false).unwrap();
         assert_eq!(sizes(), (100, 100));
-        fs.overwrite(writer).unwrap();
+        fs.overwrite(writer, 0, false).unwrap();
         assert_eq!(sizes(), (0, 0));
         let stamp = 133_000_000_000_000_000;
         assert_ne!(fs.file_info(reader).unwrap().last_write_time, stamp);
-        fs.set_basic_info(writer, 0, stamp).unwrap();
+        fs.set_basic_info(writer, INVALID_FILE_ATTRIBUTES, 0, stamp)
+            .unwrap();
         assert_eq!(fs.file_info(reader).unwrap().last_write_time, stamp);
         // Publication changes no attribute.
         fs.flush(None).unwrap();
@@ -2305,7 +2448,7 @@ mod tests {
         make(&fs, "\\d", true);
         for name in ["keep", "shrink", "gone"] {
             let path = w(&format!("\\d\\{name}"));
-            let (file, _, _) = fs.create(&path, false, false).unwrap();
+            let (file, _, _) = fs.create(&path, false, false, 0).unwrap();
             fs.write(file, 0, &vec![7; 1 << 20], false, false).unwrap();
             fs.close(file);
         }
@@ -2373,7 +2516,7 @@ mod tests {
         assert_eq!(normalized, w("\\z\\b\\two"));
         fs.close(two);
         // An empty directory that becomes a link holds no paths any more.
-        let (link, _, _) = fs.create(&w("\\z\\link"), true, false).unwrap();
+        let (link, _, _) = fs.create(&w("\\z\\link"), true, false, 0).unwrap();
         assert_eq!(
             fs.attributes_by_name(&w("\\z\\link\\x")),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
@@ -2391,7 +2534,7 @@ mod tests {
     fn delete_pending_file_stays_readable_until_its_last_close() {
         let (_image, fs) = mount("delete");
         let path = w("\\victim");
-        let (writer, _, _) = fs.create(&path, false, false).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
         let (written, info) = fs.write(writer, 0, &[5; 100_000], false, false).unwrap();
         assert_eq!((written, info.file_size), (100_000, 100_000));
         let (reader, _, _) = fs.open(&path, false, false).unwrap();
@@ -2429,7 +2572,7 @@ mod tests {
     fn a_context_gives_up_its_handle_at_cleanup_and_still_reads() {
         let (_image, fs) = mount("cleaned");
         let path = w("\\cached");
-        let (writer, _, _) = fs.create(&path, false, false).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
         fs.write(writer, 0, &[9; 70_000], false, false).unwrap();
         fs.cleanup(writer, None, 0);
         fs.close(writer);
@@ -2468,7 +2611,7 @@ mod tests {
     fn paging_writes_arrive_through_read_and_cleaned_up_contexts() {
         let (image, fs) = mount("paging");
         let path = w("\\mapped");
-        let (writer, _, _) = fs.create(&path, false, false).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
         fs.write(writer, 0, &[0; 8192], false, false).unwrap();
         let (reader, _, _) = fs.open(&path, false, false).unwrap();
         assert_eq!(fs.write(reader, 0, b"one", false, true).unwrap().0, 3);
@@ -2507,7 +2650,7 @@ mod tests {
     #[test]
     fn closing_a_written_file_names_it_and_holds_removal() {
         let (_image, fs) = mount("writeout");
-        let (created, _, _) = fs.create(&w("\\New"), false, false).unwrap();
+        let (created, _, _) = fs.create(&w("\\New"), false, false, 0).unwrap();
         assert!(fs.take_stale().is_empty());
         fs.cleanup(created, None, 0);
         assert_eq!(fs.take_stale(), [w("\\New")]);
@@ -2534,7 +2677,7 @@ mod tests {
         fs.can_delete(writer).unwrap();
         fs.cleanup(writer, Some(&w("\\Moved")), CLEANUP_DELETE);
         fs.close(writer);
-        let (directory, _, _) = fs.create(&w("\\dir"), true, false).unwrap();
+        let (directory, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
         fs.cleanup(directory, None, 0);
         fs.close(directory);
         assert!(fs.take_stale().is_empty());
@@ -2556,7 +2699,7 @@ mod tests {
         let (_image, fs) = mount("kept");
         let read = |name: &str| {
             let path = w(name);
-            if let Ok((created, _, _)) = fs.create(&path, false, false) {
+            if let Ok((created, _, _)) = fs.create(&path, false, false, 0) {
                 fs.write(created, 0, b"data", false, false).unwrap();
                 fs.close(created);
             }
@@ -2591,13 +2734,13 @@ mod tests {
     #[test]
     fn a_change_in_an_open_directory_names_the_directory() {
         let (_image, fs) = mount("touched");
-        let (held, _, _) = fs.create(&w("\\Held"), true, false).unwrap();
-        let (other, _, _) = fs.create(&w("\\other"), true, false).unwrap();
+        let (held, _, _) = fs.create(&w("\\Held"), true, false, 0).unwrap();
+        let (other, _, _) = fs.create(&w("\\other"), true, false, 0).unwrap();
         fs.cleanup(other, None, 0);
         fs.close(other);
         assert!(fs.take_stale().is_empty());
 
-        let (file, _, _) = fs.create(&w("\\held\\a"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\held\\a"), false, false, 0).unwrap();
         assert_eq!(fs.take_stale(), [w("\\held")]);
         fs.rename(&w("\\held\\a"), &w("\\held\\b"), false).unwrap();
         assert_eq!(fs.take_stale(), [w("\\held")]);
@@ -2612,7 +2755,7 @@ mod tests {
 
         // The root is a directory like any other.
         let (root, _, _) = fs.open(&w("\\"), false, false).unwrap();
-        let (sub, _, _) = fs.create(&w("\\sub"), true, false).unwrap();
+        let (sub, _, _) = fs.create(&w("\\sub"), true, false, 0).unwrap();
         assert_eq!(fs.take_stale(), [w("\\")]);
         fs.rename(&w("\\sub"), &w("\\held\\sub"), false).unwrap();
         assert_eq!(fs.take_stale(), [w("\\"), w("\\held")]);
@@ -2620,7 +2763,7 @@ mod tests {
             fs.cleanup(context, None, 0);
             fs.close(context);
         }
-        let (unheld, _, _) = fs.create(&w("\\held\\d"), false, false).unwrap();
+        let (unheld, _, _) = fs.create(&w("\\held\\d"), false, false, 0).unwrap();
         assert!(fs.take_stale().is_empty());
         fs.close(unheld);
     }
@@ -2631,11 +2774,11 @@ mod tests {
     fn a_cleaned_up_context_reads_while_every_handle_is_taken() {
         let (_image, fs) = mount("saturated");
         let path = w("\\busy");
-        let (writer, _, _) = fs.create(&path, false, false).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
         fs.write(writer, 0, b"data", false, false).unwrap();
         let (first, _, _) = fs.open(&path, false, false).unwrap();
         fs.cleanup(first, None, 0);
-        let (other, _, _) = fs.create(&w("\\other"), false, false).unwrap();
+        let (other, _, _) = fs.create(&w("\\other"), false, false, 0).unwrap();
         fs.cleanup(other, None, 0);
         let mut readers = Vec::new();
         loop {
@@ -2663,7 +2806,7 @@ mod tests {
     #[test]
     fn writes_append_and_constrained_writes_do_not_extend() {
         let (_image, fs) = mount("write");
-        let (file, _, _) = fs.create(&w("\\f"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
         fs.write(file, 0, b"hello", false, false).unwrap();
         let (_, info) = fs.write(file, 0, b" world", true, false).unwrap();
         assert_eq!(info.file_size, 11);
@@ -2674,7 +2817,7 @@ mod tests {
         assert_eq!(&buffer, b"hello woXXX");
         assert_eq!(fs.set_file_size(file, 4096, true).unwrap().file_size, 11);
         assert_eq!(fs.set_file_size(file, 2, true).unwrap().file_size, 2);
-        assert_eq!(fs.overwrite(file).unwrap().file_size, 0);
+        assert_eq!(fs.overwrite(file, 0, false).unwrap().file_size, 0);
         fs.close(file);
     }
 
@@ -2682,7 +2825,7 @@ mod tests {
     fn rename_never_replaces_a_directory_and_reports_collisions() {
         let (_image, fs) = mount("rename");
         for (path, directory) in [("\\a", false), ("\\b", false), ("\\dir", true)] {
-            let (context, _, _) = fs.create(&w(path), directory, false).unwrap();
+            let (context, _, _) = fs.create(&w(path), directory, false, 0).unwrap();
             fs.close(context);
         }
         assert_eq!(
@@ -2702,7 +2845,7 @@ mod tests {
     fn a_read_only_mount_refuses_deletion() {
         let (image, volume) = {
             let (image, fs) = mount("readonly-setup");
-            let (file, _, _) = fs.create(&w("\\keep.txt"), false, false).unwrap();
+            let (file, _, _) = fs.create(&w("\\keep.txt"), false, false, 0).unwrap();
             fs.close(file);
             (image, fs.into_volume().unwrap())
         };
@@ -2716,8 +2859,8 @@ mod tests {
     #[test]
     fn non_empty_directories_cannot_be_deleted() {
         let (_image, fs) = mount("candelete");
-        let (dir, _, _) = fs.create(&w("\\dir"), true, false).unwrap();
-        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false).unwrap();
+        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false, 0).unwrap();
         fs.close(file);
         assert_eq!(fs.can_delete(dir), Err(STATUS_DIRECTORY_NOT_EMPTY));
         fs.close(dir);
@@ -2734,7 +2877,7 @@ mod tests {
     #[test]
     fn changes_wait_for_a_pause_the_age_cap_or_a_flush() {
         let (_image, fs) = mount("pacing");
-        let (file, _, _) = fs.create(&w("\\f"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
         fs.write(file, 0, b"hello", false, false).unwrap();
         assert!(unsynced(&fs));
 
@@ -2778,7 +2921,7 @@ mod tests {
             idle: Duration::from_secs(3600),
             max_age: PACING.max_age,
         };
-        let (file, _, _) = fs.create(&w("\\f"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
         fs.write(file, 0, b"first", false, false).unwrap();
         let first = Instant::now();
         fs.tick(first, busy);
@@ -2798,7 +2941,7 @@ mod tests {
     #[test]
     fn write_through_handles_publish_before_replying() {
         let (_image, fs) = mount("writethrough");
-        let (file, _, _) = fs.create(&w("\\f"), false, true).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, true, 0).unwrap();
         assert!(!unsynced(&fs));
         fs.write(file, 0, b"durable", false, false).unwrap();
         assert!(!unsynced(&fs));
@@ -2816,7 +2959,7 @@ mod tests {
     #[test]
     fn removal_is_vetoed_until_changes_are_published_and_requests_finish() {
         let (_image, fs) = mount("removal");
-        let (file, _, _) = fs.create(&w("\\f"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
         fs.write(file, 0, b"pending", false, false).unwrap();
         fs.close(file);
 
@@ -2902,7 +3045,7 @@ mod tests {
                 writes,
             };
             let fs = CarryFs::new(Volume::format(device).unwrap(), false).unwrap();
-            let (file, _, _) = fs.create(&w("\\f"), false, false).unwrap();
+            let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
             fs.write(file, 0, b"pending", false, false).unwrap();
             fs.close(file);
             assert!(unsynced(&fs));
@@ -2932,7 +3075,7 @@ mod tests {
         fs.flush(None).unwrap();
         let empty = free(&fs);
 
-        let (file, _, _) = fs.create(&w("\\big"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\big"), false, false, 0).unwrap();
         fs.write(file, 0, &vec![7; 1 << 20], false, false).unwrap();
         fs.close(file);
         fs.flush(None).unwrap();
@@ -3004,9 +3147,10 @@ mod tests {
         let (_image, fs) = mount("close-all");
         let (_other_image, other) = mount("close-all-other");
         for index in 0..32 {
-            fs.create(&w(&format!("\\f{index}")), false, false).unwrap();
+            fs.create(&w(&format!("\\f{index}")), false, false, 0)
+                .unwrap();
         }
-        let (context, _, _) = other.create(&w("\\foreign"), false, false).unwrap();
+        let (context, _, _) = other.create(&w("\\foreign"), false, false, 0).unwrap();
         let foreign = other.state.lock().unwrap().open.remove(&context).unwrap();
         fs.state.lock().unwrap().open.insert(u64::MAX, foreign);
         assert_eq!(fs.close_all(), Err(STATUS_INVALID_HANDLE));
@@ -3055,9 +3199,9 @@ mod tests {
     fn a_failed_open_leaves_no_handle_registered() {
         use std::sync::atomic::Ordering::SeqCst;
         let (image, fs) = mount("failed-open");
-        let (file, _, _) = fs.create(&w("\\dir"), true, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
         fs.close(file);
-        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false).unwrap();
+        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false, 0).unwrap();
         fs.write(file, 0, b"data", false, false).unwrap();
         fs.close(file);
         fs.into_volume().unwrap().eject().unwrap();
@@ -3096,5 +3240,187 @@ mod tests {
         limit.store(u64::MAX, SeqCst);
         let (context, _, _) = fs.open(&path, false, false).unwrap();
         fs.close(context);
+    }
+
+    fn mount_upgraded(tag: &str) -> (Image, CarryFs<ImageDevice>) {
+        let path =
+            std::env::temp_dir().join(format!("carryfs-windows-{tag}-{}.img", std::process::id()));
+        let image = Image(path);
+        let device = ImageDevice::create_new(&image.0, 256 << 20).unwrap();
+        let mut volume = Volume::format(device).unwrap();
+        assert!(volume.upgrade().unwrap());
+        (image, CarryFs::new(volume, false).unwrap())
+    }
+
+    fn attributes(fs: &CarryFs<ImageDevice>, context: u64) -> u32 {
+        fs.file_info(context).unwrap().file_attributes
+    }
+
+    fn mode(fs: &CarryFs<ImageDevice>, context: u64) -> u16 {
+        let mut s = fs.state.lock().unwrap();
+        let object = s.open[&context].object;
+        s.volume.attributes(object).unwrap().mode.bits()
+    }
+
+    fn set_mode(fs: &CarryFs<ImageDevice>, context: u64, bits: u32) {
+        let mut s = fs.state.lock().unwrap();
+        let State { volume, open, .. } = &mut *s;
+        let change = AttributeChange {
+            mode: Some(Mode::from_host(bits)),
+            ..AttributeChange::default()
+        };
+        volume
+            .set_attributes(&open[&context].handle, change)
+            .unwrap();
+    }
+
+    #[test]
+    fn read_only_and_hidden_follow_the_stored_mode_and_flag() {
+        let (_image, fs) = mount_upgraded("attributes");
+        let (file, info, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
+        assert_eq!(info.file_attributes, FILE_ATTRIBUTE_NORMAL);
+
+        fs.set_basic_info(file, FILE_ATTRIBUTE_READONLY, 0, 0)
+            .unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_READONLY);
+        assert_eq!(mode(&fs, file), 0o444);
+        fs.set_basic_info(file, FILE_ATTRIBUTE_NORMAL, 0, 0)
+            .unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
+        assert_eq!(mode(&fs, file), 0o644);
+
+        // Toggling hidden leaves a mode set elsewhere, execute bit included.
+        set_mode(&fs, file, 0o750);
+        fs.set_basic_info(file, FILE_ATTRIBUTE_HIDDEN, 0, 0)
+            .unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_HIDDEN);
+        assert_eq!(mode(&fs, file), 0o750);
+        // Zero and INVALID_FILE_ATTRIBUTES change nothing.
+        for unchanged in [0, INVALID_FILE_ATTRIBUTES] {
+            fs.set_basic_info(file, unchanged, 0, 0).unwrap();
+            assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_HIDDEN);
+        }
+        fs.set_basic_info(file, FILE_ATTRIBUTE_NORMAL, 0, 0)
+            .unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
+        assert_eq!(mode(&fs, file), 0o750);
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+
+        // Create carries both; a directory ignores read-only.
+        let both = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN;
+        let (file, info, _) = fs.create(&w("\\g"), false, false, both).unwrap();
+        assert_eq!(info.file_attributes, both);
+        assert_eq!(mode(&fs, file), 0o444);
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+        let (dir, info, _) = fs.create(&w("\\d"), true, false, both).unwrap();
+        assert_eq!(
+            info.file_attributes,
+            FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN
+        );
+        fs.set_basic_info(dir, FILE_ATTRIBUTE_READONLY, 0, 0)
+            .unwrap();
+        assert_eq!(attributes(&fs, dir), FILE_ATTRIBUTE_DIRECTORY);
+        assert_eq!(mode(&fs, dir), 0o755);
+        fs.cleanup(dir, None, 0);
+        fs.close(dir);
+        assert_eq!(fs.attributes_by_name(&w("\\g")).unwrap(), both);
+    }
+
+    #[test]
+    fn overwrite_replaces_or_adds_hidden_and_read_only() {
+        let (_image, fs) = mount_upgraded("overwrite");
+        let (file, _, _) = fs
+            .create(&w("\\f"), false, false, FILE_ATTRIBUTE_HIDDEN)
+            .unwrap();
+        fs.overwrite(file, FILE_ATTRIBUTE_NORMAL, false).unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_HIDDEN);
+        fs.overwrite(file, FILE_ATTRIBUTE_READONLY, true).unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_READONLY);
+        fs.overwrite(file, FILE_ATTRIBUTE_NORMAL, true).unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+    }
+
+    #[test]
+    fn a_volume_without_the_feature_accepts_attributes_and_stores_none() {
+        let (_image, fs) = mount("no-attributes");
+        let both = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN;
+        let (file, info, _) = fs.create(&w("\\f"), false, false, both).unwrap();
+        assert_eq!(info.file_attributes, FILE_ATTRIBUTE_NORMAL);
+        fs.set_basic_info(file, both, 0, 0).unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
+        fs.overwrite(file, both, true).unwrap();
+        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+    }
+
+    #[test]
+    fn macos_own_names_are_hidden_by_name_on_every_volume() {
+        for upgraded in [false, true] {
+            let (_image, fs) = if upgraded {
+                mount_upgraded("macos-names")
+            } else {
+                mount("macos-names")
+            };
+            for (path, directory) in [
+                ("\\.DS_Store", false),
+                ("\\._notes.txt", false),
+                ("\\.TRASHES", true),
+                ("\\.Spotlight-V100", true),
+                ("\\.fseventsd", true),
+            ] {
+                let path = w(path);
+                let (context, info, _) = fs.create(&path, directory, false, 0).unwrap();
+                let kind = if directory {
+                    FILE_ATTRIBUTE_DIRECTORY
+                } else {
+                    0
+                };
+                assert_eq!(info.file_attributes, kind | FILE_ATTRIBUTE_HIDDEN);
+                // Clearing hidden stores nothing and changes nothing shown.
+                fs.set_basic_info(context, FILE_ATTRIBUTE_NORMAL, 0, 0)
+                    .unwrap();
+                assert_eq!(attributes(&fs, context), kind | FILE_ATTRIBUTE_HIDDEN);
+                fs.cleanup(context, None, 0);
+                fs.close(context);
+                assert_eq!(
+                    fs.attributes_by_name(&path).unwrap(),
+                    kind | FILE_ATTRIBUTE_HIDDEN
+                );
+                let (context, _, _) = fs.open(&path, false, false).unwrap();
+                assert_eq!(attributes(&fs, context), kind | FILE_ATTRIBUTE_HIDDEN);
+                fs.cleanup(context, None, 0);
+                fs.close(context);
+            }
+            let (root, _, _) = fs.open(&w("\\"), false, false).unwrap();
+            let mut listed = Vec::new();
+            fs.read_directory(root, None, |name, info| {
+                listed.push((String::from_utf16(name).unwrap(), info.file_attributes));
+                true
+            })
+            .unwrap();
+            fs.close(root);
+            assert!(
+                listed
+                    .iter()
+                    .all(|(_, attributes)| attributes & FILE_ATTRIBUTE_HIDDEN != 0),
+                "{listed:?}"
+            );
+
+            // Renamed to another name, the file shows again: nothing was stored.
+            let (context, _, _) = fs.open(&w("\\.DS_Store"), false, false).unwrap();
+            fs.rename(&w("\\.DS_Store"), &w("\\visible"), false)
+                .unwrap();
+            assert_eq!(attributes(&fs, context), FILE_ATTRIBUTE_NORMAL);
+            fs.close(context);
+            assert_eq!(
+                fs.attributes_by_name(&w("\\visible")).unwrap(),
+                FILE_ATTRIBUTE_NORMAL
+            );
+        }
     }
 }

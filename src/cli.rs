@@ -170,6 +170,26 @@ pub(super) fn scrub(image: &Path, device_bytes: Option<u64>) -> Result<()> {
     Ok(())
 }
 
+/// Let the image store modes and the hidden attribute.
+pub(super) fn upgrade(image: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    let device = image_linux::open(image, MountMode::ReadWrite)?;
+    #[cfg(not(target_os = "linux"))]
+    let device = ImageDevice::open(image, MountMode::ReadWrite)?;
+    let mut volume = Volume::open(device)?;
+    let changed = volume.upgrade()?;
+    volume.eject()?;
+    println!(
+        "{}",
+        if changed {
+            "Image now stores permissions and the hidden attribute; CarryFS 0.1.0 can no longer open it"
+        } else {
+            "Image already stores permissions and the hidden attribute"
+        }
+    );
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn get(
     image: &Path,

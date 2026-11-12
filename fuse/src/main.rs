@@ -41,6 +41,7 @@ fn main() -> ExitCode {
         match &args[1..] {
             [command, device] if command == "probe" => mount::probe(Path::new(device)),
             [command, rest @ ..] if command == "mkfs" => mkfs::main(rest),
+            [command, device] if command == "upgrade" => upgrade(Path::new(device)),
             [command, device, directory, options] if command == "serve" => options
                 .to_str()
                 .ok_or_else(|| "mount options must be UTF-8".into())
@@ -48,7 +49,7 @@ fn main() -> ExitCode {
                     mount::serve(Path::new(device), Path::new(directory), options)
                 }),
             [command, rest @ ..] if command == "mount" => mount::helper(rest),
-            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mkfs [-f] [-L LABEL] DEVICE | carryfs-fuse mkfs --wipe DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
+            _ => Err("usage: carryfs-fuse probe DEVICE | carryfs-fuse mkfs [-f] [-L LABEL] DEVICE | carryfs-fuse mkfs --wipe DEVICE | carryfs-fuse upgrade DEVICE | carryfs-fuse mount DEVICE DIRECTORY [-o OPTIONS] | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
         }
     };
     match result {
@@ -80,7 +81,8 @@ fn main() -> ExitCode {
                     mount_macos::serve(Path::new(device), Path::new(directory), options)
                 }),
             [command, rest @ ..] if command == "mount" => mount_macos::helper(rest),
-            _ => Err("usage: carryfs-fuse mount [-o OPTIONS] DEVICE DIRECTORY | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
+            [command, device] if command == "upgrade" => upgrade(Path::new(device)),
+            _ => Err("usage: carryfs-fuse mount [-o OPTIONS] DEVICE DIRECTORY | carryfs-fuse upgrade DEVICE | carryfs-fuse serve DEVICE DIRECTORY OPTIONS".into()),
         }
     };
     match result {
@@ -90,6 +92,42 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Let the volume on `path` store modes and the hidden attribute. Adapters
+/// older than this feature cannot mount it afterwards.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn upgrade(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use carryfs_core::{MountMode, Volume};
+    // On Linux the kernel's exclusive claim fails while the device is
+    // mounted. On macOS `Disk::open` takes the lock a mounted daemon holds.
+    #[cfg(target_os = "linux")]
+    let _claim = {
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_EXCL)
+            .open(path)
+        {
+            Err(error) if error.kind() == std::io::ErrorKind::ResourceBusy => {
+                return Err("the device is in use: unmount it first".into());
+            }
+            result => result?,
+        }
+    };
+    let mut volume = Volume::open(device::Disk::open(path, MountMode::ReadWrite)?)?;
+    let changed = volume.upgrade()?;
+    volume.eject()?;
+    println!(
+        "{}: {}",
+        path.display(),
+        if changed {
+            "now stores permissions and the hidden attribute; CarryFS 0.1.0 can no longer mount it"
+        } else {
+            "already stores permissions and the hidden attribute"
+        }
+    );
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

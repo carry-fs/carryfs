@@ -40,6 +40,22 @@ pub const MAINTENANCE_RESERVE: u64 = 16_384;
 /// any adapter reads on all of them.
 pub const MAX_SYMLINK_TARGET: usize = 1_023;
 
+/// Root feature bit 0: inodes may record a mode and attributes.
+pub const FEATURE_ATTRIBUTES: u64 = 1;
+/// The root feature bits this crate understands. A root with any other bit
+/// is refused as an unsupported format.
+pub const KNOWN_FEATURES: u64 = FEATURE_ATTRIBUTES;
+
+/// Inode offset of the mode: zero, or `MODE_RECORDED` with the nine
+/// permission bits.
+pub const INODE_MODE: usize = 2;
+/// Inode offset of the attributes byte.
+pub const INODE_ATTRIBUTES: usize = 4;
+/// Mode bit 15: a mode is recorded. Without it the type's default applies.
+pub const MODE_RECORDED: u16 = 0x8000;
+/// Attributes bit 0: the object is hidden.
+pub const ATTRIBUTE_HIDDEN: u8 = 1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// A child or tree-root reference: the page's block and birth generation.
 pub struct TreeRef {
@@ -56,6 +72,8 @@ pub struct Root {
     pub label: Option<Label>,
     /// Volume identity, changed on every format.
     pub uuid: [u8; 16],
+    /// Feature bits, a subset of `KNOWN_FEATURES`.
+    pub features: u64,
     /// Publication generation.
     pub generation: u64,
     /// Device length in blocks.
@@ -502,6 +520,9 @@ fn validate_root_fields(root: &Root, slot: u64, blocks: u64, mode: Validation) -
     validate_blocks(blocks, mode)?;
     validate_root_slot(slot, blocks, mode)?;
     validate_uuid(&root.uuid, mode)?;
+    if root.features & !KNOWN_FEATURES != 0 {
+        return Err(violation(mode, "unknown root feature bits"));
+    }
     if root.generation == 0 || root.blocks != blocks {
         return Err(violation(mode, "invalid root generation or geometry"));
     }
@@ -602,7 +623,7 @@ impl Root {
         let maintenance_reserve = read_u64_le(bytes, 144, "root maintenance reserve")?;
         let next_job = read_u64_le(bytes, 152, "root next job")?;
 
-        if feature_bits != 0 || filename_profile != 2 || state_flags != 0 {
+        if feature_bits & !KNOWN_FEATURES != 0 || filename_profile != 2 || state_flags != 0 {
             return Err(Error::UnsupportedFormat);
         }
         if self_block != slot || device_blocks != blocks {
@@ -616,6 +637,7 @@ impl Root {
         let root = Root {
             label,
             uuid,
+            features: feature_bits,
             generation,
             blocks: device_blocks,
             catalog,
@@ -653,7 +675,7 @@ impl Root {
         put_ref(page, 96, self.cleanup);
         put_u64_le(page, 112, self.next_object);
         put_u64_le(page, 120, self.free_blocks);
-        put_u64_le(page, 128, 0);
+        put_u64_le(page, 128, self.features);
         put_u32_le(page, 136, 2);
         put_u32_le(page, 140, 0);
         put_u64_le(page, 144, MAINTENANCE_RESERVE);
@@ -759,10 +781,19 @@ pub fn validate_inode(value: &[u8], blocks: u64, mode: Validation) -> Result<()>
     if value[1] & !7 != 0
         || (value[1] & 6 != 0 && object_type != 3)
         || value[1] & 6 == 4
-        || !all_zero(&value[2..8])
+        || !all_zero(&value[5..8])
         || !all_zero(&value[88..128])
     {
         return Err(violation(mode, "invalid inode flags or reserved bytes"));
+    }
+    // A mode is zero (the type's default) or bit 15 and nine permission
+    // bits. A symlink has none.
+    let mode_bits = u16::from_le_bytes([value[INODE_MODE], value[INODE_MODE + 1]]);
+    if (mode_bits != 0 && mode_bits & 0xFE00 != MODE_RECORDED)
+        || (object_type == 3 && mode_bits != 0)
+        || value[INODE_ATTRIBUTES] & !ATTRIBUTE_HIDDEN != 0
+    {
+        return Err(violation(mode, "invalid inode mode or attributes"));
     }
     let parent = u64::from_le_bytes(
         value[8..16]
@@ -1062,13 +1093,15 @@ fn validate_cleanup_key_value(
 }
 
 /// The data blocks one leaf record accounts for, after the checks
-/// `encode_records` makes of each record in a leaf.
+/// `encode_records` makes of each record in a leaf. `features` are the root's:
+/// without `FEATURE_ATTRIBUTES` an inode must not record a mode or attributes.
 pub fn leaf_record_blocks(
     kind: TreeKind,
     key: &[u8],
     value: &[u8],
     blocks: u64,
     generation: u64,
+    features: u64,
 ) -> Result<u64> {
     if !(1..=1024).contains(&key.len()) {
         return Err(Error::InvalidInput("invalid record key length"));
@@ -1076,7 +1109,32 @@ pub fn leaf_record_blocks(
     if 4 + key.len() + value.len() > MAX_RECORD_BYTES {
         return Err(Error::InvalidInput("record is too large"));
     }
-    validate_leaf_record(kind, key, value, blocks, generation, Validation::Input)
+    let data = validate_leaf_record(kind, key, value, blocks, generation, Validation::Input)?;
+    if kind == TreeKind::Catalog {
+        validate_inode_features(key, value, features, Validation::Input)?;
+    }
+    Ok(data)
+}
+
+/// The rule that depends on the root: without `FEATURE_ATTRIBUTES` an inode
+/// has zeros where the mode and attributes go, so a reader that predates
+/// them still accepts it. `key` and `value` are a checked catalog record.
+pub fn validate_inode_features(
+    key: &[u8],
+    value: &[u8],
+    features: u64,
+    mode: Validation,
+) -> Result<()> {
+    if key.get(8) == Some(&1)
+        && features & FEATURE_ATTRIBUTES == 0
+        && !all_zero(&value[INODE_MODE..INODE_ATTRIBUTES + 1])
+    {
+        return Err(violation(
+            mode,
+            "inode records a mode or attributes without the root feature",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_leaf_record(

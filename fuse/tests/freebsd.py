@@ -323,11 +323,16 @@ class MountedVolume(unittest.TestCase):
         self.unmount()
 
     def test_label_and_provider_names_share_one_lock(self):
+        # A CarryFS partition needs at least 256 MiB, so grow the disk first.
+        run("mdconfig", "-d", "-u", Path(self.device).name)
+        os.truncate(self.image, 2 * BYTES)
+        self.device = "/dev/" + subprocess.check_output(
+            ["mdconfig", "-a", "-t", "vnode", "-f", str(self.image)], text=True
+        ).strip()
         run("gpart", "create", "-s", "GPT", self.device, stdout=self.log)
         label = f"carryfs{os.getpid()}"
-        # CarryFS needs a whole number of 4 KiB blocks.
-        run("gpart", "add", "-t", "freebsd-ufs", "-a", "1m", "-s", "128m", "-l", label, self.device,
-            stdout=self.log)
+        run("gpart", "add", "-t", "freebsd-ufs", "-a", "1m", "-s", f"{BYTES >> 20}m", "-l", label,
+            self.device, stdout=self.log)
         partition = self.device + "p1"
         run(FUSE, "mkfs", "-f", partition, stdout=self.log)
         # GEOM removes a label while its provider is open for writing.

@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-12T11:14:04.871890+00:00",
+  "title": "Design System: CarryFS Manager",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Capacity blue",
+        "tonalRamp": [
+          "oklch(15% 0.17 256)",
+          "oklch(26% 0.17 256)",
+          "oklch(38% 0.17 256)",
+          "oklch(49% 0.17 256)",
+          "oklch(61% 0.17 256)",
+          "oklch(72% 0.17 256)",
+          "oklch(84% 0.17 256)",
+          "oklch(95% 0.17 256)"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Keyboard focus blue",
+        "tonalRamp": [
+          "oklch(15% 0.15 264)",
+          "oklch(26% 0.15 264)",
+          "oklch(38% 0.15 264)",
+          "oklch(49% 0.15 264)",
+          "oklch(61% 0.15 264)",
+          "oklch(72% 0.15 264)",
+          "oklch(84% 0.15 264)",
+          "oklch(95% 0.15 264)"
+        ]
+      },
+      "background": {
+        "role": "neutral",
+        "displayName": "Content background",
+        "tonalRamp": [
+          "oklch(15% 0.004 265)",
+          "oklch(26% 0.004 265)",
+          "oklch(38% 0.004 265)",
+          "oklch(49% 0.004 265)",
+          "oklch(61% 0.004 265)",
+          "oklch(72% 0.004 265)",
+          "oklch(84% 0.004 265)",
+          "oklch(95% 0.004 265)"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar and selected control",
+        "tonalRamp": [
+          "oklch(15% 0.006 265)",
+          "oklch(26% 0.006 265)",
+          "oklch(38% 0.006 265)",
+          "oklch(49% 0.006 265)",
+          "oklch(61% 0.006 265)",
+          "oklch(72% 0.006 265)",
+          "oklch(84% 0.006 265)",
+          "oklch(95% 0.006 265)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Primary ink",
+        "tonalRamp": [
+          "oklch(15% 0.006 265)",
+          "oklch(26% 0.006 265)",
+          "oklch(38% 0.006 265)",
+          "oklch(49% 0.006 265)",
+          "oklch(61% 0.006 265)",
+          "oklch(72% 0.006 265)",
+          "oklch(84% 0.006 265)",
+          "oklch(95% 0.006 265)"
+        ]
+      },
+      "secondary-ink": {
+        "role": "neutral",
+        "displayName": "Secondary ink",
+        "tonalRamp": [
+          "oklch(15% 0.006 265)",
+          "oklch(26% 0.006 265)",
+          "oklch(38% 0.006 265)",
+          "oklch(49% 0.006 265)",
+          "oklch(61% 0.006 265)",
+          "oklch(72% 0.006 265)",
+          "oklch(84% 0.006 265)",
+          "oklch(95% 0.006 265)"
+        ]
+      },
+      "divider": {
+        "role": "neutral",
+        "displayName": "Divider ink",
+        "tonalRamp": [
+          "oklch(15% 0.006 265)",
+          "oklch(26% 0.006 265)",
+          "oklch(38% 0.006 265)",
+          "oklch(49% 0.006 265)",
+          "oklch(61% 0.006 265)",
+          "oklch(72% 0.006 265)",
+          "oklch(84% 0.006 265)",
+          "oklch(95% 0.006 265)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "heading": {
+        "displayName": "Source and page heading",
+        "purpose": "Source identity and page titles."
+      },
+      "control": {
+        "displayName": "Native control label",
+        "purpose": "Rune Kit buttons and navigation."
+      }
+    },
+    "shadows": [
+      {
+        "name": "neutral-control",
+        "value": "0 1px 1.5px rgb(0 0 0 / 12%), 0 0 0 .5px oklch(22.5% 0.006 265 / 10%)",
+        "purpose": "Rune Kit neutral button contact shadow and ring."
+      }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Neutral button",
+      "kind": "button",
+      "refersTo": "button-neutral",
+      "description": "Portable preview of the native Rune Kit variant; the application uses Rune Kit rendering.",
+      "html": "<button class=\"ds-button-neutral\">Check structure</button>",
+      "css": ".ds-button-neutral{font:500 13px/20px system-ui;height:24px;padding:0 12px;border:0;border-radius:6px;color:oklch(22.5% 0.006 265);background:oklch(93.8% 0.006 265);color:oklch(22.5% 0.006 265);box-shadow:0 1px 1.5px rgb(0 0 0 / 12%), 0 0 0 .5px oklch(22.5% 0.006 265 / 10%);} .ds-button-neutral:hover{background:color-mix(in oklab,oklch(93.8% 0.006 265) 95%,oklch(22.5% 0.006 265));} .ds-button-neutral:active{background:color-mix(in oklab,oklch(93.8% 0.006 265) 92%,oklch(22.5% 0.006 265));} .ds-button-neutral:focus-visible{outline:2px solid oklch(58% 0.15 264);outline-offset:2.5px;} .ds-button-neutral:disabled{opacity:.5;}"
+    },
+    {
+      "name": "Ghost button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Portable preview of the native Rune Kit variant; the application uses Rune Kit rendering.",
+      "html": "<button class=\"ds-button-ghost\">Refresh</button>",
+      "css": ".ds-button-ghost{font:500 13px/20px system-ui;height:24px;padding:0 12px;border:0;border-radius:6px;color:oklch(22.5% 0.006 265);background:transparent;color:oklch(22.5% 0.006 265);box-shadow:none;} .ds-button-ghost:hover{background:color-mix(in oklab,oklch(95.8% 0.004 265) 95%,oklch(22.5% 0.006 265));} .ds-button-ghost:active{background:color-mix(in oklab,oklch(95.8% 0.004 265) 92%,oklch(22.5% 0.006 265));} .ds-button-ghost:focus-visible{outline:2px solid oklch(58% 0.15 264);outline-offset:2.5px;} .ds-button-ghost:disabled{opacity:.5;}"
+    },
+    {
+      "name": "Contrast button",
+      "kind": "button",
+      "refersTo": "button-contrast",
+      "description": "Portable preview of the native Rune Kit variant; the application uses Rune Kit rendering.",
+      "html": "<button class=\"ds-button-contrast\">Open read-only</button>",
+      "css": ".ds-button-contrast{font:500 13px/20px system-ui;height:24px;padding:0 12px;border:0;border-radius:6px;color:oklch(22.5% 0.006 265);background:oklch(22.5% 0.006 265);color:oklch(95.8% 0.004 265);box-shadow:0 1px 1.5px rgb(0 0 0 / 12%);} .ds-button-contrast:hover{background:color-mix(in oklab,oklch(22.5% 0.006 265) 95%,oklch(95.8% 0.004 265));} .ds-button-contrast:active{background:color-mix(in oklab,oklch(22.5% 0.006 265) 92%,oklch(95.8% 0.004 265));} .ds-button-contrast:focus-visible{outline:2px solid oklch(58% 0.15 264);outline-offset:2.5px;} .ds-button-contrast:disabled{opacity:.4;}"
+    },
+    {
+      "name": "Exact-target input",
+      "kind": "input",
+      "refersTo": "target-input",
+      "description": "Accessible target entry before the explicit formatter handoff.",
+      "html": "<input class=\"ds-target\" aria-label=\"Type disk identifier to confirm\" placeholder=\"disk identifier\">",
+      "css": ".ds-target{font:400 13px/16px system-ui;height:28px;padding:0 8px 0 2px;border:0;border-radius:6px;background:oklch(95.8% 0.004 265);color:oklch(22.5% 0.006 265);} .ds-target:hover{background:color-mix(in oklab,oklch(95.8% 0.004 265) 95%,oklch(22.5% 0.006 265));} .ds-target:focus-visible{outline:1px solid oklch(58% 0.15 264);outline-offset:-1px;} .ds-target:disabled{opacity:.5;}"
+    },
+    {
+      "name": "Selected-source tabs",
+      "kind": "nav",
+      "description": "Stable volume tabs with a neutral selected control.",
+      "html": "<nav class=\"ds-tabs\" role=\"tablist\" aria-label=\"Source\"><button role=\"tab\" aria-selected=\"true\">Overview</button><button role=\"tab\" aria-selected=\"false\">Files</button><button role=\"tab\" aria-selected=\"false\">Activity</button></nav>",
+      "css": ".ds-tabs{display:flex;gap:8px;} .ds-tabs button{font:500 13px/20px system-ui;height:24px;padding:0 12px;border:0;border-radius:6px;color:oklch(22.5% 0.006 265);background:transparent;} .ds-tabs [aria-selected=\"true\"]{background:oklch(93.8% 0.006 265);box-shadow:0 1px 1.5px rgb(0 0 0 / 12%), 0 0 0 .5px oklch(22.5% 0.006 265 / 10%);} .ds-tabs button:hover{background:color-mix(in oklab,oklch(95.8% 0.004 265) 95%,oklch(22.5% 0.006 265));} .ds-tabs button:active{background:color-mix(in oklab,oklch(95.8% 0.004 265) 92%,oklch(22.5% 0.006 265));} .ds-tabs button:focus-visible{outline:2px solid oklch(58% 0.15 264);outline-offset:2.5px;}"
+    },
+    {
+      "name": "Device source row",
+      "kind": "custom",
+      "refersTo": "source-row",
+      "description": "Two-line selected source with name, identity, and accessible selection.",
+      "html": "<div class=\"ds-sources\" role=\"tree\"><button class=\"ds-source\" role=\"treeitem\" aria-selected=\"true\"><span>External volume</span><small>CarryFS \u00b7 capacity</small></button></div>",
+      "css": ".ds-source{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;font:500 13px/20px system-ui;height:24px;padding:0 12px;border:0;border-radius:6px;color:oklch(22.5% 0.006 265);height:44px;padding:0 8px;background:oklch(93.8% 0.006 265);box-shadow:0 1px 1.5px rgb(0 0 0 / 12%), 0 0 0 .5px oklch(22.5% 0.006 265 / 10%);} .ds-source small{font:500 12px system-ui;color:oklch(54.019% .006 265);} .ds-source:hover{background:color-mix(in oklab,oklch(93.8% 0.006 265) 95%,oklch(22.5% 0.006 265));} .ds-source:active{background:color-mix(in oklab,oklch(93.8% 0.006 265) 92%,oklch(22.5% 0.006 265));} .ds-source:focus-visible{outline:2px solid oklch(58% 0.15 264);outline-offset:2.5px;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Native storage utility",
+    "overview": "Native desktop utility in Operate mode. Keep Rune Kit controls, restrained light surfaces, dark text, and compact labels. The user-supplied screenshots define the device-first hierarchy; native utility conventions define the controls.\n\nSource identity and observed state lead each task. Selection stays quiet, technical details open on demand, and operation results remain attached to the source. The implementation uses neutral selected controls and a blue capacity indicator and focus ring.",
+    "keyCharacteristics": [
+      "Device sidebar with stable volume tabs.",
+      "Compact native controls and readable source identity.",
+      "Progressive disclosure for system storage and technical details.",
+      "Independent structure and file-data results."
+    ],
+    "rules": [
+      {
+        "name": "The Observed State Rule",
+        "body": "Use color and text to describe real selection, capacity, and operation state. Missing observations stay unknown.",
+        "section": "colors"
+      },
+      {
+        "name": "The Native Control Rule",
+        "body": "Keep Rune Kit control geometry, focus treatment, and glyphs when extending this application.",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do lead with source names and capacity, then disclose block identifiers and technical details.",
+      "Do preserve keyboard access, selected-state semantics, accessible labels, and bounded scrolling.",
+      "Do keep software versions and updates separate from on-disk format compatibility.",
+      "Do show a real running stage and elapsed time; retain check and scrub results by UUID and generation."
+    ],
+    "donts": [
+      "Don't use text characters as folder, disk, or disclosure icons.",
+      "Don't show internal system storage or unrelated installer images in the default source list.",
+      "Don't invent percentage progress, successful checks, adapter versions, or format migration support.",
+      "Don't hide destructive targets, force unmount, repair sources implicitly, or silently install software."
+    ]
+  }
+}

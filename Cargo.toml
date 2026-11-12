@@ -8,7 +8,7 @@ description = "CarryFS image commit engine"
 
 [workspace]
 members = [".", "ondisk", "fuse", "macos", "windows"]
-exclude = ["fuzz"]
+exclude = ["fuzz", "manager"]
 
 [dependencies]
 carryfs-ondisk = { path = "ondisk", features = ["std"] }

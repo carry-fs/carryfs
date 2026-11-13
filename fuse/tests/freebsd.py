@@ -297,11 +297,7 @@ class MountedVolume(unittest.TestCase):
         self.assertEqual((self.recover() / "fstab").read_bytes(), b"mounted")
 
     def test_other_accounts_cannot_write(self):
-        # A mount point every account can reach, so a refusal is the mount's.
-        point = Path(tempfile.mkdtemp(prefix="carryfs-users-"))
-        point.chmod(0o755)
-        self.addCleanup(lambda: os.path.ismount(point) or point.rmdir())
-        self.point = point
+        point = self.shared_point()
         self.mount()
         (point / "shared").write_bytes(b"readable")
 
@@ -320,6 +316,93 @@ class MountedVolume(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, command)
         self.assertEqual((point / "shared").read_bytes(), b"readable")
         self.assertFalse((point / "new").exists())
+        self.unmount()
+
+    def shared_point(self):
+        """A mount point every account can reach, so a refusal is the mount's."""
+        point = Path(tempfile.mkdtemp(prefix="carryfs-users-"))
+        point.chmod(0o755)
+        self.addCleanup(lambda: os.path.ismount(point) or point.rmdir())
+        self.point = point
+        return point
+
+    def user(self, uid, script, umask=0o022):
+        """Run a shell snippet as `uid` with MNT set to the mount point."""
+        done = subprocess.run(["sh", "-c", script], user=uid, group=uid, extra_groups=[],
+                              umask=umask, env={"PATH": os.environ["PATH"], "MNT": str(self.point)},
+                              capture_output=True, text=True, timeout=20)
+        return done.returncode, (done.stdout + done.stderr).strip()
+
+    def test_stored_modes(self):
+        owner, other = 4242, 65534
+        mode = lambda path: stat.S_IMODE(os.lstat(path).st_mode)
+        run(FUSE, "upgrade", self.device, stdout=self.log)
+        p = self.shared_point()
+        self.mount(f"rw,uid={owner},gid={owner}")
+        result = subprocess.run([str(FUSE), "upgrade", self.device], capture_output=True, timeout=20)
+        self.assertIn(b"in use", result.stderr.lower(), result.stderr)
+        self.assertEqual(mode(p), 0o755)
+
+        self.assertEqual(self.user(owner, "touch $MNT/a && mkdir $MNT/d", umask=0o077)[0], 0)
+        self.assertEqual((mode(p / "a"), mode(p / "d")), (0o600, 0o700))
+        self.assertEqual(self.user(owner, "mkdir -m 2775 $MNT/shared && mkdir -m 1777 $MNT/sticky")[0], 0)
+        self.assertEqual((mode(p / "shared"), mode(p / "sticky")), (0o775, 0o777))
+
+        self.assertEqual(self.user(owner, "printf '#!/bin/sh\\necho ran\\n' > $MNT/script"
+                                          " && chmod +x $MNT/script && $MNT/script"), (0, "ran"))
+        self.assertNotEqual(self.user(owner, "chmod -x $MNT/script && $MNT/script")[0], 0)
+        self.assertEqual(self.user(owner, "chmod 4755 $MNT/script")[0], 0)
+        self.assertEqual(mode(p / "script"), 0o755)
+        before = os.stat(p / "script")
+        time.sleep(.02)
+        self.user(owner, "chmod 750 $MNT/script")
+        after = os.stat(p / "script")
+        self.assertGreater(after.st_ctime_ns, before.st_ctime_ns)
+        self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+
+        self.user(owner, "echo private > $MNT/secret")
+        self.assertEqual(self.user(other, "cat $MNT/secret"), (0, "private"))
+        self.user(owner, "chmod 600 $MNT/secret")
+        self.assertNotEqual(self.user(other, "cat $MNT/secret")[0], 0)
+        self.assertEqual(self.user(owner, "cat $MNT/secret"), (0, "private"))
+        self.assertNotEqual(self.user(other, "chmod 644 $MNT/secret")[0], 0)
+        self.assertEqual(mode(p / "secret"), 0o600)
+        self.assertNotEqual(self.user(owner, "chmod 000 $MNT/secret && cat $MNT/secret")[0], 0)
+
+        self.assertNotEqual(self.user(owner, "chmod 500 $MNT/d && touch $MNT/d/x")[0], 0)
+        self.assertNotEqual(self.user(owner, "chmod 700 $MNT/d && touch $MNT/d/x"
+                                             " && chmod 600 $MNT/d && stat $MNT/d/x")[0], 0)
+        self.user(owner, "chmod 755 $MNT/d")
+
+        self.assertNotEqual(self.user(owner, f"chown {other} $MNT/a")[0], 0)
+        self.assertEqual(self.user(owner, f"chown {owner}:{owner} $MNT/a")[0], 0)
+        # FreeBSD's fusefs accepts chflags and drops it before the daemon.
+        self.assertEqual(self.user(owner, "chflags hidden $MNT/a")[0], 0)
+        self.assertEqual(os.stat(p / "a").st_flags & stat.UF_HIDDEN, 0)
+        self.user(owner, "ln -s a $MNT/link")
+        self.assertEqual(mode(p / "link"), 0o777)
+        self.assertEqual(self.user(owner, "mv $MNT/script $MNT/d/moved && truncate -s 1 $MNT/d/moved")[0], 0)
+        self.assertEqual(mode(p / "d/moved"), 0o750)
+        expected = {name: mode(p / name) for name in ["a", "d", "shared", "secret", "d/moved"]}
+        self.unmount()
+
+        self.mount(f"rw,uid={owner},gid={owner}")
+        self.assertEqual({name: mode(p / name) for name in expected}, expected)
+        self.unmount()
+        recovered = self.recover()
+        self.assertEqual({name: mode(recovered / name) for name in expected}, expected)
+
+    def test_modes_without_the_feature(self):
+        owner = 4242
+        p = self.shared_point()
+        self.mount(f"rw,uid={owner},gid={owner}")
+        self.assertEqual(self.user(owner, "touch $MNT/a", umask=0o077)[0], 0)
+        self.assertEqual(stat.S_IMODE(os.stat(p / "a").st_mode), 0o644)
+        self.assertEqual(self.user(owner, "chmod 644 $MNT/a")[0], 0)
+        status, out = self.user(owner, "chmod 600 $MNT/a")
+        self.assertNotEqual(status, 0)
+        self.assertIn("not permitted", out)
+        self.assertEqual(stat.S_IMODE(os.stat(p / "a").st_mode), 0o644)
         self.unmount()
 
     def test_label_and_provider_names_share_one_lock(self):

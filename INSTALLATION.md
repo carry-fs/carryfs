@@ -322,11 +322,12 @@ after an interruption. Checksums detect damage but do not repair files;
 CarryFS has no self-healing. Restore damaged files from an independent backup.
 
 A volume upgraded with `carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE`
-on Linux and macOS, or `carryfs-windows upgrade VOLUME` on Windows, stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden
-attribute. Linux and macOS show and enforce the permission bits for the
-account that mounted the volume; Windows shows a file without the owner write
-bit as read-only, and setting read-only there clears the write bits. Hidden
-maps to Finder's hidden flag and to Windows' hidden attribute. Windows also
+on Linux, macOS, and FreeBSD, or `carryfs-windows upgrade VOLUME` on Windows, stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden
+attribute. Linux, macOS, and FreeBSD show and enforce the permission bits for
+the account that mounted the volume; Windows shows a file without the owner
+write bit as read-only, and setting read-only there clears the write bits.
+Hidden maps to Finder's hidden flag and to Windows' hidden attribute; FreeBSD's
+FUSE drops file flags, so `chflags hidden` has no effect there. Windows also
 shows macOS's own bookkeeping files, such as `.DS_Store` and `._name`, as
 hidden. CarryFS 0.1.0 cannot mount an upgraded volume, so update CarryFS on
 every computer that uses the volume before upgrading it. Without the upgrade,

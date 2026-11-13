@@ -745,6 +745,27 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    /// Atomically exchange the objects two existing entries name, as macOS
+    /// `renamex_np(RENAME_SWAP)` does. Types may differ; names stay put.
+    pub fn swap(
+        &mut self,
+        first_parent: ObjectId,
+        first: &Name,
+        second_parent: ObjectId,
+        second: &Name,
+    ) -> Result<()> {
+        let now = Timestamp::now()?;
+        self.edit(|transaction| {
+            swap_entries(
+                transaction,
+                [(first_parent.0, first), (second_parent.0, second)],
+                now,
+            )
+        })?;
+        self.namespace_epoch = self.namespace_epoch.wrapping_add(1);
+        Ok(())
+    }
+
     /// Read one bounded page of a directory's entries.
     pub fn read_directory(
         &mut self,
@@ -1161,27 +1182,8 @@ fn rename_move<D: BlockDevice>(
         ));
     }
 
-    // A live directory has live ancestors, so a missing one is corruption. The
-    // catalog is unedited here, so every step reads a disk page and the
-    // forest's read budget bounds the walk.
     if moved_kind == ObjectKind::Directory {
-        let mut current = destination_parent;
-        while current != ROOT.0 {
-            if current == moved {
-                return Err(Error::InvalidInput(
-                    "cannot move a directory into itself or a descendant",
-                ));
-            }
-            current = transaction
-                .forest
-                .lookup_with(
-                    &transaction.catalog,
-                    TreeKind::Catalog,
-                    &inode_key(current),
-                    |value| Inode::decode(value).map(|inode| inode.parent),
-                )?
-                .ok_or(Error::Corrupt("directory ancestor is missing"))?;
-        }
+        refuse_cycle(transaction, moved, destination_parent)?;
     }
 
     let destination_key = dirent_key(destination_parent, &destination.folded);
@@ -1328,6 +1330,114 @@ fn rename_move<D: BlockDevice>(
     } else {
         transaction.catalog = catalog;
     }
+    Ok(())
+}
+
+/// Refuse to put directory `moved` under `destination_parent` when that is
+/// `moved` itself or one of its descendants.
+fn refuse_cycle<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    moved: u64,
+    destination_parent: u64,
+) -> Result<()> {
+    // A live directory has live ancestors, so a missing one is corruption. The
+    // catalog is unedited here, so every step reads a disk page and the
+    // forest's read budget bounds the walk.
+    let mut current = destination_parent;
+    while current != ROOT.0 {
+        if current == moved {
+            return Err(Error::InvalidInput(
+                "cannot move a directory into itself or a descendant",
+            ));
+        }
+        current = transaction
+            .forest
+            .lookup_with(
+                &transaction.catalog,
+                TreeKind::Catalog,
+                &inode_key(current),
+                |value| Inode::decode(value).map(|inode| inode.parent),
+            )?
+            .ok_or(Error::Corrupt("directory ancestor is missing"))?;
+    }
+    Ok(())
+}
+
+/// Exchange the objects of two existing entries. Each entry keeps its name.
+fn swap_entries<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    entries: [(u64, &Name); 2],
+    now: Timestamp,
+) -> Result<()> {
+    let keys = entries.map(|(parent, name)| dirent_key(parent, &name.folded));
+    let mut found = Vec::with_capacity(2);
+    for key in &keys {
+        let value = transaction
+            .forest
+            .lookup(&transaction.catalog, TreeKind::Catalog, key)?
+            .ok_or(Error::NotFound)?;
+        let dirent = DirentValue::decode(&value)?;
+        found.push((dirent.target, dirent.kind, dirent.stored_name.to_vec()));
+    }
+    if keys[0] == keys[1] {
+        return Ok(());
+    }
+    let parents = entries.map(|(parent, _)| parent);
+    let mut catalog = transaction.catalog.clone();
+    for (side, key) in keys.iter().enumerate() {
+        let (target, kind, _) = &found[1 - side];
+        let (moved, parent) = (*target, parents[side]);
+        if parents[0] != parents[1] && *kind == ObjectKind::Directory {
+            refuse_cycle(transaction, moved, parent)?;
+        }
+        let dirent = DirentValue {
+            target: moved,
+            kind: *kind,
+            stored_name: &found[side].2,
+        }
+        .encode()?;
+        catalog = transaction
+            .forest
+            .put(catalog, TreeKind::Catalog, key, &dirent)?;
+        let mut inode = transaction
+            .forest
+            .lookup_with(
+                &transaction.catalog,
+                TreeKind::Catalog,
+                &inode_key(moved),
+                Inode::decode,
+            )?
+            .ok_or(Error::Corrupt("directory entry has no inode"))?;
+        inode.parent = parent;
+        inode.metadata_change = now;
+        catalog = transaction.forest.put(
+            catalog,
+            TreeKind::Catalog,
+            &inode_key(moved),
+            &inode.encode(),
+        )?;
+    }
+    let distinct = if parents[0] == parents[1] { 1 } else { 2 };
+    for &parent in &parents[..distinct] {
+        let mut inode = transaction
+            .forest
+            .lookup_with(
+                &transaction.catalog,
+                TreeKind::Catalog,
+                &inode_key(parent),
+                Inode::decode,
+            )?
+            .ok_or(Error::Corrupt("parent inode is missing"))?;
+        inode.modification = now;
+        inode.metadata_change = now;
+        catalog = transaction.forest.put(
+            catalog,
+            TreeKind::Catalog,
+            &inode_key(parent),
+            &inode.encode(),
+        )?;
+    }
+    transaction.catalog = catalog;
     Ok(())
 }
 

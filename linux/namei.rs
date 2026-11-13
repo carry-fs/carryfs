@@ -191,6 +191,29 @@ fn read_entry(sb: *mut bindings::super_block, state: &State, key: &[u8]) -> Resu
     })
 }
 
+/// The catalog key of the entry `folded` in directory `parent`.
+fn entry_key(parent: u64, folded: &[u8]) -> Result<KVec<u8>> {
+    let mut key = KVec::with_capacity(9 + folded.len(), GFP_KERNEL)?;
+    key.extend_from_slice(&tree::prefix(parent, tree::ENTRY), GFP_KERNEL)?;
+    key.extend_from_slice(folded, GFP_KERNEL)?;
+    Ok(key)
+}
+
+/// An existing entry's whole value: target, type, and stored spelling.
+fn read_entry_value(sb: *mut bindings::super_block, state: &State, key: &[u8]) -> Result<KVec<u8>> {
+    let mut value = KVec::new();
+    Tree::catalog(sb, state)
+        .get(key, |bytes| tree::append(&mut value, bytes))?
+        .ok_or(ENOENT)?;
+    if value.len() < 12 {
+        return Err(crate::corrupt(
+            0,
+            crate::ondisk::error::Error::Corrupt("short directory entry"),
+        ));
+    }
+    Ok(value)
+}
+
 fn entry_value(target: u64, kind: u8, stored: &[u8]) -> Result<KVec<u8>> {
     let mut value = KVec::with_capacity(12 + stored.len(), GFP_KERNEL)?;
     value.extend_from_slice(&target.to_le_bytes(), GFP_KERNEL)?;
@@ -446,6 +469,7 @@ unsafe extern "C" fn rmdir(dir: *mut bindings::inode, dentry: *mut bindings::den
 
 /// `rename(2)` flags the format supports.
 const RENAME_NOREPLACE: u32 = 1;
+const RENAME_EXCHANGE: u32 = 2;
 
 unsafe extern "C" fn rename(
     _idmap: *mut bindings::mnt_idmap,
@@ -455,7 +479,8 @@ unsafe extern "C" fn rename(
     new_dentry: *mut bindings::dentry,
     flags: u32,
 ) -> c_int {
-    if flags & !RENAME_NOREPLACE != 0 {
+    // The VFS refuses exchange with no-replace.
+    if flags & !(RENAME_NOREPLACE | RENAME_EXCHANGE) != 0 {
         return EINVAL.to_errno();
     }
     // SAFETY: The VFS holds both directories and both dentries locked.
@@ -467,10 +492,73 @@ unsafe extern "C" fn rename(
             Dentry::from_raw(new_dentry),
         )
     };
-    match rename_entry(operands.0, operands.1, operands.2, operands.3, flags) {
+    let result = if flags & RENAME_EXCHANGE != 0 {
+        exchange_entries(operands.0, operands.1, operands.2, operands.3)
+    } else {
+        rename_entry(operands.0, operands.1, operands.2, operands.3, flags)
+    };
+    match result {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }
+}
+
+/// Exchange the objects `old_dentry` and `new_dentry` name. Each entry keeps
+/// its stored spelling. The VFS checked that both exist and that neither
+/// directory would land inside itself, and it swaps the dentries afterwards.
+fn exchange_entries(
+    old_dir: &Inode,
+    old_dentry: &Dentry,
+    new_dir: &Inode,
+    new_dentry: &Dentry,
+) -> Result {
+    let (_, old_folded) = parse_name(old_dentry)?;
+    let (_, new_folded) = parse_name(new_dentry)?;
+    let (sb, from, to) = (
+        old_dir.super_block().as_ptr(),
+        old_dir.object(),
+        new_dir.object(),
+    );
+    let keys = [entry_key(from, &old_folded)?, entry_key(to, &new_folded)?];
+    mutate(sb, |state, disk| {
+        // Read everything first: a failure after the first edit faults the volume.
+        let mut values = [
+            read_entry_value(sb, state, &keys[0])?,
+            read_entry_value(sb, state, &keys[1])?,
+        ];
+        let objects = [le_u64(&values[0], 0), le_u64(&values[1], 0)];
+        let mut records = [
+            read_record(sb, state, objects[0])?,
+            read_record(sb, state, objects[1])?,
+        ];
+        let time = now();
+        // Target and type lead an entry; the stored spelling after them stays.
+        let (first, second) = values.split_at_mut(1);
+        first[0][..9].swap_with_slice(&mut second[0][..9]);
+        for (record, parent) in records.iter_mut().zip([to, from]) {
+            set_u64(record, PARENT, parent);
+            set_time(record, CHANGED, time);
+        }
+        for (key, value) in keys.iter().zip(&values) {
+            txn(state).put(disk, TreeKind::Catalog, key, value)?;
+        }
+        for (object, record) in objects.iter().zip(&records) {
+            write_record(state, disk, *object, record)?;
+        }
+        for dentry in [old_dentry, new_dentry] {
+            if let Some(inode) = dentry.inode() {
+                inode::refresh_times(inode, state)?;
+            }
+        }
+        touch_parent(sb, state, disk, old_dir, 0, time)?;
+        if from != to {
+            touch_parent(sb, state, disk, new_dir, 0, time)?;
+        }
+        Ok(())
+    })?;
+    changed(old_dir);
+    changed(new_dir);
+    Ok(())
 }
 
 /// Rename `old_dentry` in `old_dir` to `new_dentry` in `new_dir`, all
@@ -489,12 +577,7 @@ fn rename_entry(
         old_dir.object(),
         new_dir.object(),
     );
-    let mut old_key = KVec::new();
-    old_key.extend_from_slice(&tree::prefix(from, tree::ENTRY), GFP_KERNEL)?;
-    old_key.extend_from_slice(&old_folded, GFP_KERNEL)?;
-    let mut new_key = KVec::new();
-    new_key.extend_from_slice(&tree::prefix(to, tree::ENTRY), GFP_KERNEL)?;
-    new_key.extend_from_slice(&new_folded, GFP_KERNEL)?;
+    let (old_key, new_key) = (entry_key(from, &old_folded)?, entry_key(to, &new_folded)?);
     let mut victim_unlinked = false;
     mutate(sb, |state, disk| {
         let source = read_entry(sb, state, &old_key)?.ok_or(ENOENT)?;

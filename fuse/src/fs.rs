@@ -1447,9 +1447,44 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         reply_empty(
             reply,
             self.with(|s| {
-                let replace = rename_replace(flags)?;
                 let (source_parent, source) = (id(parent)?, parse(name)?);
                 let (destination_parent, destination) = (id(newparent)?, parse(newname)?);
+                // Archive Utility and NSFileManager's replaceItem swap a finished
+                // temporary item into place and do not fall back.
+                #[cfg(not(target_os = "freebsd"))]
+                if flags == SWAP {
+                    let mut entry =
+                        |parent, name| s.volume.lookup_entry(parent, name).map_err(|e| errno(&e));
+                    let first = entry(source_parent, &source)?;
+                    let second = entry(destination_parent, &destination)?;
+                    // The kernel exchanges the requested dentries; other spellings go stale.
+                    #[cfg(target_os = "linux")]
+                    self.invalidate_names(
+                        &mut s.notifier,
+                        name.as_bytes() != first.name.stored()
+                            || newname.as_bytes() != second.name.stored(),
+                    )
+                    .map_err(|error| errno(&error))?;
+                    with_space(&mut s.volume, |volume| {
+                        volume.swap(source_parent, &source, destination_parent, &destination)
+                    })
+                    .map_err(|e| errno(&e))?;
+                    for object in [
+                        source_parent,
+                        destination_parent,
+                        first.object,
+                        second.object,
+                    ] {
+                        s.changed_directory(object);
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.forget(parent, name, first.name.stored());
+                        self.forget(newparent, newname, second.name.stored());
+                    }
+                    return Ok(());
+                }
+                let replace = rename_replace(flags)?;
                 let moved = s.volume.lookup_entry(source_parent, &source).ok();
                 #[cfg(not(target_os = "freebsd"))]
                 let replaced = s.volume.lookup_entry(destination_parent, &destination).ok();
@@ -1961,8 +1996,14 @@ fn drain<D: BlockDevice>(volume: &mut Volume<D>) -> Result<(), Error> {
     Ok(())
 }
 
-/// The replacement rule `renameat2` flags ask for. Exchange and whiteout are
-/// unsupported, and rename(2) documents `EINVAL` for both.
+/// The flag that asks `rename` to exchange two existing entries.
+#[cfg(target_os = "linux")]
+const SWAP: RenameFlags = RenameFlags::RENAME_EXCHANGE;
+#[cfg(target_os = "macos")]
+const SWAP: RenameFlags = RenameFlags::RENAME_SWAP;
+
+/// The replacement rule `renameat2` flags ask for. `rename` handles a lone
+/// exchange; whiteout is unsupported, and rename(2) documents `EINVAL` for it.
 #[cfg(target_os = "linux")]
 fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     if flags.is_empty() {
@@ -1974,6 +2015,7 @@ fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     }
 }
 
+/// FreeBSD has no rename flags, so exchange never reaches `rename`.
 #[cfg(target_os = "freebsd")]
 fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     if flags.is_empty() {
@@ -1983,13 +2025,11 @@ fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     }
 }
 
-/// The replacement rule `renamex_np` flags ask for. Swap is unsupported, and
-/// `ENOTSUP` is what renamex_np(2) documents for that, so callers can fall back.
+/// The replacement rule `renamex_np` flags ask for. `rename` handles a lone
+/// swap; swap with exclusive is contradictory, so `EINVAL`.
 #[cfg(target_os = "macos")]
 fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
-    if flags.contains(RenameFlags::RENAME_SWAP) {
-        Err(Errno::ENOTSUP)
-    } else if flags == RenameFlags::RENAME_EXCL {
+    if flags == RenameFlags::RENAME_EXCL {
         Ok(Replace::Forbidden)
     } else if flags.is_empty() {
         Ok(Replace::Allowed)
@@ -2713,7 +2753,7 @@ mod tests {
         assert_eq!(rename_replace(RenameFlags::empty()), Ok(Replace::Allowed));
         assert_eq!(rename_replace(noreplace), Ok(Replace::Forbidden));
         for flags in [
-            RenameFlags::RENAME_EXCHANGE,
+            RenameFlags::RENAME_EXCHANGE | noreplace,
             RenameFlags::RENAME_WHITEOUT,
             noreplace | RenameFlags::RENAME_WHITEOUT,
         ] {
@@ -2727,8 +2767,7 @@ mod tests {
         let (swap, excl) = (RenameFlags::RENAME_SWAP, RenameFlags::RENAME_EXCL);
         assert_eq!(rename_replace(RenameFlags::empty()), Ok(Replace::Allowed));
         assert_eq!(rename_replace(excl), Ok(Replace::Forbidden));
-        assert_eq!(rename_replace(swap), Err(Errno::ENOTSUP));
-        assert_eq!(rename_replace(swap | excl), Err(Errno::ENOTSUP));
+        assert_eq!(rename_replace(swap | excl), Err(Errno::EINVAL));
         assert_eq!(
             rename_replace(RenameFlags::from_bits_retain(0x8)),
             Err(Errno::EINVAL)

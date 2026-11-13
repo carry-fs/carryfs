@@ -29,6 +29,7 @@ mod flags {
     pub const CLOEXEC: i32 = 0x01000000;
     pub const CREATE: i32 = 0x200 | 0x800 | 1;
     pub const NONBLOCK: i32 = 4;
+    pub const SYMLINK: i32 = 0x00200000;
     pub type Mode = u16;
     pub type OpenMode = i32;
 }
@@ -76,13 +77,22 @@ fn component(name: &OsStr) -> Result<CString> {
 }
 
 fn open_at(parent: &File, name: &CString, flags: i32) -> Result<File> {
+    // macOS rejects O_NOFOLLOW with O_SYMLINK, which opens the link itself.
+    #[cfg(target_os = "macos")]
+    let flags = if flags & SYMLINK != 0 {
+        flags
+    } else {
+        flags | NOFOLLOW
+    };
+    #[cfg(not(target_os = "macos"))]
+    let flags = flags | NOFOLLOW;
     // SAFETY: parent is live, name is NUL-terminated, and the variadic mode
     // uses the target's promoted C integer type.
     let fd = unsafe {
         openat(
             parent.as_raw_fd(),
             name.as_ptr(),
-            flags | NOFOLLOW | CLOEXEC,
+            flags | CLOEXEC,
             0o600 as OpenMode,
         )
     };
@@ -225,7 +235,13 @@ impl ExtractionSink for Sink {
         Ok(file)
     }
 
-    fn create_symlink(&mut self, path: &[Name], target: &[u8], _: &Attributes) -> Result<()> {
+    fn create_symlink(
+        &mut self,
+        path: &[Name],
+        target: &[u8],
+        attributes: &Attributes,
+    ) -> Result<()> {
+        let hidden = self.modes && attributes.hidden;
         let (parent, name) = self.entry(path)?;
         let target =
             CString::new(target).map_err(|_| Error::InvalidInput("NUL in symlink target"))?;
@@ -237,6 +253,20 @@ impl ExtractionSink for Sink {
                 io::Error::last_os_error(),
             ));
         }
+        #[cfg(target_os = "macos")]
+        if hidden {
+            // O_SYMLINK opens the link itself, including a dangling link.
+            let link = open_at(parent, &name, SYMLINK)?;
+            // SAFETY: fchflags takes an open descriptor and no pointers.
+            if unsafe { fchflags(link.as_raw_fd(), UF_HIDDEN) } != 0 {
+                return Err(io_error(
+                    "restore extracted hidden flag",
+                    io::Error::last_os_error(),
+                ));
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = hidden;
         Ok(())
     }
 }

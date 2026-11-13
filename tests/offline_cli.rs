@@ -275,3 +275,53 @@ fn cli_keeps_modes_on_images_that_store_them() {
         "file 0755\n"
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn cli_keeps_hidden_symlinks_without_hiding_their_targets() {
+    use std::os::macos::fs::MetadataExt;
+    use std::os::unix::fs::symlink;
+    let temp = Temp::new();
+    let source = temp.0.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("target"), b"kept").unwrap();
+    symlink("target", source.join("link")).unwrap();
+    symlink("missing", source.join("dangling")).unwrap();
+    assert!(
+        Command::new("chflags")
+            .args(["-h", "hidden"])
+            .arg(source.join("link"))
+            .arg(source.join("dangling"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/tree"]);
+    assert_eq!(
+        temp.pass(&["attr", "image", "/tree/link"]).stdout,
+        b"symlink 0777 hidden\n"
+    );
+    temp.pass(&["get", "image", "/tree", "out"]);
+    let out = temp.0.join("out");
+    assert_ne!(
+        fs::symlink_metadata(out.join("link")).unwrap().st_flags() & 0x8000,
+        0
+    );
+    assert_ne!(
+        fs::symlink_metadata(out.join("dangling"))
+            .unwrap()
+            .st_flags()
+            & 0x8000,
+        0
+    );
+    assert_eq!(
+        fs::metadata(out.join("target")).unwrap().st_flags() & 0x8000,
+        0
+    );
+    assert_eq!(
+        fs::read_link(out.join("link")).unwrap(),
+        Path::new("target")
+    );
+    temp.pass(&["check", "image"]);
+}

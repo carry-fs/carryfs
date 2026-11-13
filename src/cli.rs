@@ -388,7 +388,20 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
                     import_file(&mut volume, &source, parent, name, &image_metadata)?;
                 } else if metadata.is_symlink() {
                     let target = fs::read_link(&source)?;
-                    volume.create_symlink(parent, name, target.as_os_str().as_bytes())?;
+                    let object =
+                        volume.create_symlink(parent, name, target.as_os_str().as_bytes())?;
+                    if volume.stores_attributes() && host_attributes(&metadata).hidden {
+                        let handle = volume.retain_object(object)?;
+                        let result = volume.set_attributes(
+                            &handle,
+                            AttributeChange {
+                                hidden: Some(true),
+                                ..Default::default()
+                            },
+                        );
+                        volume.close_handle(handle)?;
+                        result?;
+                    }
                 } else {
                     return Err(format!("unsupported import entry: {}", source.display()).into());
                 }

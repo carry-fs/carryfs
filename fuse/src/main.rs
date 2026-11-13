@@ -99,6 +99,10 @@ fn main() -> ExitCode {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn upgrade(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use carryfs_core::{MountMode, Volume};
+    #[cfg(target_os = "macos")]
+    let raw = mount_macos::raw_node(path)?;
+    #[cfg(target_os = "macos")]
+    let path = raw.as_path();
     // On Linux the kernel's exclusive claim fails while the device is
     // mounted. On macOS `Disk::open` takes the lock a mounted daemon holds.
     #[cfg(target_os = "linux")]

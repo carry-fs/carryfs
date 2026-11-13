@@ -359,8 +359,10 @@ bytes. The name must recompute to the key's folded suffix. Type agrees with the
 target inode (1 file, 2 directory, 3 symlink). Case-only rename updates stored
 spelling in this same key.
 
-Create, rename, replacement, and removal publish all affected entries, inodes,
-parent child counts, and timestamps atomically in one transaction. Rename
+Create, rename, replacement, exchange, and removal publish all affected entries,
+inodes, parent child counts, and timestamps atomically in one transaction.
+Exchange swaps two existing entries' target and type, each keeping its stored
+spelling, and sets each moved inode's parent; any types may swap. Rename
 replacement accepts non-directory-for-non-directory or directory-for-empty-directory. It rejects
 nonempty destination directories and moving a directory into itself or a
 descendant. Renaming an object to its own key is either a spelling update or a

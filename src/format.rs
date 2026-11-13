@@ -7,8 +7,9 @@ pub(crate) use carryfs_ondisk::crc::UNIT_BYTES;
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) use carryfs_ondisk::crc::crc32c;
 pub(crate) use carryfs_ondisk::format::{
-    BLOCK_BYTES, CHECKSUM_GROUP_BYTES, REVISION, ROOT_MAGIC, TreeKind, TreeRef, Validation,
-    all_zero, compact_group, expand_group, reserved_group_blocks, set_checksum_slot,
+    ATTRIBUTE_HIDDEN, BLOCK_BYTES, CHECKSUM_GROUP_BYTES, FEATURE_ATTRIBUTES, INODE_ATTRIBUTES,
+    INODE_MODE, REVISION, ROOT_MAGIC, TreeKind, TreeRef, Validation, all_zero, compact_group,
+    expand_group, reserved_group_blocks, set_checksum_slot,
 };
 
 use crate::device::Geometry;
@@ -56,6 +57,15 @@ pub(crate) fn validate_symlink_target(target: &[u8], mode: Validation) -> Result
     Ok(ondisk::validate_symlink_target(target, mode)?)
 }
 
+pub(crate) fn validate_inode_features(key: &[u8], value: &[u8], features: u64) -> Result<()> {
+    Ok(ondisk::validate_inode_features(
+        key,
+        value,
+        features,
+        Validation::Disk,
+    )?)
+}
+
 pub(crate) fn validate_timestamp_range(seconds: i64, nanos: u32, mode: Validation) -> Result<()> {
     Ok(ondisk::validate_timestamp_range(seconds, nanos, mode)?)
 }
@@ -66,9 +76,10 @@ pub(crate) fn leaf_record_blocks(
     value: &[u8],
     blocks: u64,
     generation: u64,
+    features: u64,
 ) -> Result<u64> {
     Ok(ondisk::leaf_record_blocks(
-        kind, key, value, blocks, generation,
+        kind, key, value, blocks, generation, features,
     )?)
 }
 
@@ -88,6 +99,7 @@ pub(crate) fn leaf_data_blocks(
 pub(crate) struct Root {
     pub label: Option<crate::VolumeLabel>,
     pub uuid: [u8; 16],
+    pub features: u64,
     pub generation: u64,
     pub blocks: u64,
     pub catalog: TreeRef,
@@ -121,6 +133,7 @@ impl Root {
         Ok(Self {
             label,
             uuid: root.uuid,
+            features: root.features,
             generation: root.generation,
             blocks: root.blocks,
             catalog: root.catalog,
@@ -144,6 +157,7 @@ impl Root {
         let root = ondisk::Root {
             label,
             uuid: self.uuid,
+            features: self.features,
             generation: self.generation,
             blocks: self.blocks,
             catalog: self.catalog,
@@ -299,6 +313,7 @@ mod tests {
     fn root_a() -> Root {
         Root {
             label: None,
+            features: 0,
             uuid: [
                 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
                 0xee, 0xff,
@@ -513,6 +528,10 @@ mod tests {
         for (slot, fixture) in [
             (256, include_bytes!("../testdata/vectors/root-a.bin")),
             (
+                256,
+                include_bytes!("../testdata/vectors/attributes-root-a.bin"),
+            ),
+            (
                 GEOMETRY.blocks() - 257,
                 include_bytes!("../testdata/vectors/root-b.bin"),
             ),
@@ -589,6 +608,7 @@ mod tests {
             include_bytes!("../testdata/vectors/extent-catalog-leaf.bin"),
             include_bytes!("../testdata/vectors/symlink-catalog-leaf.bin"),
             include_bytes!("../testdata/vectors/checksum-catalog-leaf.bin"),
+            include_bytes!("../testdata/vectors/attributes-catalog-leaf.bin"),
         ] {
             assert_eq!(read_u16_le(fixture, 8, "revision").unwrap(), 1);
             for revision in [0_u16, 2] {
@@ -718,6 +738,60 @@ mod tests {
             Root::decode(&root, 256, GEOMETRY),
             Err(Error::Corrupt(_))
         ));
+    }
+
+    #[test]
+    fn inode_mode_attributes_and_feature_bits_are_checked() {
+        let decoded = Root::decode(
+            include_bytes!("../testdata/vectors/attributes-root-a.bin"),
+            256,
+            GEOMETRY,
+        )
+        .unwrap();
+        assert_eq!(decoded.features, 1);
+        let mut unknown = *include_bytes!("../testdata/vectors/root-a.bin");
+        unknown[128] = 2;
+        root_crc(&mut unknown);
+        assert!(matches!(
+            Root::decode(&unknown, 256, GEOMETRY),
+            Err(Error::UnsupportedFormat)
+        ));
+
+        let key = [0, 0, 0, 0, 0, 0, 0, 2, 1];
+        let with = |kind: u8, mode: u16, attributes: u8| {
+            let mut value = inode(0).to_vec();
+            value[0] = kind;
+            value[2..4].copy_from_slice(&mode.to_le_bytes());
+            value[4] = attributes;
+            if kind == 3 {
+                value[16..24].copy_from_slice(&1u64.to_le_bytes());
+                value.push(b'x');
+            }
+            value
+        };
+        let valid = |value: &[u8], features: u64| {
+            ondisk::validate_inode(value, GEOMETRY.blocks(), Validation::Disk).is_ok()
+                && validate_inode_features(&key, value, features).is_ok()
+        };
+        for (value, ok) in [
+            (with(1, 0x81ED, 0), true),
+            (with(1, 0x8000, 0), true),
+            (with(2, 0, 1), true),
+            (with(3, 0, 1), true),
+            (with(1, 0x01ED, 0), false),
+            (with(1, 0x8200, 0), false),
+            (with(3, 0x81FF, 0), false),
+            (with(1, 0, 2), false),
+        ] {
+            assert_eq!(valid(&value, 1), ok, "{:?}", &value[..5]);
+        }
+        // Without the root feature, a reader older than it must see zeros.
+        assert!(valid(&with(1, 0, 0), 0));
+        assert!(!valid(&with(1, 0x81ED, 0), 0));
+        assert!(!valid(&with(2, 0, 1), 0));
+        let mut reserved = with(1, 0, 0);
+        reserved[5] = 1;
+        assert!(!valid(&reserved, 1));
     }
 
     #[test]

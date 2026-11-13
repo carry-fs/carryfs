@@ -3,13 +3,16 @@
 
 use super::Fault;
 use crate::allocation::Transaction;
-use crate::format::{TreeKind, Validation, validate_symlink_target};
+use crate::format::{
+    ATTRIBUTE_HIDDEN, INODE_ATTRIBUTES, INODE_MODE, TreeKind, Validation, validate_symlink_target,
+};
 use crate::name::{Name, validate_disk_name};
 use crate::tree::{Forest, u64_le};
 use crate::{BlockDevice, Error, MountMode, Result};
 
 use super::{
-    Access, Attributes, Handle, ObjectId, ObjectKind, ROOT, RemoveKind, Replace, Timestamp, Volume,
+    Access, AttributeChange, Attributes, Handle, Mode, NewAttributes, ObjectId, ObjectKind, ROOT,
+    RemoveKind, Replace, Timestamp, Volume,
 };
 
 pub(super) const INODE_BYTES: usize = 128;
@@ -63,6 +66,10 @@ pub(super) struct Inode {
     pub(super) creation: Timestamp,
     pub(super) modification: Timestamp,
     pub(super) metadata_change: Timestamp,
+    /// The stored mode field: zero, or bit 15 and nine permission bits.
+    pub(super) mode: u16,
+    /// The stored attributes byte: bit 0 hidden.
+    pub(super) attributes: u8,
     /// A symlink's target, stored after the fixed fields; empty otherwise.
     pub(super) target: Vec<u8>,
 }
@@ -104,8 +111,14 @@ impl Inode {
             creation: decode_timestamp(&value[40..56])?,
             modification: decode_timestamp(&value[56..72])?,
             metadata_change: decode_timestamp(&value[72..88])?,
+            mode: u16::from_le_bytes([value[INODE_MODE], value[INODE_MODE + 1]]),
+            attributes: value[INODE_ATTRIBUTES],
             target: value[INODE_BYTES..].to_vec(),
         })
+    }
+
+    pub(super) fn hidden(&self) -> bool {
+        self.attributes & ATTRIBUTE_HIDDEN != 0
     }
 
     pub(super) fn encode(&self) -> Vec<u8> {
@@ -117,6 +130,8 @@ impl Inode {
                 Some(false) => 2,
                 Some(true) => 6,
             };
+        value[INODE_MODE..INODE_MODE + 2].copy_from_slice(&self.mode.to_le_bytes());
+        value[INODE_ATTRIBUTES] = self.attributes;
         value[8..16].copy_from_slice(&self.parent.to_le_bytes());
         value[16..24].copy_from_slice(&self.size.to_le_bytes());
         value[24..32].copy_from_slice(&self.allocated_blocks.to_le_bytes());
@@ -504,6 +519,8 @@ impl<D: BlockDevice> Volume<D> {
                         metadata_change: inode.metadata_change,
                         orphan: inode.orphan,
                         directory_link: inode.directory_link,
+                        mode: Mode::decode(inode.kind, inode.mode),
+                        hidden: inode.hidden(),
                     })
                 })?
                 .ok_or(Error::NotFound)
@@ -521,9 +538,20 @@ impl<D: BlockDevice> Volume<D> {
         self.attributes(object)
     }
 
-    /// Create a new empty directory under `parent`.
+    /// Create a new empty directory under `parent` with default attributes.
     pub fn create_directory(&mut self, parent: ObjectId, name: Name) -> Result<ObjectId> {
-        self.create(parent, name, ObjectKind::Directory)
+        self.create_directory_with(parent, name, NewAttributes::default())
+    }
+
+    /// Create a new empty directory under `parent`. On a volume that does
+    /// not store attributes, `new` is ignored.
+    pub fn create_directory_with(
+        &mut self,
+        parent: ObjectId,
+        name: Name,
+        new: NewAttributes,
+    ) -> Result<ObjectId> {
+        self.create(parent, name, ObjectKind::Directory, new)
     }
 
     /// Create a symlink to `target` under `parent`. The target is 1 through
@@ -535,7 +563,13 @@ impl<D: BlockDevice> Volume<D> {
         target: &[u8],
     ) -> Result<ObjectId> {
         validate_symlink_target(target, Validation::Input)?;
-        self.create_with(parent, name, ObjectKind::Symlink, target)
+        self.create_with(
+            parent,
+            name,
+            ObjectKind::Symlink,
+            target,
+            NewAttributes::default(),
+        )
     }
 
     /// Read a symlink's target.
@@ -582,8 +616,9 @@ impl<D: BlockDevice> Volume<D> {
         parent: ObjectId,
         name: Name,
         kind: ObjectKind,
+        new: NewAttributes,
     ) -> Result<ObjectId> {
-        self.create_with(parent, name, kind, &[])
+        self.create_with(parent, name, kind, &[], new)
     }
 
     fn create_with(
@@ -592,10 +627,18 @@ impl<D: BlockDevice> Volume<D> {
         name: Name,
         kind: ObjectKind,
         target: &[u8],
+        new: NewAttributes,
     ) -> Result<ObjectId> {
         let now = Timestamp::now()?;
-        let object = self
-            .edit(|transaction| create_in(transaction, parent, name.clone(), kind, target, now))?;
+        // Without the feature the fields stay zero, as a 0.1.0 reader requires.
+        let new = if self.stores_attributes() {
+            new
+        } else {
+            NewAttributes::default()
+        };
+        let object = self.edit(|transaction| {
+            create_in(transaction, parent, name.clone(), kind, target, new, now)
+        })?;
         self.namespace_epoch = self.namespace_epoch.wrapping_add(1);
         Ok(object)
     }
@@ -830,15 +873,17 @@ impl<D: BlockDevice> Volume<D> {
         }
     }
 
-    /// Overwrite explicit creation/modification timestamps. Always bumps the
-    /// metadata-change time.
-    pub fn set_times(
-        &mut self,
-        handle: &Handle,
-        creation: Option<Timestamp>,
-        modification: Option<Timestamp>,
-    ) -> Result<()> {
+    /// Change timestamps, mode and hidden state in one inode rewrite. Always
+    /// bumps the metadata-change time. A mode for a symlink is dropped: a
+    /// symlink stores none. A mode or hidden state on a volume that does not
+    /// store attributes is `InvalidInput`; check `stores_attributes` first.
+    pub fn set_attributes(&mut self, handle: &Handle, change: AttributeChange) -> Result<()> {
         let object = self.handles.validate(handle)?;
+        if (change.mode.is_some() || change.hidden.is_some()) && !self.stores_attributes() {
+            return Err(Error::InvalidInput(
+                "volume does not store modes or attributes",
+            ));
+        }
         let now = Timestamp::now()?;
         self.edit(|transaction| {
             let key = inode_key(object.0);
@@ -846,11 +891,23 @@ impl<D: BlockDevice> Volume<D> {
                 .forest
                 .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            if let Some(creation) = creation {
+            if let Some(creation) = change.creation {
                 inode.creation = creation;
             }
-            if let Some(modification) = modification {
+            if let Some(modification) = change.modification {
                 inode.modification = modification;
+            }
+            if let Some(mode) = change.mode
+                && inode.kind != ObjectKind::Symlink
+            {
+                inode.mode = mode.encode();
+            }
+            if let Some(hidden) = change.hidden {
+                inode.attributes = if hidden {
+                    inode.attributes | ATTRIBUTE_HIDDEN
+                } else {
+                    inode.attributes & !ATTRIBUTE_HIDDEN
+                };
             }
             inode.metadata_change = now;
             let catalog = transaction.forest.put(
@@ -1284,6 +1341,7 @@ pub(super) fn create_in<D: BlockDevice>(
     name: Name,
     kind: ObjectKind,
     target: &[u8],
+    new: NewAttributes,
     now: Timestamp,
 ) -> Result<ObjectId> {
     let parent_key = inode_key(parent.0);
@@ -1324,6 +1382,8 @@ pub(super) fn create_in<D: BlockDevice>(
         creation: now,
         modification: now,
         metadata_change: now,
+        mode: new.mode.map_or(0, Mode::encode),
+        attributes: if new.hidden { ATTRIBUTE_HIDDEN } else { 0 },
         target: target.to_vec(),
     };
     let dirent = DirentValue {
@@ -1390,6 +1450,8 @@ fn make_symlink_in<D: BlockDevice>(
     // Windows keeps directory and file links apart and asks for the one it created.
     inode.directory_link = Some(inode.kind == ObjectKind::Directory);
     inode.kind = ObjectKind::Symlink;
+    // A symlink has no mode; hidden stays.
+    inode.mode = 0;
     inode.size = target.len() as u64;
     inode.target = target.to_vec();
     inode.modification = now;

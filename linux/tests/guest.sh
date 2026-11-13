@@ -10,6 +10,7 @@ modprobe loop
 insmod linux/carryfs.ko
 python3 linux/tests/check.py --entries 1000 --fsx-operations 500 --seed 17
 python3 linux/tests/adapters.py
+python3 linux/tests/permissions.py
 python3 linux/tests/faults.py
 python3 linux/tests/roots.py
 python3 linux/tests/replay.py build/check-kernel/replay-log

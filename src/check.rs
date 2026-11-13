@@ -4,7 +4,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::BuildHasherDefault;
 
-use crate::format::{BLOCK_BYTES, Page, Root, TreeKind, TreeRef, checksum_slot, decode_page};
+use crate::format::{
+    BLOCK_BYTES, Page, Root, TreeKind, TreeRef, checksum_slot, decode_page, validate_inode_features,
+};
 use crate::tree::{PageHasher, Record, tree_ref, u64_be, u64_le};
 use crate::{BlockDevice, Error, Result};
 
@@ -574,6 +576,8 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                         }
                         reader
                             .inode_link(owner, value)
+                            .map_err(|error| error.at_block(page))?;
+                        validate_inode_features(key, value, reader.root.features)
                             .map_err(|error| error.at_block(page))?;
                         state = Some(Object {
                             owner,

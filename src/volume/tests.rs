@@ -4,6 +4,7 @@ use crate::Name;
 use crate::format::{BLOCK_BYTES, UNIT_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod attributes;
 mod deferred;
 mod faults;
 mod file_state;
@@ -450,7 +451,7 @@ fn conflicting_roots_and_unsupported_format_never_fall_back() {
             0 => a.0[120..128].copy_from_slice(&60000_u64.to_le_bytes()),
             1 => a.0[24] ^= 1,
             2 => a.0[8..12].copy_from_slice(&5_u32.to_le_bytes()),
-            _ => a.0[128] = 1,
+            _ => a.0[128] = 2,
         }
         a.0[4092..].fill(0);
         let crc = crate::format::crc32c(&a.0[..]);
@@ -2675,7 +2676,7 @@ fn regression_corruption_must_fault_mutations() {
         assert!(matches!(volume.write(&file, 0, b""), Err(Error::Faulted)));
         assert!(matches!(volume.truncate(&file, 0), Err(Error::Faulted)));
         assert!(matches!(
-            volume.set_times(&file, None, None),
+            volume.set_attributes(&file, AttributeChange::default()),
             Err(Error::Faulted)
         ));
         assert!(matches!(
@@ -2778,7 +2779,13 @@ fn regression_case_rename_updates_parent_times() {
     let object = volume.create_directory(ROOT, name("child")).unwrap();
     let parent = volume.open_directory(ROOT).unwrap();
     volume
-        .set_times(&parent, None, Some(Timestamp::new(1, 0).unwrap()))
+        .set_attributes(
+            &parent,
+            AttributeChange {
+                modification: Some(Timestamp::new(1, 0).unwrap()),
+                ..Default::default()
+            },
+        )
         .unwrap();
     let before = volume.attributes(ROOT).unwrap();
     volume

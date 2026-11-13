@@ -12,7 +12,7 @@ use crate::tree::{Edge, Forest, u64_be, u64_le};
 use crate::{BlockDevice, Error, Result};
 
 use super::namespace::{Inode, inode_key};
-use super::{Access, Handle, ObjectId, ObjectKind, Timestamp, Volume};
+use super::{Access, Handle, NewAttributes, ObjectId, ObjectKind, Timestamp, Volume};
 
 /// Largest prefix one `read` or `write` call transfers.
 pub(super) const MAX_TRANSFER_BYTES: usize = 1 << 20;
@@ -845,12 +845,24 @@ pub(super) fn inspect_unit<D: BlockDevice>(
 }
 
 impl<D: BlockDevice> Volume<D> {
-    /// Create an empty regular file under `parent` and open it read-write.
+    /// Create an empty regular file under `parent` with default attributes
+    /// and open it read-write.
     pub fn create_file(&mut self, parent: ObjectId, name: Name) -> Result<Handle> {
+        self.create_file_with(parent, name, NewAttributes::default())
+    }
+
+    /// Create an empty regular file under `parent` and open it read-write.
+    /// On a volume that does not store attributes, `new` is ignored.
+    pub fn create_file_with(
+        &mut self,
+        parent: ObjectId,
+        name: Name,
+        new: NewAttributes,
+    ) -> Result<Handle> {
         if !self.handles.has_room() {
             return Err(Error::LimitExceeded);
         }
-        let object = self.create(parent, name, ObjectKind::File)?;
+        let object = self.create(parent, name, ObjectKind::File, new)?;
         self.handles.open(object, Access::ReadWrite)
     }
 

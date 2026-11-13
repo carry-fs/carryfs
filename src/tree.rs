@@ -1752,7 +1752,14 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                 // or when they entered a draft, and `seal` checks every page
                 // it encodes, so only the new record needs checking here.
                 let mut total = node.edge.data_blocks;
-                let new = leaf_record_blocks(kind, key, value, self.base.blocks, self.generation)?;
+                let new = leaf_record_blocks(
+                    kind,
+                    key,
+                    value,
+                    self.base.blocks,
+                    self.generation,
+                    self.base.features,
+                )?;
                 let appended = records
                     .len()
                     .checked_sub(1)
@@ -1768,6 +1775,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                                 old_value,
                                 self.base.blocks,
                                 self.generation,
+                                self.base.features,
                             )?
                         } else {
                             0
@@ -1888,7 +1896,14 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     /// Data blocks a leaf record accounts for; only catalog extents have any.
     fn record_blocks(&self, kind: TreeKind, key: &[u8], value: &[u8]) -> Result<u64> {
         if kind == TreeKind::Catalog && key.get(8) == Some(&3) {
-            leaf_record_blocks(kind, key, value, self.base.blocks, self.generation)
+            leaf_record_blocks(
+                kind,
+                key,
+                value,
+                self.base.blocks,
+                self.generation,
+                self.base.features,
+            )
         } else {
             Ok(0)
         }
@@ -2436,6 +2451,7 @@ mod tests {
         let root = Root {
             label: None,
             uuid: UUID,
+            features: 0,
             generation: 1,
             blocks: GEOMETRY.blocks(),
             catalog: reference(512),

@@ -349,8 +349,10 @@ volumes. These remaining differences produce images the userspace checker accept
   drains them.
 - **Reclamation batches are larger.** Up to 64 records and 65,536 blocks per
   commit, above FORMAT.md's initial 1,024-block budget.
-- **Unstored attributes.** Access times are not stored. Changes to mode or
-  owner fail with `EPERM`. The volume label is not exposed.
+- **Unstored attributes.** Access times are not stored. Changes to the
+  owner fail with `EPERM`, as do mode changes on a volume without
+  `carryfs upgrade`. Setuid, setgid and sticky bits are dropped. The volume
+  label is not exposed.
 - **Hard links.** The format has none; `link(2)` fails with `EPERM`.
 - **Cgroup I/O accounting.** Writeback does not preserve cgroup ownership
   across writers. fstests generic/563 exposes this limit.
@@ -400,7 +402,7 @@ changes. Other skips depended on the test environment, including its missing
 | Tests | Cause |
 |---|---|
 | generic/003 | Access times are not stored, and a ctime change through `chmod` is refused |
-| generic/120, generic/452 | Programs run from the volume; the format stores no execute bit |
+| generic/120, generic/452 | Programs run from the volume; `mkfs.carryfs` formats without the attributes feature, so no execute bit is stored |
 | generic/563 | Writeback does not preserve cgroup I/O ownership across writers |
 
 Earlier VM runs filled `/var/tmp` tmpfs while writing their loop images.

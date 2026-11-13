@@ -1,13 +1,13 @@
 //! Offline CLI transfer. Keep host paths out of the filesystem core.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::{fs, io::Read, os::unix::ffi::OsStrExt};
 
-use carryfs_core::{Finding, ImageDevice, MountMode, Volume};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-use carryfs_core::{Name, ObjectId, ROOT};
+use carryfs_core::{AttributeChange, Mode, Name, NewAttributes, ObjectId, ObjectKind, ROOT};
+use carryfs_core::{Finding, ImageDevice, MountMode, Volume};
 
 #[cfg(target_os = "macos")]
 mod authopen;
@@ -183,6 +183,30 @@ pub(super) fn scrub(image: &Path, device_bytes: Option<u64>) -> Result<()> {
     Ok(())
 }
 
+/// Open an image for writing.
+fn open_writable(image: &Path) -> Result<ImageDevice> {
+    #[cfg(target_os = "linux")]
+    return image_linux::open(image, MountMode::ReadWrite);
+    #[cfg(not(target_os = "linux"))]
+    return Ok(ImageDevice::open(image, MountMode::ReadWrite)?);
+}
+
+/// Let the image store modes and the hidden attribute.
+pub(super) fn upgrade(image: &Path) -> Result<()> {
+    let mut volume = Volume::open(open_writable(image)?)?;
+    let changed = volume.upgrade()?;
+    volume.eject()?;
+    println!(
+        "{}",
+        if changed {
+            "Image now stores permissions and the hidden attribute; CarryFS 0.1.0 can no longer open it"
+        } else {
+            "Image already stores permissions and the hidden attribute"
+        }
+    );
+    Ok(())
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(super) fn get(
     image: &Path,
@@ -192,8 +216,9 @@ pub(super) fn get(
 ) -> Result<()> {
     let mut volume = Volume::open(open_read_only(image, device_bytes)?)?;
     let object = resolve(&mut volume, &names(source)?)?;
-    let mut sink = host::Sink::new(output)?;
+    let mut sink = host::Sink::new(output, volume.stores_attributes())?;
     let summary = volume.extract_to(object, &mut sink, &mut report)?;
+    sink.finish()?;
     volume.eject()?;
     println!(
         "Extraction: {} objects, {} verified bytes, {} unreadable ranges, traversal complete: {}",
@@ -207,7 +232,85 @@ pub(super) fn get(
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub(super) fn get(_: &Path, _: Option<u64>, _: &OsStr, _: &Path) -> Result<()> {
-    Err("secure extraction is implemented only on Linux and macOS".into())
+    Err("secure extraction is implemented only on Linux, macOS, and FreeBSD".into())
+}
+
+/// The mode and, on macOS, the Finder hidden flag of a host object. A volume
+/// that does not store attributes ignores them.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn host_attributes(metadata: &fs::Metadata) -> NewAttributes {
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(target_os = "macos")]
+    let hidden = {
+        use std::os::macos::fs::MetadataExt;
+        metadata.st_flags() & host::UF_HIDDEN != 0
+    };
+    #[cfg(not(target_os = "macos"))]
+    let hidden = false;
+    NewAttributes {
+        mode: Some(Mode::from_host(metadata.permissions().mode())),
+        hidden,
+    }
+}
+
+/// Print the mode and hidden state of `path` in `image`, after applying
+/// `changes`: `mode=OCTAL` and `hidden=yes` or `hidden=no`.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+pub(super) fn attr(image: &Path, path: &OsStr, changes: &[OsString]) -> Result<()> {
+    const USAGE: &str = "expected mode=OCTAL (0 through 777) or hidden=yes|no";
+    let mut change = AttributeChange::default();
+    for text in changes {
+        match text.to_str().ok_or(USAGE)?.split_once('=') {
+            Some(("mode", octal)) => {
+                let bits = u32::from_str_radix(octal, 8).map_err(|_| USAGE)?;
+                if bits > 0o777 {
+                    return Err(USAGE.into());
+                }
+                change.mode = Some(Mode::from_host(bits));
+            }
+            Some(("hidden", "yes")) => change.hidden = Some(true),
+            Some(("hidden", "no")) => change.hidden = Some(false),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let path = names(path)?;
+    let device = if change == AttributeChange::default() {
+        open_read_only(image, None)?
+    } else {
+        open_writable(image)?
+    };
+    let mut volume = Volume::open(device)?;
+    let object = resolve(&mut volume, &path)?;
+    if change != AttributeChange::default() {
+        if !volume.stores_attributes() {
+            return Err(
+                "the image does not store modes or the hidden attribute; run carryfs upgrade first"
+                    .into(),
+            );
+        }
+        let handle = volume.retain_object(object)?;
+        let result = volume.set_attributes(&handle, change);
+        volume.close_handle(handle)?;
+        result?;
+    }
+    let attributes = volume.attributes(object)?;
+    volume.eject()?;
+    let kind = match attributes.kind {
+        ObjectKind::File => "file",
+        ObjectKind::Directory => "directory",
+        ObjectKind::Symlink => "symlink",
+    };
+    println!(
+        "{kind} {:04o}{}",
+        attributes.mode.bits(),
+        if attributes.hidden { " hidden" } else { "" }
+    );
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+pub(super) fn attr(_: &Path, _: &OsStr, _: &[OsString]) -> Result<()> {
+    Err("attr is implemented only on Linux, macOS, and FreeBSD".into())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
@@ -232,7 +335,7 @@ fn import_file(
     if metadata.dev() == image.dev() && metadata.ino() == image.ino() {
         return Err("cannot import the open image into itself".into());
     }
-    let handle = volume.create_file(parent, name)?;
+    let handle = volume.create_file_with(parent, name, host_attributes(&metadata))?;
     let result = (|| -> Result<()> {
         let mut buffer = vec![0; 65_536];
         let mut offset = 0_u64;
@@ -276,11 +379,7 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
         .split_last()
         .ok_or("put requires a new destination name")?;
     let image_metadata = fs::metadata(image)?;
-    #[cfg(target_os = "linux")]
-    let device = image_linux::open(image, MountMode::ReadWrite)?;
-    #[cfg(not(target_os = "linux"))]
-    let device = ImageDevice::open(image, MountMode::ReadWrite)?;
-    let mut volume = Volume::open(device)?;
+    let mut volume = Volume::open(open_writable(image)?)?;
     let parent = resolve(&mut volume, parents)?;
     match volume.lookup(parent, name) {
         Ok(_) => return Err("import destination already exists".into()),
@@ -295,13 +394,27 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
                 let metadata = fs::symlink_metadata(&source)?;
                 if metadata.is_dir() {
                     let entries = fs::read_dir(&source)?;
-                    let directory = volume.create_directory(parent, name)?;
+                    let directory =
+                        volume.create_directory_with(parent, name, host_attributes(&metadata))?;
                     stack.push((entries, directory));
                 } else if metadata.is_file() {
                     import_file(&mut volume, &source, parent, name, &image_metadata)?;
                 } else if metadata.is_symlink() {
                     let target = fs::read_link(&source)?;
-                    volume.create_symlink(parent, name, target.as_os_str().as_bytes())?;
+                    let object =
+                        volume.create_symlink(parent, name, target.as_os_str().as_bytes())?;
+                    if volume.stores_attributes() && host_attributes(&metadata).hidden {
+                        let handle = volume.retain_object(object)?;
+                        let result = volume.set_attributes(
+                            &handle,
+                            AttributeChange {
+                                hidden: Some(true),
+                                ..Default::default()
+                            },
+                        );
+                        volume.close_handle(handle)?;
+                        result?;
+                    }
                 } else {
                     return Err(format!("unsupported import entry: {}", source.display()).into());
                 }
@@ -329,5 +442,5 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub(super) fn put(_: &Path, _: &Path, _: &OsStr) -> Result<()> {
-    Err("offline import is implemented only on Linux and macOS".into())
+    Err("offline import is implemented only on Linux, macOS, and FreeBSD".into())
 }

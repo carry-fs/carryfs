@@ -288,6 +288,16 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
             }
             let mut inode = KVec::new();
             tree::append(&mut inode, value)?;
+            if format::validate_inode_features(
+                key,
+                &inode,
+                state.root.features,
+                format::Validation::Disk,
+            )
+            .is_err()
+            {
+                return Err(bad("inode mode or attributes without the root feature"));
+            }
             let mut orphan = [3; 9];
             orphan[1..].copy_from_slice(&owner.to_be_bytes());
             let marker = Tree::new(sb, state, TreeKind::Cleanup)

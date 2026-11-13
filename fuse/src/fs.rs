@@ -34,8 +34,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "macos")]
 use carryfs_core::ROOT;
 use carryfs_core::{
-    Access, Attributes, BlockDevice, DirectoryEntry, Error, Handle, Name, ObjectId, ObjectKind,
-    RemoveKind, Replace, Timestamp, Volume,
+    Access, AttributeChange, Attributes, BlockDevice, DirectoryEntry, Error, Handle, Mode, Name,
+    NewAttributes, ObjectId, ObjectKind, RemoveKind, Replace, Timestamp, Volume,
 };
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
@@ -103,9 +103,9 @@ const IO_BYTES: u32 = MAX_WRITE;
 const IO_BYTES: u32 = 4096;
 #[cfg(target_os = "macos")]
 const MACFUSE_CASE_INSENSITIVE: u64 = 1 << 29;
-const FILE_MODE: u16 = 0o644;
-const DIRECTORY_MODE: u16 = 0o755;
-const SYMLINK_MODE: u16 = 0o777;
+/// The BSD flag Finder hides an object by.
+#[cfg(target_os = "macos")]
+const UF_HIDDEN: u32 = 0x8000;
 
 type Reply<T> = std::result::Result<T, Errno>;
 
@@ -253,7 +253,7 @@ struct State<D: BlockDevice> {
 
 /// macOS keeps a volume's Trash in `.Trashes` at its top, owned by root with
 /// mode 01311, and in a folder per user named by user ID, owned by that user
-/// with mode 0700. CarryFS stores no owner or mode, and Finder deleted
+/// with mode 0700. CarryFS stores no owner and no sticky bit, and Finder deleted
 /// immediately rather than use a Trash reported as the console user's with
 /// mode 0755; setting them failed. exFAT avoids this with `noowners`, which
 /// macFUSE ignores. So these folders report what macOS expects; the daemon
@@ -584,7 +584,6 @@ impl<D: BlockDevice> CarryFs<D> {
     }
 
     fn attr(&self, object: ObjectId, attributes: &Attributes) -> Reply<FileAttr> {
-        let (kind, perm) = file_type(attributes.kind);
         let modification = system_time(attributes.modification)?;
         Ok(FileAttr {
             ino: INodeNo(object.get()),
@@ -595,14 +594,17 @@ impl<D: BlockDevice> CarryFs<D> {
             mtime: modification,
             ctime: system_time(attributes.metadata_change)?,
             crtime: system_time(attributes.creation)?,
-            kind,
-            perm,
+            kind: file_type(attributes.kind),
+            perm: attributes.mode.bits(),
             // Link counts are not stored; 1 tells tools such as find not to infer
             // subdirectories. An unlinked object still open reports 0, as fstat expects.
             nlink: u32::from(!attributes.orphan),
             uid: self.owner.uid,
             gid: self.owner.gid,
             rdev: 0,
+            #[cfg(target_os = "macos")]
+            flags: if attributes.hidden { UF_HIDDEN } else { 0 },
+            #[cfg(not(target_os = "macos"))]
             flags: 0,
             blksize: IO_BYTES,
         })
@@ -756,19 +758,21 @@ impl<D: BlockDevice> State<D> {
     /// Apply a `setattr` in as few commits as it allows. The kernel sends a
     /// size change with a modification time of now, which the core's truncate
     /// sets in the same commit, so the usual request is one commit and cannot
-    /// fail halfway. `size` is `None` when the size does not change.
-    fn set_size_and_times(
+    /// fail halfway. `size` is `None` when the size does not change; `change`
+    /// carries the other attributes, and its modification time comes from
+    /// `mtime`.
+    fn set_size_and_attributes(
         &mut self,
         object: ObjectId,
         size: Option<u64>,
         mtime: Option<TimeOrNow>,
-        creation: Option<Timestamp>,
+        mut change: AttributeChange,
     ) -> Reply<()> {
-        let modification = match mtime {
+        change.modification = match mtime {
             Some(TimeOrNow::Now) if size.is_some() => None,
             mtime => mtime.map(time_or_now).transpose()?,
         };
-        if size.is_none() && modification.is_none() && creation.is_none() {
+        if size.is_none() && change == AttributeChange::default() {
             return Ok(());
         }
         // A temporary handle also reaches an unlinked file still open elsewhere.
@@ -786,10 +790,10 @@ impl<D: BlockDevice> State<D> {
                 with_space(&mut self.volume, |volume| volume.truncate(&handle, size))
             })
             .and_then(|()| {
-                if modification.is_some() || creation.is_some() {
-                    self.volume.set_times(&handle, creation, modification)
-                } else {
+                if change == AttributeChange::default() {
                     Ok(())
+                } else {
+                    self.volume.set_attributes(&handle, change)
                 }
             });
         let close = self.volume.close_handle(handle);
@@ -1118,7 +1122,7 @@ impl Listing {
                 volume,
                 entry.object.get(),
                 index + 3,
-                file_type(entry.kind).0,
+                file_type(entry.kind),
                 OsStr::from_bytes(entry.name.stored()),
             ) {
                 return Ok(());
@@ -1311,7 +1315,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
-        _flags: Option<fuser::BsdFileFlags>,
+        flags: Option<fuser::BsdFileFlags>,
         _killpriv: bool,
         reply: ReplyAttr,
     ) {
@@ -1319,19 +1323,39 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             let object = id(ino)?;
             let current = s.volume.attributes(object).map_err(|e| errno(&e))?;
             let shown = s.entry(self, object)?;
-            // macOS copies restore mode and timestamps together. Accept mode
-            // as a no-op so Finder can clear its unfinished-copy timestamp;
-            // reported permissions stay synthetic.
-            if (cfg!(any(target_os = "linux", target_os = "freebsd"))
-                && mode.is_some_and(|mode| mode & 0o7777 != u32::from(shown.perm)))
-                || uid.is_some_and(|uid| uid != shown.uid)
-                || gid.is_some_and(|gid| gid != shown.gid)
+            if uid.is_some_and(|uid| uid != shown.uid) || gid.is_some_and(|gid| gid != shown.gid) {
+                return Err(Errno::EPERM);
+            }
+            let stores = s.volume.stores_attributes();
+            // Setuid, setgid and sticky are dropped: CarryFS stores nine bits.
+            let mode = mode.map(Mode::from_host);
+            // Without the feature a Linux or FreeBSD chmod that changes the
+            // mode fails. macOS copies restore mode and timestamps together,
+            // so there it is a no-op and Finder can clear its unfinished-copy
+            // timestamp.
+            if cfg!(any(target_os = "linux", target_os = "freebsd"))
+                && !stores
+                && mode.is_some_and(|mode| mode != current.mode)
             {
                 return Err(Errno::EPERM);
             }
-            let creation = crtime.map(timestamp).transpose()?;
+            // Other BSD flags are accepted and dropped, as before.
+            #[cfg(target_os = "macos")]
+            let hidden = flags.map(|flags| flags.bits() & UF_HIDDEN != 0);
+            // Linux has no file flags, and FreeBSD's fusefs drops them.
+            #[cfg(not(target_os = "macos"))]
+            let hidden: Option<bool> = {
+                let _ = flags;
+                None
+            };
+            let change = AttributeChange {
+                creation: crtime.map(timestamp).transpose()?,
+                mode: mode.filter(|_| stores),
+                hidden: hidden.filter(|_| stores),
+                ..AttributeChange::default()
+            };
             let resize = size.filter(|&size| size != current.size);
-            s.set_size_and_times(object, resize, mtime, creation)?;
+            s.set_size_and_attributes(object, resize, mtime, change)?;
             s.entry(self, object)
         }) {
             Ok(attr) => reply.attr(&self.attr_ttl, &attr),
@@ -1344,7 +1368,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         _req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         _owner: fuser::Owner,
         reply: ReplyEntry,
@@ -1352,7 +1376,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         match self.with(|s| {
             let (parent, requested, name) = (id(parent)?, name, parse(name)?);
             let object = with_space(&mut s.volume, |volume| {
-                volume.create_directory(parent, name.clone())
+                volume.create_directory_with(parent, name.clone(), created(mode))
             })
             .map_err(|e| errno(&e))?;
             s.changed_directory(parent);
@@ -1509,7 +1533,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         _req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         _flags: i32,
         _killpriv: bool,
@@ -1519,7 +1543,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         match self.with(|s| {
             let (parent, requested, name) = (id(parent)?, name, parse(name)?);
             let handle = with_space(&mut s.volume, |volume| {
-                volume.create_file(parent, name.clone())
+                volume.create_file_with(parent, name.clone(), created(mode))
             })
             .map_err(|e| open_errno(&e))?;
             s.changed_directory(parent);
@@ -1990,12 +2014,21 @@ fn parse(name: &OsStr) -> Reply<Name> {
     Name::parse(text).map_err(|e| errno(&e))
 }
 
-/// The FUSE type and synthetic permissions of an object kind.
-fn file_type(kind: ObjectKind) -> (FileType, u16) {
+/// The FUSE type of an object kind.
+fn file_type(kind: ObjectKind) -> FileType {
     match kind {
-        ObjectKind::File => (FileType::RegularFile, FILE_MODE),
-        ObjectKind::Directory => (FileType::Directory, DIRECTORY_MODE),
-        ObjectKind::Symlink => (FileType::Symlink, SYMLINK_MODE),
+        ObjectKind::File => FileType::RegularFile,
+        ObjectKind::Directory => FileType::Directory,
+        ObjectKind::Symlink => FileType::Symlink,
+    }
+}
+
+/// What a create stores: the mode the kernel passes, which already has the
+/// umask applied because the adapter does not negotiate `FUSE_DONT_MASK`.
+fn created(mode: u32) -> NewAttributes {
+    NewAttributes {
+        mode: Some(Mode::from_host(mode)),
+        hidden: false,
     }
 }
 
@@ -2664,12 +2697,12 @@ mod tests {
         // Only numeric names under `.Trashes`, and `.Trashes` only at the top.
         assert_eq!(
             folder(&mut s, trashes, "notes").1,
-            (501, 20, DIRECTORY_MODE)
+            (501, 20, Mode::DIRECTORY.bits())
         );
         let (other, _) = folder(&mut s, ROOT, "other");
         assert_eq!(
             folder(&mut s, other, ".Trashes").1,
-            (501, 20, DIRECTORY_MODE)
+            (501, 20, Mode::DIRECTORY.bits())
         );
     }
 
@@ -3138,7 +3171,14 @@ mod tests {
         let stamp = Timestamp::new(1_000_000, 0).unwrap();
         state
             .volume
-            .set_times(&file, Some(stamp), Some(stamp))
+            .set_attributes(
+                &file,
+                AttributeChange {
+                    creation: Some(stamp),
+                    modification: Some(stamp),
+                    ..AttributeChange::default()
+                },
+            )
             .unwrap();
         state.volume.sync_publication().unwrap();
         let changed = state.cached_attributes(object).unwrap();
@@ -3458,7 +3498,8 @@ mod tests {
         let object = s.volume.lookup(ROOT, &name).unwrap();
         let commits = |s: &mut State<ImageDevice>, size, mtime| {
             let before = s.volume.info().unwrap().generation;
-            s.set_size_and_times(object, size, mtime, None).unwrap();
+            s.set_size_and_attributes(object, size, mtime, AttributeChange::default())
+                .unwrap();
             s.volume.info().unwrap().generation - before
         };
         let time = |t: Timestamp| (t.seconds(), t.nanos());

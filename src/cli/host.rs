@@ -2,14 +2,14 @@
 //! to held directory descriptors and refuse existing entries.
 
 use std::ffi::{CString, OsStr};
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, Permissions};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path};
 
-use carryfs_core::{Attributes, Error, ExtractionSink, Name, Result};
+use carryfs_core::{Attributes, Error, ExtractionSink, Name, ObjectKind, Result};
 
 // Platform fcntl.h values and C mode_t types.
 #[cfg(target_os = "linux")]
@@ -29,6 +29,7 @@ mod flags {
     pub const CLOEXEC: i32 = 0x01000000;
     pub const CREATE: i32 = 0x200 | 0x800 | 1;
     pub const NONBLOCK: i32 = 4;
+    pub const SYMLINK: i32 = 0x00200000;
     pub type Mode = u16;
     pub type OpenMode = i32;
 }
@@ -49,6 +50,29 @@ unsafe extern "C" {
     fn mkdirat(dirfd: i32, path: *const std::ffi::c_char, mode: Mode) -> i32;
     fn symlinkat(target: *const std::ffi::c_char, dirfd: i32, path: *const std::ffi::c_char)
     -> i32;
+    #[cfg(target_os = "macos")]
+    fn fchflags(fd: i32, flags: u32) -> i32;
+}
+
+/// The BSD flag Finder hides an object by.
+#[cfg(target_os = "macos")]
+pub(super) const UF_HIDDEN: u32 = 0x8000;
+
+/// Give an extracted object its stored mode, and on macOS its hidden flag.
+fn restore(file: &File, (mode, hidden): (u32, bool)) -> Result<()> {
+    file.set_permissions(Permissions::from_mode(mode))
+        .map_err(|e| io_error("restore extracted mode", e))?;
+    #[cfg(target_os = "macos")]
+    // SAFETY: fchflags takes an open descriptor and no pointers.
+    if hidden && unsafe { fchflags(file.as_raw_fd(), UF_HIDDEN) } != 0 {
+        return Err(io_error(
+            "restore extracted hidden flag",
+            io::Error::last_os_error(),
+        ));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = hidden;
+    Ok(())
 }
 
 fn io_error(operation: &'static str, source: io::Error) -> Error {
@@ -63,13 +87,22 @@ fn component(name: &OsStr) -> Result<CString> {
 }
 
 fn open_at(parent: &File, name: &CString, flags: i32) -> Result<File> {
+    // macOS rejects O_NOFOLLOW with O_SYMLINK, which opens the link itself.
+    #[cfg(target_os = "macos")]
+    let flags = if flags & SYMLINK != 0 {
+        flags
+    } else {
+        flags | NOFOLLOW
+    };
+    #[cfg(not(target_os = "macos"))]
+    let flags = flags | NOFOLLOW;
     // SAFETY: parent is live, name is NUL-terminated, and the variadic mode
     // uses the target's promoted C integer type.
     let fd = unsafe {
         openat(
             parent.as_raw_fd(),
             name.as_ptr(),
-            flags | NOFOLLOW | CLOEXEC,
+            flags | CLOEXEC,
             0o600 as OpenMode,
         )
     };
@@ -102,13 +135,17 @@ pub(super) fn open_source(path: &Path) -> Result<File> {
 pub(super) struct Sink {
     parent: File,
     name: CString,
-    // Root followed by the currently visited ancestors. Completed branches are
-    // dropped when traversal returns to a shallower path.
-    directories: Vec<File>,
+    // Root followed by the currently visited ancestors, each with the mode
+    // to restore once its entries exist. Completed branches are dropped when
+    // traversal returns to a shallower path.
+    directories: Vec<(File, Option<(u32, bool)>)>,
+    /// Restore stored modes: only from a volume that stores them. Otherwise
+    /// extracted entries keep the private modes they are created with.
+    modes: bool,
 }
 
 impl Sink {
-    pub(super) fn new(path: &Path) -> Result<Self> {
+    pub(super) fn new(path: &Path, modes: bool) -> Result<Self> {
         let name = component(
             path.file_name()
                 .ok_or(Error::InvalidInput("destination needs a new name"))?,
@@ -141,13 +178,34 @@ impl Sink {
             parent,
             name,
             directories: Vec::new(),
+            modes,
         })
     }
 
+    /// Restore the modes of the directories still open. A directory gets its
+    /// mode after its entries, so a read-only one can still be filled.
+    pub(super) fn finish(mut self) -> Result<()> {
+        self.leave(0)
+    }
+
+    fn leave(&mut self, depth: usize) -> Result<()> {
+        while self.directories.len() > depth {
+            if let Some((directory, Some(stored))) = self.directories.pop() {
+                restore(&directory, stored)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn stored(&self, attributes: &Attributes) -> Option<(u32, bool)> {
+        (self.modes && attributes.kind != ObjectKind::Symlink)
+            .then(|| (u32::from(attributes.mode.bits()), attributes.hidden))
+    }
+
     fn entry(&mut self, path: &[Name]) -> Result<(&File, CString)> {
-        self.directories.truncate(path.len());
+        self.leave(path.len())?;
         if let Some(name) = path.last() {
-            let parent = self
+            let (parent, _) = self
                 .directories
                 .last()
                 .ok_or(Error::InvalidInput("extraction parent was not created"))?;
@@ -159,7 +217,8 @@ impl Sink {
 }
 
 impl ExtractionSink for Sink {
-    fn create_directory(&mut self, path: &[Name], _: &Attributes) -> Result<()> {
+    fn create_directory(&mut self, path: &[Name], attributes: &Attributes) -> Result<()> {
+        let stored = self.stored(attributes);
         let (parent, name) = self.entry(path)?;
         // SAFETY: the directory descriptor and NUL-terminated component remain
         // live for this call. Mode has the target's mode_t representation.
@@ -170,16 +229,29 @@ impl ExtractionSink for Sink {
             ));
         }
         let directory = open_at(parent, &name, DIRECTORY)?;
-        self.directories.push(directory);
+        self.directories.push((directory, stored));
         Ok(())
     }
 
-    fn create_file(&mut self, path: &[Name], _: &Attributes) -> Result<File> {
+    fn create_file(&mut self, path: &[Name], attributes: &Attributes) -> Result<File> {
+        let stored = self.stored(attributes);
         let (parent, name) = self.entry(path)?;
-        open_at(parent, &name, CREATE)
+        let file = open_at(parent, &name, CREATE)?;
+        // Extraction writes through this descriptor, which the mode does not
+        // limit once open.
+        if let Some(stored) = stored {
+            restore(&file, stored)?;
+        }
+        Ok(file)
     }
 
-    fn create_symlink(&mut self, path: &[Name], target: &[u8], _: &Attributes) -> Result<()> {
+    fn create_symlink(
+        &mut self,
+        path: &[Name],
+        target: &[u8],
+        attributes: &Attributes,
+    ) -> Result<()> {
+        let hidden = self.modes && attributes.hidden;
         let (parent, name) = self.entry(path)?;
         let target =
             CString::new(target).map_err(|_| Error::InvalidInput("NUL in symlink target"))?;
@@ -191,6 +263,20 @@ impl ExtractionSink for Sink {
                 io::Error::last_os_error(),
             ));
         }
+        #[cfg(target_os = "macos")]
+        if hidden {
+            // O_SYMLINK opens the link itself, including a dangling link.
+            let link = open_at(parent, &name, SYMLINK)?;
+            // SAFETY: fchflags takes an open descriptor and no pointers.
+            if unsafe { fchflags(link.as_raw_fd(), UF_HIDDEN) } != 0 {
+                return Err(io_error(
+                    "restore extracted hidden flag",
+                    io::Error::last_os_error(),
+                ));
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = hidden;
         Ok(())
     }
 }
@@ -234,6 +320,8 @@ mod tests {
             metadata_change: time,
             orphan: false,
             directory_link: None,
+            mode: carryfs_core::Mode::DIRECTORY,
+            hidden: false,
         }
     }
 
@@ -242,14 +330,14 @@ mod tests {
         let temp = Temp::new();
         let source = temp.0.join("source");
         std::fs::write(&source, b"source bytes").unwrap();
-        assert!(Sink::new(&source).is_err());
+        assert!(Sink::new(&source, false).is_err());
         let alias = temp.0.join("hardlink");
         std::fs::hard_link(&source, &alias).unwrap();
-        assert!(Sink::new(&alias).is_err());
+        assert!(Sink::new(&alias, false).is_err());
         symlink(&source, temp.0.join("symlink")).unwrap();
-        assert!(Sink::new(&temp.0.join("symlink")).is_err());
+        assert!(Sink::new(&temp.0.join("symlink"), false).is_err());
         symlink(&temp.0, temp.0.join("parent-link")).unwrap();
-        assert!(Sink::new(&temp.0.join("parent-link/new")).is_err());
+        assert!(Sink::new(&temp.0.join("parent-link/new"), false).is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
     }
 
@@ -261,7 +349,7 @@ mod tests {
         let outside = temp.0.join("outside");
         std::fs::create_dir(&parent).unwrap();
         std::fs::create_dir(&outside).unwrap();
-        let mut sink = Sink::new(&parent.join("output")).unwrap();
+        let mut sink = Sink::new(&parent.join("output"), false).unwrap();
         std::fs::rename(&parent, &held).unwrap();
         symlink(&outside, &parent).unwrap();
         sink.create_directory(&[], &attributes()).unwrap();
@@ -282,11 +370,11 @@ mod tests {
     fn extraction_refuses_entries_inserted_after_preflight() {
         let temp = Temp::new();
         let output = temp.0.join("output");
-        let mut sink = Sink::new(&output).unwrap();
+        let mut sink = Sink::new(&output, false).unwrap();
         std::fs::write(&output, b"late entry").unwrap();
         assert!(sink.create_file(&[], &attributes()).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), b"late entry");
-        let mut sink = Sink::new(&temp.0.join("tree")).unwrap();
+        let mut sink = Sink::new(&temp.0.join("tree"), false).unwrap();
         sink.create_directory(&[], &attributes()).unwrap();
         symlink(&output, temp.0.join("tree/data")).unwrap();
         assert!(

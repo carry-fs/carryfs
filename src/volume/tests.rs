@@ -906,6 +906,48 @@ fn rename_replace_orphans_the_old_destination_instead_of_deleting_it_inline() {
 }
 
 #[test]
+fn swap_exchanges_objects_and_keeps_names() {
+    let mut volume = opened();
+    // Archive Utility: swap a filled temporary directory with an empty placeholder.
+    let filled = volume.create_directory(ROOT, name(".temp")).unwrap();
+    let file = volume.create_file(filled, name("video.mp4")).unwrap();
+    volume.close_handle(file).unwrap();
+    let placeholder = volume.create_directory(ROOT, name("Archive")).unwrap();
+    volume
+        .swap(ROOT, &name(".TEMP"), ROOT, &name("Archive"))
+        .unwrap();
+    assert_eq!(volume.lookup(ROOT, &name("Archive")).unwrap(), filled);
+    assert_eq!(volume.lookup(ROOT, &name(".temp")).unwrap(), placeholder);
+    assert!(volume.lookup(filled, &name("video.mp4")).is_ok());
+    checked(&volume);
+
+    // Across parents with different types; each object moves to the other parent.
+    let other = volume.create_directory(ROOT, name("other")).unwrap();
+    let file = volume.create_file(other, name("file")).unwrap();
+    volume.close_handle(file).unwrap();
+    volume
+        .swap(filled, &name("video.mp4"), other, &name("file"))
+        .unwrap();
+    volume
+        .swap(ROOT, &name(".temp"), other, &name("file"))
+        .unwrap();
+    assert_eq!(volume.lookup(other, &name("file")).unwrap(), placeholder);
+    assert_eq!(volume.attributes(placeholder).unwrap().parent, other);
+    checked(&volume);
+
+    // A directory cannot be swapped into its own subtree, and both names must exist.
+    assert!(matches!(
+        volume.swap(ROOT, &name("other"), other, &name("file")),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        volume.swap(ROOT, &name("missing"), ROOT, &name("other")),
+        Err(Error::NotFound)
+    ));
+    checked(&volume);
+}
+
+#[test]
 fn guarded_removal_checks_the_stored_spelling_once_and_preserves_a_veto() {
     for deferred in [false, true] {
         let mut volume = opened();

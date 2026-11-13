@@ -141,9 +141,18 @@ unsafe fn fill(
             }
         })?
     };
-    // `decode_page` validated the record: its type, length, flags, and
-    // timestamp ranges.
+    // `decode_page` validated the record: its type, length, flags, mode,
+    // and timestamp ranges.
     let kind = record.first().copied().unwrap_or(0);
+    // A zero mode field means the type's default; a symlink has none.
+    let stored = u16::from_le_bytes([record[2], record[3]]);
+    let permissions = |default: u32| {
+        if stored == 0 {
+            default
+        } else {
+            u32::from(stored) & 0o777
+        }
+    };
     let (mode, iop, fop, aops): (
         u32,
         *const bindings::inode_operations,
@@ -151,13 +160,13 @@ unsafe fn fill(
         *const bindings::address_space_operations,
     ) = match kind {
         FILE => (
-            bindings::S_IFREG | 0o644,
+            bindings::S_IFREG | permissions(0o644),
             &FILE_INODE_OPERATIONS.0 as *const _,
             &file::FILE_OPERATIONS.0 as *const _,
             &file::ADDRESS_SPACE_OPERATIONS.0 as *const _,
         ),
         DIRECTORY => (
-            bindings::S_IFDIR | 0o755,
+            bindings::S_IFDIR | permissions(0o755),
             &namei::DIRECTORY_INODE_OPERATIONS.0 as *const _,
             &dir::FILE_OPERATIONS.0 as *const _,
             ptr::null(),
@@ -268,8 +277,20 @@ unsafe fn change_attributes(
         kernel::error::to_result(bindings::setattr_prepare(idmap, dentry, attr))?;
         let inode = (*dentry).d_inode;
         let valid = (*attr).ia_valid;
-        // Owners and permissions are not stored; only no-op changes pass.
-        if (valid & bindings::ATTR_MODE != 0 && (*attr).ia_mode != (*inode).i_mode)
+        let stores = namei::stores_attributes(&volume::of((*inode).i_sb).lock());
+        let format = (*inode).i_mode as u32 & bindings::S_IFMT;
+        // Nine permission bits are stored; setuid, setgid and sticky are
+        // dropped. A symlink stores none.
+        let mode = (valid & bindings::ATTR_MODE != 0 && stores && format != bindings::S_IFLNK)
+            .then(|| format | (*attr).ia_mode as u32 & 0o777);
+        if let Some(mode) = mode {
+            (*attr).ia_mode = mode as _;
+        } else if stores && format == bindings::S_IFLNK {
+            (*attr).ia_mode = (*inode).i_mode;
+        }
+        // Owners are not stored, nor are modes without the feature; only
+        // no-op changes pass.
+        if (valid & bindings::ATTR_MODE != 0 && !stores && (*attr).ia_mode != (*inode).i_mode)
             || (valid & bindings::ATTR_UID != 0
                 && (*attr).__bindgen_anon_1.ia_uid.val != (*inode).i_uid.val)
             || (valid & bindings::ATTR_GID != 0
@@ -280,10 +301,13 @@ unsafe fn change_attributes(
         if valid & bindings::ATTR_SIZE != 0 {
             crate::write::set_size(Inode::from_raw(inode), (*attr).ia_size as u64)?;
         }
-        if valid & (bindings::ATTR_MTIME | bindings::ATTR_CTIME) != 0 {
+        if valid & (bindings::ATTR_MTIME | bindings::ATTR_CTIME) != 0 || mode.is_some() {
             namei::mutate((*inode).i_sb, |state, disk| {
                 let object = (*inode).i_ino as u64;
                 let mut record = namei::read_record((*inode).i_sb, state, object)?;
+                if let Some(mode) = mode {
+                    namei::set_mode(&mut record, mode);
+                }
                 if valid & bindings::ATTR_MTIME != 0 {
                     namei::set_time(
                         &mut record,

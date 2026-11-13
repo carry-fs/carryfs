@@ -269,10 +269,25 @@ the device honors flushes. Changes that have not been synchronized can be lost
 after an interruption. Checksums detect damage but do not repair files;
 CarryFS has no self-healing. Restore damaged files from an independent backup.
 
-CarryFS does not preserve platform-specific permissions, ACLs, extended
-attributes, resource forks, or alternate data streams. Copying a directory
-tree is not a complete system backup. To preserve that metadata, store a
-metadata-preserving backup archive as an ordinary file.
+A volume upgraded with `carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE`
+on Linux and macOS, or `carryfs-windows upgrade VOLUME` on Windows, stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden
+attribute. Linux and macOS show and enforce the permission bits for the
+account that mounted the volume; Windows shows a file without the owner write
+bit as read-only, and setting read-only there clears the write bits. Hidden
+maps to Finder's hidden flag and to Windows' hidden attribute. Windows also
+shows macOS's own bookkeeping files, such as `.DS_Store` and `._name`, as
+hidden. CarryFS 0.1.0 cannot mount an upgraded volume, so update CarryFS on
+every computer that uses the volume before upgrading it. Without the upgrade,
+files read as `0644` and directories as `0755`. For images,
+`carryfs mkfs --attributes` creates one with the feature, `carryfs put` and
+`carryfs get` keep modes, and `carryfs attr IMAGE /PATH [mode=OCTAL]
+[hidden=yes|no]` shows or changes them.
+
+CarryFS does not store owners, setuid, setgid or sticky bits, ACLs, extended
+attributes, resource forks, or alternate data streams, and it is not a
+security boundary: anyone holding the drive can mount it as themselves.
+Copying a directory tree is not a complete system backup. To preserve that
+metadata, store a metadata-preserving backup archive as an ordinary file.
 
 Filenames are case-insensitive, so `File.txt` and `file.txt` cannot coexist in
 the same directory. CarryFS can store names that Windows normally forbids,

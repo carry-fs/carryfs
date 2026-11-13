@@ -96,7 +96,7 @@ Each root occupies one complete page. CRC covers all 4,096 bytes with bytes
 | 96 | 16 | Cleanup `TreeRef` |
 | 112 | 8 | Next object ID, greater than every issued ID |
 | 120 | 8 | Free blocks, including the maintenance reserve |
-| 128 | 8 | Feature bits, zero |
+| 128 | 8 | Feature bits: bit 0 inode attributes; other bits zero |
 | 136 | 4 | Filename profile, 2 |
 | 140 | 4 | State flags, zero |
 | 144 | 8 | Maintenance reserve floor, 16,384 blocks |
@@ -115,6 +115,13 @@ The UUID changes on every format, preventing accidental cross-volume references.
 The label participates in the root CRC and same-generation mirror comparison.
 Naming or renaming publishes both roots using the normal commit sequence and
 does not change the UUID, allocation accounting, or page encodings.
+
+Feature bit 0 lets inodes record a mode and attributes (section 5). A reader
+that does not know a feature bit returns "unsupported format" and writes
+nothing; it never falls back to the other root for that reason. A publication
+carries the feature bits of the root it succeeds. Formatting leaves the bit
+clear; `carryfs upgrade` sets it by publishing one root, with no page writes.
+Nothing clears it.
 
 ### Selection and reopen
 
@@ -291,7 +298,9 @@ one object a detachable interval. Only the specified suffixes are valid.
 |---:|---:|---|
 | 0 | 1 | Object type: 1 regular file, 2 directory, 3 symbolic link |
 | 1 | 1 | Flags: bit 0 orphan; on symlinks only, bit 1 link kind recorded and bit 2 directory link; other bits zero |
-| 2 | 6 | Reserved zero |
+| 2 | 2 | Mode `u16`: zero, or bit 15 set with permission bits 0 through 8 |
+| 4 | 1 | Attributes: bit 0 hidden; other bits zero |
+| 5 | 3 | Reserved zero |
 | 8 | 8 | Parent object ID; root refers to itself |
 | 16 | 8 | Logical file size; zero for directories; target length for symlinks |
 | 24 | 8 | Allocated data blocks in the object's current extents |
@@ -317,6 +326,17 @@ invalid. Windows keeps directory and file links apart whatever the target is,
 and creates a directory link as a directory first, so a conversion records
 which object it started from. Links made elsewhere leave both bits clear. The
 Linux and macOS adapters ignore them.
+
+The mode is zero or `0x8000 | p` with `p` in `0o000..=0o777`, the usual
+`rwxrwxrwx`; bits 9 through 14 are zero, so no setuid, setgid or sticky bit
+is stored. Zero means the type's default: `0o644` for a file, `0o755` for a
+directory. A symlink's mode is zero and reads as `0o777`. Bit 15 lets all-zero
+bytes keep meaning "default", so inodes written before the feature need no
+rewrite, and `0o000` is storable as `0x8000`. The hidden bit applies to every
+type and does not affect access. No owner is stored: every object belongs to
+the account that mounts the volume. When root feature bit 0 is clear, bytes 2
+through 4 of every inode are zero; a reader that predates the feature
+reports anything else as corruption.
 
 Each timestamp is signed Unix seconds `i64`, nanoseconds `u32`, reserved zero
 `u32`. Seconds range from -11644473600 through 253402300799, corresponding to
@@ -428,6 +448,12 @@ The checksum binds logical identity and EOF length, but not physical placement.
   Namespace changes update affected parent modification/metadata-change times
   and the renamed/unlinked object's metadata-change time. Access times are not
   stored. Explicit creation/modification-time setters update metadata-change time.
+- Changing the mode or the hidden bit updates the metadata-change time and
+  nothing else. A create records the mode and hidden state the caller asked
+  for; nothing is inherited from the parent. Writes, truncation, rename and
+  unlink keep both. A mode change on a symlink succeeds and stores nothing.
+  Converting an empty file or directory to a symlink clears the mode and
+  keeps the hidden bit.
 
 ## 6. Allocation and bounded cleanup
 

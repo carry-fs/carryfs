@@ -297,7 +297,8 @@ fn runs(keep: &[bool], old_physical: &[Option<u64>], count: u64) -> usize {
 }
 
 /// Copy-on-write one unit, returning its new checksum, or None for an unchanged
-/// hole. The unit's new mapping is appended to `mapped` instead of recorded.
+/// hole. Unwritten blocks are filled in place instead of copied. The unit's
+/// new mapping is appended to `mapped` instead of recorded.
 fn rewrite_unit<D: BlockDevice>(
     transaction: &mut Transaction<'_, D>,
     change: &Change<'_>,
@@ -575,6 +576,83 @@ fn map_extents<D: BlockDevice>(
             &encode_extent(run.physical, run.count, run.unwritten)?,
         )?;
     }
+    Ok(())
+}
+
+/// Set `inode.size`. Growing leaves holes; any size at or below the old one
+/// also releases blocks past it, reservations included.
+fn resize<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    object: u64,
+    inode: &mut Inode,
+    size: u64,
+    hint: &mut u64,
+) -> Result<()> {
+    let unit = UNIT_BYTES as u64;
+    // The unit whose valid length changes: the new tail when shrinking,
+    // the old tail when growing. A whole-unit boundary changes none.
+    let boundary = size.min(inode.size);
+    if size != inode.size && !boundary.is_multiple_of(unit) {
+        let tail = boundary / unit;
+        let change = Change {
+            object,
+            offset: tail * unit,
+            bytes: &[],
+            old_size: inode.size,
+            new_size: size,
+        };
+        rewrite_units(transaction, &change, inode, &[tail], hint)?;
+    }
+    if size <= inode.size {
+        shrink(transaction, object, inode, size)?;
+    }
+    inode.size = size;
+    Ok(())
+}
+
+/// Map unwritten blocks over the holes of the whole units covering `offset..end`.
+fn reserve<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    object: u64,
+    inode: &mut Inode,
+    offset: u64,
+    end: u64,
+    hint: &mut u64,
+) -> Result<()> {
+    let mut cursor = offset / UNIT_BYTES as u64 * BLOCKS_PER_UNIT;
+    let until = end.div_ceil(UNIT_BYTES as u64) * BLOCKS_PER_UNIT;
+    let mut mapped = Vec::new();
+    let mut allocated = 0;
+    while cursor < until {
+        let catalog = transaction.catalog.clone();
+        let extents = extents_from(&mut transaction.forest, &catalog, object, cursor, until)?;
+        let gap_end = extents
+            .first()
+            .map_or(until, |extent| extent.logical.min(until));
+        if cursor < gap_end {
+            let mut logical = cursor;
+            for (physical, count) in transaction.allocate_data(gap_end - cursor, *hint)? {
+                *hint = physical / GROUP;
+                mapped.push(Extent {
+                    logical,
+                    physical,
+                    count,
+                    unwritten: true,
+                });
+                logical += count;
+                allocated += count;
+            }
+            cursor = gap_end;
+        }
+        if let Some(extent) = extents.first() {
+            cursor = cursor.max(extent.end()?);
+        }
+    }
+    map_extents(transaction, object, mapped)?;
+    inode.allocated_blocks = inode
+        .allocated_blocks
+        .checked_add(allocated)
+        .ok_or(Error::LimitExceeded)?;
     Ok(())
 }
 
@@ -975,36 +1053,18 @@ impl<D: BlockDevice> Volume<D> {
         if size > i64::MAX as u64 {
             return Err(Error::LimitExceeded);
         }
-        // An unchanged size changes nothing, so it publishes nothing either.
         let current = self.attributes(object)?;
         if current.kind != ObjectKind::File {
             return Err(Error::WrongType);
         }
-        if current.size == size {
-            let beyond = self.read_catalog(|forest, catalog| {
-                let record =
-                    forest.floor(&catalog, TreeKind::Catalog, &extent_key(object.0, u64::MAX))?;
-                Ok(
-                    match record
-                        .as_ref()
-                        .map(|record| Extent::of(object.0, record))
-                        .transpose()?
-                        .flatten()
-                    {
-                        Some(extent) => extent.end()? > size.div_ceil(BLOCK_BYTES as u64),
-                        None => false,
-                    },
-                )
-            })?;
-            if !beyond {
-                return Ok(());
-            }
+        // An unchanged size publishes nothing unless it releases reservations past EOF.
+        if current.size == size && !self.allocated_past(object, size)? {
+            return Ok(());
         }
         let now = Timestamp::now()?;
         let mut hint = self.data_hint;
         self.edit(|transaction| {
-            let object = object.0;
-            let key = inode_key(object);
+            let key = inode_key(object.0);
             let mut inode = transaction
                 .forest
                 .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
@@ -1012,26 +1072,7 @@ impl<D: BlockDevice> Volume<D> {
             if inode.kind != ObjectKind::File {
                 return Err(Error::WrongType);
             }
-
-            let unit = UNIT_BYTES as u64;
-            // The unit whose valid length changes: the new tail when shrinking,
-            // the old tail when growing. A whole-unit boundary changes none.
-            let boundary = size.min(inode.size);
-            if size != inode.size && !boundary.is_multiple_of(unit) {
-                let tail = boundary / unit;
-                let change = Change {
-                    object,
-                    offset: tail * unit,
-                    bytes: &[],
-                    old_size: inode.size,
-                    new_size: size,
-                };
-                rewrite_units(transaction, &change, &mut inode, &[tail], &mut hint)?;
-            }
-            if size <= inode.size {
-                shrink(transaction, object, &mut inode, size)?;
-            }
-            inode.size = size;
+            resize(transaction, object.0, &mut inode, size, &mut hint)?;
             inode.modification = now;
             inode.metadata_change = now;
             put(transaction, &key, &inode.encode())
@@ -1040,9 +1081,42 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    /// Release reservations past EOF without changing times, as a last close does.
+    pub fn trim_allocation(&mut self, object: ObjectId) -> Result<()> {
+        self.writable()?;
+        let current = self.attributes(object)?;
+        if current.kind != ObjectKind::File
+            || current.orphan
+            || !self.allocated_past(object, current.size)?
+        {
+            return Ok(());
+        }
+        self.edit(|transaction| {
+            let key = inode_key(object.0);
+            let mut inode = transaction
+                .forest
+                .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
+                .ok_or(Error::NotFound)?;
+            let size = inode.size;
+            shrink(transaction, object.0, &mut inode, size)?;
+            put(transaction, &key, &inode.encode())
+        })
+    }
+
+    fn allocated_past(&mut self, object: ObjectId, size: u64) -> Result<bool> {
+        Ok(
+            self.allocation_end_of(object)?
+                > size.div_ceil(BLOCK_BYTES as u64) * BLOCK_BYTES as u64,
+        )
+    }
+
     /// Logical end of allocated storage, including unwritten blocks past EOF.
     pub fn allocation_end(&mut self, file: &Handle) -> Result<u64> {
         let object = self.handles.validate(file)?;
+        self.allocation_end_of(object)
+    }
+
+    fn allocation_end_of(&mut self, object: ObjectId) -> Result<u64> {
         self.read_catalog(|forest, catalog| {
             let record =
                 forest.floor(&catalog, TreeKind::Catalog, &extent_key(object.0, u64::MAX))?;
@@ -1070,6 +1144,35 @@ impl<D: BlockDevice> Volume<D> {
         length: u64,
         keep_size: bool,
     ) -> Result<()> {
+        let end = offset.saturating_add(length);
+        self.preallocate_resized(file, offset, length, |current| {
+            (!keep_size && end > current).then_some(end)
+        })
+    }
+
+    /// Set the size, then reserve `0..length`, as one commit: a failed
+    /// reservation leaves the file as it was.
+    pub fn truncate_and_preallocate(
+        &mut self,
+        file: &Handle,
+        size: u64,
+        length: u64,
+    ) -> Result<()> {
+        if size > i64::MAX as u64 {
+            return Err(Error::LimitExceeded);
+        }
+        self.preallocate_resized(file, 0, length, |_| Some(size))
+    }
+
+    /// Reserve `offset..offset + length` and apply the size `resized` returns
+    /// for the current one, in a single edit.
+    fn preallocate_resized(
+        &mut self,
+        file: &Handle,
+        offset: u64,
+        length: u64,
+        resized: impl Fn(u64) -> Option<u64>,
+    ) -> Result<()> {
         let (object, access) = self.handles.validate_access(file)?;
         self.writable()?;
         if access != Access::ReadWrite {
@@ -1086,9 +1189,6 @@ impl<D: BlockDevice> Volume<D> {
             return Err(Error::WrongType);
         }
         self.enable_preallocation()?;
-        if !keep_size && end > self.attributes(object)?.size {
-            self.truncate(file, end)?;
-        }
         let now = Timestamp::now()?;
         let mut hint = self.data_hint;
         self.edit(|transaction| {
@@ -1097,45 +1197,11 @@ impl<D: BlockDevice> Volume<D> {
                 .forest
                 .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::NotFound)?;
-            let mut cursor = offset / UNIT_BYTES as u64 * BLOCKS_PER_UNIT;
-            let until = end.div_ceil(UNIT_BYTES as u64) * BLOCKS_PER_UNIT;
-            let mut mapped = Vec::new();
-            let mut allocated = 0;
-            while cursor < until {
-                let extents = extents_from(
-                    &mut transaction.forest,
-                    &transaction.catalog.clone(),
-                    object.0,
-                    cursor,
-                    until,
-                )?;
-                let gap_end = extents
-                    .first()
-                    .map_or(until, |extent| extent.logical.min(until));
-                if cursor < gap_end {
-                    let mut logical = cursor;
-                    for (physical, count) in transaction.allocate_data(gap_end - cursor, hint)? {
-                        hint = physical / GROUP;
-                        mapped.push(Extent {
-                            logical,
-                            physical,
-                            count,
-                            unwritten: true,
-                        });
-                        logical += count;
-                        allocated += count;
-                    }
-                    cursor = gap_end;
-                }
-                if let Some(extent) = extents.first() {
-                    cursor = cursor.max(extent.end()?);
-                }
+            if let Some(size) = resized(inode.size) {
+                resize(transaction, object.0, &mut inode, size, &mut hint)?;
+                inode.modification = now;
             }
-            map_extents(transaction, object.0, mapped)?;
-            inode.allocated_blocks = inode
-                .allocated_blocks
-                .checked_add(allocated)
-                .ok_or(Error::LimitExceeded)?;
+            reserve(transaction, object.0, &mut inode, offset, end, &mut hint)?;
             inode.metadata_change = now;
             put(transaction, &key, &inode.encode())
         })?;
@@ -1199,7 +1265,8 @@ impl<D: BlockDevice> Volume<D> {
                     && (end >= start + unit_bytes || (end >= inode.size && until > start))
                 {
                     let first = unit * BLOCKS_PER_UNIT;
-                    let last = first + BLOCKS_PER_UNIT;
+                    // Written blocks end at EOF; keep reservations past the punched range.
+                    let last = (first + BLOCKS_PER_UNIT).min(end.div_ceil(BLOCK_BYTES as u64));
                     let extents = unit_extents(
                         &mut transaction.forest,
                         &transaction.catalog.clone(),
@@ -1207,6 +1274,9 @@ impl<D: BlockDevice> Volume<D> {
                         first,
                     )?;
                     for extent in extents {
+                        if extent.logical >= last {
+                            continue;
+                        }
                         let extent_end = extent.end()?;
                         remove(transaction, &extent_key(object.0, extent.logical))?;
                         if extent.logical < first {

@@ -540,3 +540,55 @@ fn interrupted_unwritten_conversion_recovers_zeros_or_complete_data() {
     }
     complete.close_handle(file).unwrap();
 }
+
+#[test]
+fn failed_preallocation_leaves_size_unchanged() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("too-big")).unwrap();
+    volume.write(&file, 0, b"keep").unwrap();
+    let length = (volume.space().unwrap().total_blocks + 1) * BLOCK_BYTES as u64;
+    let result = volume.preallocate(&file, 0, length, false);
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(volume.handle_attributes(&file).unwrap().size, 4);
+    volume.close_handle(file).unwrap();
+}
+
+#[test]
+fn punching_through_eof_keeps_reservations_past_the_hole() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("tail")).unwrap();
+    volume.write(&file, 0, &[7; 10_000]).unwrap();
+    volume
+        .preallocate(&file, 0, UNIT_BYTES as u64, true)
+        .unwrap();
+    volume.punch_hole(&file, 0, 20_480).unwrap();
+    assert_eq!(volume.allocation_end(&file).unwrap(), UNIT_BYTES as u64);
+    let mut read = vec![1; 10_000];
+    assert_eq!(volume.read(&file, 0, &mut read).unwrap(), 10_000);
+    assert_eq!(read, vec![0; 10_000]);
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}
+
+#[test]
+fn trimming_allocation_keeps_times() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("trim")).unwrap();
+    volume.write(&file, 0, b"keep").unwrap();
+    volume
+        .preallocate(&file, 0, (3 * UNIT_BYTES) as u64, true)
+        .unwrap();
+    let object = volume.lookup(ROOT, &name("trim")).unwrap();
+    let before = volume.attributes(object).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    volume.trim_allocation(object).unwrap();
+    assert_eq!(volume.allocation_end(&file).unwrap(), BLOCK_BYTES as u64);
+    let after = volume.attributes(object).unwrap();
+    assert_eq!(after.modification, before.modification);
+    assert_eq!(after.metadata_change, before.metadata_change);
+    assert_eq!(after.size, 4);
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}

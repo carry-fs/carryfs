@@ -708,19 +708,14 @@ impl<D: BlockDevice> State<D> {
             Open::File(other, _) => *other == object,
             Open::Directory(listing) => listing.directory == object,
         });
+        let trimmed: Reply<()> = Ok(());
         #[cfg(target_os = "macos")]
-        if !pinned && self.transient_allocations.remove(&object.get()) {
-            let size = self.volume.attributes(object).map_err(|e| errno(&e))?.size;
-            let handle = self
-                .volume
-                .open_object(object, Access::ReadWrite)
-                .map_err(|e| errno(&e))?;
-            let result =
-                with_space(&mut self.volume, |v| v.truncate(&handle, size)).map_err(|e| errno(&e));
-            let closed = self.volume.close_handle(handle).map_err(|e| errno(&e));
-            result.and(closed)?;
+        let trimmed = if !pinned && self.transient_allocations.remove(&object.get()) {
             self.quiet = None;
-        }
+            with_space(&mut self.volume, |v| v.trim_allocation(object)).map_err(|e| errno(&e))
+        } else {
+            trimmed
+        };
         // An unpinned orphan is new cleanup work. Marking the volume unquiet
         // lets the timer pick it up; a close does not publish. If attributes
         // fail, the next maintenance step reports the underlying error.
@@ -732,7 +727,7 @@ impl<D: BlockDevice> State<D> {
         if unpinned_orphan {
             self.quiet = None;
         }
-        Ok(())
+        trimmed
     }
 
     /// Publish pending changes and run bounded cleanup when there may be work.
@@ -1812,15 +1807,14 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                 if mode & (FROM_EOF | FROM_VOLUME) == FROM_EOF | FROM_VOLUME {
                     return Err(Errno::EINVAL);
                 }
+                // Both modes extend the allocation past its end; a volume
+                // offset is only a physical placement hint.
+                let end = s.volume.allocation_end(handle).map_err(|e| errno(&e))?;
                 let offset = if mode & FROM_EOF != 0 {
-                    s.volume
-                        .allocation_end(handle)
-                        .map_err(|e| errno(&e))?
-                        .checked_add(offset)
-                        .ok_or(Errno::EFBIG)?
+                    end.checked_add(offset).ok_or(Errno::EFBIG)?
                 } else {
-                    0
-                }; // A volume offset is a physical placement hint.
+                    end
+                };
                 with_space(&mut s.volume, |v| {
                     v.preallocate(handle, offset, length, true)
                 })

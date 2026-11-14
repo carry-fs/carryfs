@@ -16,7 +16,7 @@
 //! file or directory never expires, so the adapter names what a request made
 //! stale there (`CarryFs::take_stale`).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -136,6 +136,9 @@ struct State<D: BlockDevice> {
     /// When a handle with write access last closed. Windows was then asked to
     /// write out the file's mapped pages, and does so a moment later.
     settling: Option<Instant>,
+    /// Files given an allocation size here, trimmed to EOF at last close.
+    /// Reservations made by other systems persist.
+    reserved: BTreeSet<ObjectId>,
 }
 
 /// Files Windows may keep the data of after their handles closed. Each keeps
@@ -298,6 +301,7 @@ impl<D: BlockDevice> CarryFs<D> {
                 touched: Vec::new(),
                 kept: VecDeque::new(),
                 settling: None,
+                reserved: BTreeSet::new(),
             }),
             read_only,
             waits: None,
@@ -496,14 +500,18 @@ impl<D: BlockDevice> CarryFs<D> {
                     }
                 }
             };
-            if !directory
-                && allocation > 0
-                && let Err(error) = with_space(&mut s.volume, |v| {
+            if !directory && allocation > 0 {
+                if let Err(error) = with_space(&mut s.volume, |v| {
                     v.preallocate(&handle, 0, allocation, true)
-                })
-            {
-                s.volume.close_handle(handle).map_err(|e| status(&e))?;
-                return Err(status(&error));
+                }) {
+                    // A create that fails leaves no file, as on NTFS.
+                    s.volume.close_handle(handle).map_err(|e| status(&e))?;
+                    s.volume
+                        .remove(parent, &name, RemoveKind::File)
+                        .map_err(|e| status(&e))?;
+                    return Err(status(&error));
+                }
+                s.reserved.insert(object);
             }
             let kind = if directory {
                 ObjectKind::Directory
@@ -571,12 +579,15 @@ impl<D: BlockDevice> CarryFs<D> {
     ) -> Reply<FileInfo> {
         self.change(|s| {
             let open = get(&s.open, context)?;
-            with_space(&mut s.volume, |v| v.truncate(&open.handle, 0)).map_err(|e| status(&e))?;
             if allocation > 0 {
                 with_space(&mut s.volume, |v| {
-                    v.preallocate(&open.handle, 0, allocation, true)
+                    v.truncate_and_preallocate(&open.handle, 0, allocation)
                 })
                 .map_err(|e| status(&e))?;
+                s.reserved.insert(open.object);
+            } else {
+                with_space(&mut s.volume, |v| v.truncate(&open.handle, 0))
+                    .map_err(|e| status(&e))?;
             }
             if s.volume.stores_attributes() {
                 let current = s
@@ -777,7 +788,8 @@ impl<D: BlockDevice> CarryFs<D> {
     /// Set EOF or reserve allocation independently of EOF. A smaller allocation truncates.
     pub fn set_file_size(&self, context: u64, size: u64, allocation: bool) -> Reply<FileInfo> {
         self.change(|s| {
-            let handle = &get(&s.open, context)?.handle;
+            let open = get(&s.open, context)?;
+            let (handle, object) = (&open.handle, open.object);
             let current = s
                 .volume
                 .handle_attributes(handle)
@@ -786,14 +798,19 @@ impl<D: BlockDevice> CarryFs<D> {
             if !allocation {
                 with_space(&mut s.volume, |v| v.truncate(handle, size)).map_err(|e| status(&e))?;
             } else {
-                if size < current || size == 0 {
-                    with_space(&mut s.volume, |v| v.truncate(handle, size))
-                        .map_err(|e| status(&e))?;
-                }
-                if size > 0 {
+                // An allocation below EOF truncates, in the same commit as the reservation.
+                if size == 0 {
+                    with_space(&mut s.volume, |v| v.truncate(handle, 0)).map_err(|e| status(&e))?;
+                } else if size < current {
+                    with_space(&mut s.volume, |v| {
+                        v.truncate_and_preallocate(handle, size, size)
+                    })
+                    .map_err(|e| status(&e))?;
+                } else {
                     with_space(&mut s.volume, |v| v.preallocate(handle, 0, size, true))
                         .map_err(|e| status(&e))?;
                 }
+                s.reserved.insert(object);
                 let end = s.volume.allocation_end(handle).map_err(|e| status(&e))?;
                 let keep = size.div_ceil(65_536) * 65_536;
                 if end > keep {
@@ -1337,36 +1354,20 @@ impl<D: BlockDevice> State<D> {
 
     fn close_handle(&mut self, open: Open) -> Reply<()> {
         let pinned = self.open.values().any(|other| other.object == open.object);
-        let trim = (|| {
-            if !pinned && open.kind == ObjectKind::File && self.volume.supports_preallocation() {
-                let size = self
-                    .volume
-                    .handle_attributes(&open.handle)
-                    .map_err(|e| status(&e))?
-                    .size;
-                if self
-                    .volume
-                    .allocation_end(&open.handle)
-                    .map_err(|e| status(&e))?
-                    > size.div_ceil(4096) * 4096
-                {
-                    match self.volume.open_object(open.object, Access::ReadWrite) {
-                        Ok(handle) => {
-                            let result =
-                                with_space(&mut self.volume, |v| v.truncate(&handle, size))
-                                    .map_err(|e| status(&e));
-                            let closed = self.volume.close_handle(handle).map_err(|e| status(&e));
-                            result.and(closed)?;
-                            self.known.forget_attributes();
-                            self.quiet = None;
-                        }
-                        Err(Error::ReadOnly) => {}
-                        Err(error) => return Err(status(&error)),
-                    }
+        // Like NTFS, the last close releases an allocation set here past EOF.
+        let trim = if !pinned && self.reserved.remove(&open.object) {
+            match with_space(&mut self.volume, |v| v.trim_allocation(open.object)) {
+                Ok(()) => {
+                    self.known.forget_attributes();
+                    self.quiet = None;
+                    Ok(())
                 }
+                Err(Error::ReadOnly | Error::NotFound) => Ok(()),
+                Err(error) => Err(status(&error)),
             }
+        } else {
             Ok(())
-        })();
+        };
         let closed = self
             .volume
             .close_handle(open.handle)
@@ -3526,5 +3527,44 @@ mod tests {
         assert_eq!(info.allocation_size, 4 * 65_536);
         fs.cleanup(file, None, 0);
         fs.close(file);
+    }
+
+    #[test]
+    fn failed_create_allocation_leaves_no_file() {
+        let (_image, fs) = mount("failed-create-allocation");
+        let path = w("\\too-big");
+        assert!(fs.create(&path, false, false, 0, 1 << 30).is_err());
+        assert!(fs.open(&path, false, false).is_err());
+    }
+
+    #[test]
+    fn failed_overwrite_allocation_keeps_contents() {
+        let (_image, fs) = mount("failed-overwrite-allocation");
+        let (file, _, _) = fs.create(&w("\\kept"), false, false, 0, 0).unwrap();
+        fs.write(file, 0, b"keep", false, false).unwrap();
+        assert!(fs.overwrite(file, 0, false, 1 << 30).is_err());
+        let mut bytes = [0; 4];
+        assert_eq!(fs.read(file, 0, &mut bytes).unwrap(), 4);
+        assert_eq!(&bytes, b"keep");
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+    }
+
+    #[test]
+    fn last_read_only_close_keeps_last_write_time() {
+        let (_image, fs) = mount("trim-write-time");
+        let path = w("\\reserved");
+        let (file, _, _) = fs.create(&path, false, false, 0, 3 * 65_536).unwrap();
+        fs.write(file, 0, b"keep", false, false).unwrap();
+        let (reader, _, _) = fs.open(&path, false, false).unwrap();
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+        let before = fs.file_info(reader).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs.cleanup(reader, None, 0);
+        fs.close(reader);
+        let (reader, after, _) = fs.open(&path, false, false).unwrap();
+        assert_eq!(after.last_write_time, before.last_write_time);
+        fs.close(reader);
     }
 }

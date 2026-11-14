@@ -96,7 +96,7 @@ impl<'a> Source<'a> {
 
     /// The physical block of logical `block` and how many blocks after it
     /// stay contiguous in its extent.
-    fn map(&self, state: &State, block: u64) -> Result<(u64, u64)> {
+    fn map(&self, state: &State, block: u64) -> Result<(u64, u64, bool)> {
         let key = tree::numbered_key(self.object, tree::EXTENT, block);
         let found = Tree::catalog(self.sb, state).floor(&key, |found, value| {
             let owner = found.get(..9) == Some(&tree::prefix(self.object, tree::EXTENT)[..]);
@@ -106,7 +106,7 @@ impl<'a> Source<'a> {
                 .map_or(0, u64::from_be_bytes);
             let count = le_u64(value, 8) & u64::from(u32::MAX);
             Ok((owner && block >= start && block - start < count)
-                .then(|| (le_u64(value, 0) + (block - start), count - (block - start))))
+                .then(|| (le_u64(value, 0) + (block - start), count - (block - start), le_u64(value, 8) >> 32 != 0)))
         })?;
         found.flatten().ok_or_else(|| {
             corrupt(
@@ -142,13 +142,13 @@ impl<'a> Source<'a> {
         for _ in 0..blocks {
             located
                 .pages
-                .push(Page::alloc_page(GFP_KERNEL)?, GFP_KERNEL)?;
+                .push(Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?, GFP_KERNEL)?;
         }
         let mut done = 0;
         while done < blocks {
-            let (physical, run) = self.map(state, unit * UNIT_BLOCKS + done as u64)?;
+            let (physical, run, unwritten) = self.map(state, unit * UNIT_BLOCKS + done as u64)?;
             let run = (run as usize).min(blocks - done);
-            located.runs.push((physical, run), GFP_KERNEL)?;
+            located.runs.push((if unwritten { 0 } else { physical }, run), GFP_KERNEL)?;
             done += run;
         }
         located.valid = valid;
@@ -214,6 +214,7 @@ impl Located {
     fn queue(&self, sb: *mut bindings::super_block, bio: &mut *mut bindings::bio) {
         let mut done = 0;
         for (physical, run) in self.runs.iter().copied() {
+            if physical == 0 { done += run; continue; }
             // SAFETY: `sb` holds its block device; GFP_NOIO bio allocation
             // does not fail.
             let next =
@@ -427,6 +428,7 @@ fn small_read(source: &Source<'_>, batch: &mut Batch) -> Option<()> {
     }
     let (first, _) = batch.units.iter().find_map(|unit| unit.runs.first().copied())?;
     let (last, run) = batch.units.iter().rev().find_map(|unit| unit.runs.last().copied())?;
+    if batch.units.iter().any(|unit| unit.runs.iter().any(|(physical, _)| *physical == 0)) { return None; }
     let volume = source.volume;
     let previous = volume.next_small.load(Relaxed);
     volume.next_small.store(last + run as u64, Relaxed);
@@ -641,6 +643,7 @@ pub(crate) static FILE_OPERATIONS: Ops<bindings::file_operations> =
         read_iter: Some(read_iter),
         write_iter: Some(write_iter),
         fsync: Some(crate::write::fsync),
+        fallocate: Some(glue::carryfs_fallocate),
         mmap_prepare: Some(glue::carryfs_file_mmap_prepare),
         splice_read: Some(bindings::filemap_splice_read),
         // copy_file_range and splice write through the page cache.

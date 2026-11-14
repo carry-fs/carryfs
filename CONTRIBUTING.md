@@ -156,6 +156,23 @@ that budget. Parser seeds come from `testdata/vectors/`. Logs go to
 `build/check-fuzz/`; corpora and failing inputs stay under `fuzz/corpus/` and
 `fuzz/artifacts/`. These are bounded runs, not exhaustive verification.
 
+### Allocation checks
+
+Core tests cover reservations across remounts, conversion interruptions,
+truncation, and writes after another file fills the volume.
+
+On macOS with macFUSE, after building the CLI and adapter:
+
+```sh
+cargo build --locked -p carryfs-core -p carryfs-fuse
+python3 fuse/tests/preallocate_macos.py
+```
+
+The macOS test checks `F_PREALLOCATE` return values, persistent and temporary
+reservations, and the image with `check` and `scrub` after unmounting. The
+installed macFUSE 5.5 reports allocation only up to EOF through `stat`, so
+the test verifies reservations beyond EOF with the on-disk checker.
+
 ### Linux directory synchronization
 
 On a disposable Linux host with root access, FUSE, udev, and loop-device

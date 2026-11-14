@@ -451,7 +451,7 @@ fn conflicting_roots_and_unsupported_format_never_fall_back() {
             0 => a.0[120..128].copy_from_slice(&60000_u64.to_le_bytes()),
             1 => a.0[24] ^= 1,
             2 => a.0[8..12].copy_from_slice(&5_u32.to_le_bytes()),
-            _ => a.0[128] = 2,
+            _ => a.0[128] = 4,
         }
         a.0[4092..].fill(0);
         let crc = crate::format::crc32c(&a.0[..]);

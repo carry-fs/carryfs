@@ -27,7 +27,7 @@ struct Entry {
     /// The inode's mapping, as an address so `State` stays `Send`. The inode
     /// lives while it holds reservations: eviction releases them.
     mapping: usize,
-    units: KVec<u64>,
+    units: KVec<(u64, u64)>,
 }
 
 /// Every unit holding a reservation, by inode.
@@ -47,10 +47,10 @@ impl Reservations {
 
     fn holds(&self, object: u64, unit: u64) -> bool {
         self.entry(object)
-            .is_ok_and(|at| self.entries[at].units.binary_search(&unit).is_ok())
+            .is_ok_and(|at| self.entries[at].units.binary_search_by_key(&unit, |(unit, _)| *unit).is_ok())
     }
 
-    fn add(&mut self, inode: &Inode, unit: u64) -> Result {
+    fn add(&mut self, inode: &Inode, unit: u64, blocks: u64) -> Result {
         let at = match self.entry(inode.object()) {
             Ok(at) => at,
             Err(at) => {
@@ -65,17 +65,19 @@ impl Reservations {
             }
         };
         let units = &mut self.entries[at].units;
-        if let Err(position) = units.binary_search(&unit) {
+        if let Err(position) = units.binary_search_by_key(&unit, |(unit, _)| *unit) {
             units.reserve(1, GFP_KERNEL)?;
-            units.insert_within_capacity(position, unit)?;
-            self.blocks += UNIT_BLOCKS;
+            units.insert_within_capacity(position, (unit, blocks))?;
+            self.blocks += blocks;
         }
         Ok(())
     }
 
     /// Blocks `object` holds for `units`.
     pub(crate) fn held(&self, object: u64, units: impl Iterator<Item = u64>) -> u64 {
-        units.filter(|unit| self.holds(object, *unit)).count() as u64 * UNIT_BLOCKS
+        let Ok(at) = self.entry(object) else { return 0; };
+        let held = &self.entries[at].units;
+        units.filter_map(|unit| held.binary_search_by_key(&unit, |(unit, _)| *unit).ok().map(|at| held[at].1)).sum()
     }
 
     /// Release `object`'s units for which `keep` is false.
@@ -92,9 +94,11 @@ impl Reservations {
                 core::ptr::with_exposed_provenance_mut::<bindings::address_space>(mapping),
             )
         };
-        let before = entry.units.len();
-        entry.units.retain(|unit| keep(mapping, *unit));
-        self.blocks -= (before - entry.units.len()) as u64 * UNIT_BLOCKS;
+        let mut released = 0;
+        entry.units.retain(|(unit, blocks)| {
+            if keep(mapping, *unit) { true } else { released += *blocks; false }
+        });
+        self.blocks -= released;
         if entry.units.is_empty() {
             // Drop the entry: move it last, then pop it.
             self.entries[at..].rotate_left(1);
@@ -159,15 +163,22 @@ pub(crate) fn reserve(
     units: &[u64],
 ) -> Result {
     let object = inode.object();
-    let missing = units
-        .iter()
-        .filter(|unit| !state.reservations.holds(object, **unit));
-    let needed = missing.count() as u64 * UNIT_BLOCKS;
-    if needed == 0 {
-        return Ok(());
+    let mut wanted = KVec::new();
+    let mut needed = 0;
+    for unit in units {
+        if state.reservations.holds(object, *unit) { continue; }
+        let first = *unit * UNIT_BLOCKS;
+        let features = state.txn.as_ref().map_or(state.root.features, |txn| txn.features);
+        let reserved = if features & crate::ondisk::format::FEATURE_PREALLOCATION != 0 {
+            write::mapped_blocks(sb, state, object, first, first + UNIT_BLOCKS)?
+        } else { 0 };
+        let blocks = UNIT_BLOCKS - reserved;
+        wanted.push((*unit, blocks), GFP_KERNEL)?;
+        needed += blocks;
     }
+    if wanted.is_empty() { return Ok(()); }
     let mut swept = false;
-    while available(state) < needed + write::HEADROOM {
+    while needed > 0 && available(state) < needed + write::HEADROOM {
         if state.writing > 0 {
             // A unit dirtied again during its data write is counted twice
             // until the write is recorded and its old blocks reclaimed.
@@ -181,8 +192,8 @@ pub(crate) fn reserve(
             return Err(ENOSPC);
         }
     }
-    for unit in units {
-        state.reservations.add(inode, *unit)?;
+    for (unit, blocks) in wanted.iter().copied() {
+        state.reservations.add(inode, unit, blocks)?;
     }
     Ok(())
 }

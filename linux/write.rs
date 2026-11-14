@@ -19,7 +19,7 @@ use kernel::ffi::c_int;
 use kernel::page::Page;
 use kernel::prelude::*;
 
-use crate::edit::Disk;
+use crate::edit::{Disk, Txn};
 use crate::file::{read_unit, Unit, UNIT_BLOCKS};
 use crate::glue;
 use crate::namei::{
@@ -28,7 +28,7 @@ use crate::namei::{
 use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::format::{
     checksum_slot, compact_group, set_checksum_slot, TreeKind, BLOCK_BYTES, CHECKSUM_GROUP_BYTES,
-    MAINTENANCE_RESERVE,
+    MAINTENANCE_RESERVE, EXTENT_UNWRITTEN, FEATURE_PREALLOCATION,
 };
 use crate::tree::{self, be_u64, le_u64, Tree};
 use crate::vfs::{Folio, Inode};
@@ -41,6 +41,60 @@ const BATCH: usize = 64;
 const SECTORS_PER_BLOCK: u64 = (BLOCK_BYTES / 512) as u64;
 /// Free blocks a new reservation, or a write without one, must leave.
 pub(crate) const HEADROOM: u64 = MAINTENANCE_RESERVE + 8_192;
+
+/// Unwritten mappings overlapping a logical block range.
+pub(crate) fn unwritten_runs(sb: *mut bindings::super_block, state: &State, object: u64, first: u64, end: u64) -> Result<KVec<(u64, u64, u64)>> {
+    let mut runs = KVec::new();
+    let prefix = tree::prefix(object, tree::EXTENT);
+    let catalog = Tree::catalog(sb, state);
+    let mut add = |key: &[u8], value: &[u8]| -> Result {
+        if !key.starts_with(&prefix) || le_u64(value, 8) >> 32 != u64::from(EXTENT_UNWRITTEN) { return Ok(()); }
+        let logical = be_u64(key, 9);
+        let low = first.max(logical);
+        let high = end.min(logical + (le_u64(value, 8) & u64::from(u32::MAX)));
+        if low < high { runs.push((low, le_u64(value, 0) + low - logical, high - low), GFP_KERNEL)?; }
+        Ok(())
+    };
+    catalog.floor(&tree::numbered_key(object, tree::EXTENT, first), &mut add)?;
+    catalog.scan(&tree::numbered_key(object, tree::EXTENT, first + 1), &mut |key, value| {
+        if !key.starts_with(&prefix) || be_u64(key, 9) >= end { return Ok(false); }
+        add(key, value)?;
+        Ok(true)
+    })?;
+    Ok(runs)
+}
+
+pub(crate) fn mapped_blocks(sb: *mut bindings::super_block, state: &State, object: u64, first: u64, end: u64) -> Result<u64> {
+    let catalog = Tree::catalog(sb, state);
+    let prefix = tree::prefix(object, tree::EXTENT);
+    let mut count = 0;
+    let mut add = |key: &[u8], value: &[u8]| -> Result {
+        if key.starts_with(&prefix) {
+            let start = be_u64(key, 9);
+            let stop = start + (le_u64(value, 8) & u64::from(u32::MAX));
+            count += end.min(stop).saturating_sub(first.max(start));
+        }
+        Ok(())
+    };
+    catalog.floor(&tree::numbered_key(object, tree::EXTENT, first), &mut add)?;
+    catalog.scan(&tree::numbered_key(object, tree::EXTENT, first + 1), &mut |key, value| {
+        if !key.starts_with(&prefix) || be_u64(key, 9) >= end { return Ok(false); }
+        add(key, value)?;
+        Ok(true)
+    })?;
+    Ok(count)
+}
+
+fn needed(sb: *mut bindings::super_block, state: &State, object: u64, size: u64, units: &[Pending]) -> Result<u64> {
+    let mut needed = 0;
+    for unit in units {
+        let first = unit.index * UNIT_BLOCKS;
+        let blocks = unit_blocks(size, unit.index);
+        let reserved: u64 = unwritten_runs(sb, state, object, first, first + blocks)?.iter().map(|(_, _, count)| *count).sum();
+        needed += blocks - reserved;
+    }
+    Ok(needed)
+}
 
 /// A unit being written: its content and the folios under writeback for it.
 struct Pending {
@@ -257,6 +311,7 @@ impl<'a> Writer<'a> {
                     stored: 0,
                     ticket: 0,
                     runs: KVec::new(),
+                    reused: KVec::new(),
                 },
             };
             if let Ok(mut boxed) = KBox::new(empty, GFP_KERNEL) {
@@ -302,23 +357,46 @@ impl<'a> Writer<'a> {
         // reserve kept for metadata edits rather than lose accepted data.
         // The stored partial tail it rewrites when a file grew has no
         // reservation of its own; the headroom reservations leave covers
-        // it. A truncate's rewrite has none and keeps the headroom.
+        // it. Preallocation-enabled volumes fund replacing writes from the
+        // reserve only up to the number of blocks they retire.
         let keep = if truncate { HEADROOM } else { MAINTENANCE_RESERVE };
-        let spare = |state: &State, needed: u64| {
+        let spare = |state: &State, needed: u64| -> Result<bool> {
             let free = reserve::available_to(state, object, units.iter().map(|unit| unit.index));
-            free >= needed + keep
+            let feature = state.txn.as_ref().map_or(state.root.features, |txn| txn.features);
+            let mut credit = 0;
+            let keep = if feature & FEATURE_PREALLOCATION != 0 { MAINTENANCE_RESERVE } else { keep };
+            if feature & FEATURE_PREALLOCATION != 0 {
+                for unit in units {
+                    let first = unit.index * UNIT_BLOCKS;
+                    credit += mapped_blocks(sb, state, object, first, first + unit_blocks(inode.size(), unit.index))?;
+                }
+            }
+            Ok(needed == 0 || free >= needed + keep.saturating_sub(credit.min(needed)))
         };
-        {
-            // Retired data may still be reclaimable: commit to reclaim it,
-            // as `write_begin` does, rather than fail writeback with ENOSPC.
-            let size = inode.size();
-            let needed: u64 = units.iter().map(|unit| unit_blocks(size, unit.index)).sum();
-            let mut state = volume::of(sb).lock();
-            while !spare(&state, needed) && state.reclaimable() {
-                commit::commit(sb, &mut state)?;
+        let mut state = volume::of(sb).lock();
+        // A prior batch may be consuming these same unwritten mappings.
+        let mut consumes_reservation = false;
+        for unit in units {
+            if !unwritten_runs(sb, &state, object, unit.index * UNIT_BLOCKS, (unit.index + 1) * UNIT_BLOCKS)?.is_empty() {
+                consumes_reservation = true;
+                break;
             }
         }
-        let allocation = mutate(sb, |state, disk| {
+        if consumes_reservation { state.wait_recorded(object); }
+        loop {
+            let wanted = needed(sb, &state, object, inode.size(), units)?;
+            if spare(&state, wanted)? { break; }
+            if state.writing > 0 { state.wait_for_writes(); }
+            else if state.reclaimable() { commit::commit(sb, &mut state)?; }
+            else { return Err(ENOSPC); }
+        }
+        if state.txn.as_ref().is_some_and(|txn| txn.drafts.len() >= commit::COMMIT_DRAFTS) {
+            commit::commit(sb, &mut state)?;
+        }
+        if state.txn.is_none() { state.txn = Some(Txn::new(&state.root, state.hint)?); }
+        // Keep the lock from the space check through allocation so another
+        // writer cannot consume the copy-on-write headroom between them.
+        let allocation = edit(sb, &mut state, |state, disk| {
             // Batches in flight record first: build on their size.
             let stored = match state.planned_size(object) {
                 Some(planned) => planned,
@@ -345,29 +423,39 @@ impl<'a> Writer<'a> {
                 // The tail moved since `add_tail`; retry before any edit.
                 return Err(EAGAIN);
             }
-            let needed: u64 = units.iter().map(|unit| unit_blocks(size, unit.index)).sum();
-            if !spare(state, needed) {
+            let needed = needed(sb, state, object, size, units)?;
+            if !spare(state, needed)? {
                 return Err(ENOSPC);
             }
             let mut runs: KVec<(usize, u64, u64)> = KVec::new();
+            let mut reused: KVec<(u64, u64)> = KVec::new();
             for (position, unit) in units.iter().enumerate() {
                 let blocks = unit_blocks(size, unit.index);
+                let first_logical = unit.index * UNIT_BLOCKS;
+                let reserved = unwritten_runs(sb, state, object, first_logical, first_logical + blocks)?;
                 let mut done = 0;
                 while done < blocks {
                     runs.reserve(1, GFP_KERNEL).or_else(|error| {
-                        release(state, disk, &runs)?;
+                        release(state, disk, &runs, &reused)?;
                         Err(Error::from(error))
                     })?;
-                    match txn(state).allocate_data(disk, blocks - done) {
+                    let logical = first_logical + done;
+                    let mapped = reserved.iter().find(|(first, _, count)| *first <= logical && logical < *first + *count);
+                    if let Some((first, physical, count)) = mapped {
+                        let take = (*first + *count - logical).min(blocks - done);
+                        let physical = *physical + logical - *first;
+                        reused.push((physical, take), GFP_KERNEL)?;
+                        runs.push_within_capacity((position, physical, take)).map_err(|_| ENOMEM)?;
+                        done += take;
+                        continue;
+                    }
+                    let gap = reserved.iter().filter(|(first, _, _)| *first > logical).map(|(first, _, _)| *first - logical).min().unwrap_or(blocks - done);
+                    match txn(state).allocate_data(disk, gap.min(blocks - done)) {
                         Ok((first, count)) => {
-                            runs.push_within_capacity((position, first, count))
-                                .map_err(|_| ENOMEM)?;
+                            runs.push_within_capacity((position, first, count)).map_err(|_| ENOMEM)?;
                             done += count;
                         }
-                        Err(error) => {
-                            release(state, disk, &runs)?;
-                            return Err(error);
-                        }
+                        Err(error) => { release(state, disk, &runs, &reused)?; return Err(error); }
                     }
                 }
             }
@@ -384,6 +472,7 @@ impl<'a> Writer<'a> {
                 stored,
                 ticket,
                 runs,
+                reused,
             })
         })?;
         Ok(allocation)
@@ -399,6 +488,8 @@ struct Allocation {
     ticket: u64,
     /// Unit position, first block, and count.
     runs: KVec<(usize, u64, u64)>,
+    /// Blocks already owned by unwritten extents; failed writes leave them reserved.
+    reused: KVec<(u64, u64)>,
 }
 
 /// Units allocated for writing, until recorded.
@@ -533,7 +624,7 @@ fn record(
     let (object, size, runs) = (inode.object(), allocation.size, &allocation.runs);
     if let Err(error) = written {
         pr_err!("data write failed in object {object}\n");
-        release(state, disk, runs)?;
+        release(state, disk, runs, &allocation.reused)?;
         return Err(error);
     }
     let mut record = read_record(sb, state, object)?;
@@ -542,7 +633,7 @@ fn record(
         // planned: the one before failed, and logged why, or this is a bug.
         // Fail rather than record units sized for another size.
         pr_err!("object {object}: size is not the one this write batch built on\n");
-        release(state, disk, runs)?;
+        release(state, disk, runs, &allocation.reused)?;
         return Err(EIO);
     }
     let uuid = state.root.uuid;
@@ -550,7 +641,11 @@ fn record(
     for (position, unit) in units.iter().enumerate() {
         let valid = unit_valid(size, unit.index);
         let first_block = unit.index * UNIT_BLOCKS;
-        let removed = remove_extents(sb, state, disk, object, first_block, first_block + UNIT_BLOCKS)?;
+        let tail = unwritten_runs(sb, state, object, first_block + unit_blocks(size, unit.index), first_block + UNIT_BLOCKS)?;
+        let mut protected = KVec::new();
+        protected.extend_from_slice(&allocation.reused, GFP_KERNEL)?;
+        for (_, physical, count) in tail.iter().copied() { protected.push((physical, count), GFP_KERNEL)?; }
+        let removed = remove_extents(sb, state, disk, object, first_block, first_block + UNIT_BLOCKS, &protected)?;
         allocated = allocated.checked_sub(removed).ok_or_else(|| {
             crate::corrupt(
                 state.root.catalog.block,
@@ -559,6 +654,10 @@ fn record(
                 ),
             )
         })?;
+        for (logical, physical, count) in tail.iter().copied() {
+            put_raw_extent(state, disk, object, logical, physical, count, true)?;
+            allocated += count;
+        }
         if valid == 0 {
             set_checksum(sb, state, disk, object, unit.index, None)?;
             continue;
@@ -703,9 +802,10 @@ fn remove_extents(
     object: u64,
     start: u64,
     end: u64,
+    reused: &[(u64, u64)],
 ) -> Result<u64> {
     let prefix = tree::prefix(object, tree::EXTENT);
-    let mut found: KVec<(u64, u64, u64)> = KVec::new();
+    let mut found: KVec<(u64, u64, u64, bool)> = KVec::new();
     {
         let catalog = Tree::catalog(sb, state);
         let floor_key = tree::numbered_key(object, tree::EXTENT, start);
@@ -714,7 +814,7 @@ fn remove_extents(
                 let logical = be_u64(key, 9);
                 let count = le_u64(value, 8) & u64::from(u32::MAX);
                 if logical + count > start {
-                    found.push((logical, le_u64(value, 0), count), GFP_KERNEL)?;
+                    found.push((logical, le_u64(value, 0), count, le_u64(value, 8) >> 32 != 0), GFP_KERNEL)?;
                 }
             }
             Ok(())
@@ -729,6 +829,7 @@ fn remove_extents(
                     be_u64(key, 9),
                     le_u64(value, 0),
                     le_u64(value, 8) & u64::from(u32::MAX),
+                    le_u64(value, 8) >> 32 != 0,
                 ),
                 GFP_KERNEL,
             )?;
@@ -736,7 +837,7 @@ fn remove_extents(
         })?;
     }
     let mut removed = 0;
-    for (logical, physical, count) in found.iter().copied() {
+    for (logical, physical, count, unwritten) in found.iter().copied() {
         let overlap_start = logical.max(start);
         let overlap_end = (logical + count).min(end);
         if overlap_start >= overlap_end {
@@ -747,14 +848,20 @@ fn remove_extents(
             TreeKind::Catalog,
             &tree::numbered_key(object, tree::EXTENT, logical),
         )?;
-        txn(state).retire(
-            disk,
-            physical + (overlap_start - logical),
-            overlap_end - overlap_start,
-        )?;
+        let physical_start = physical + overlap_start - logical;
+        let count_removed = overlap_end - overlap_start;
+        if reused.is_empty() {
+            txn(state).retire(disk, physical_start, count_removed)?;
+        } else {
+            for block in physical_start..physical_start + count_removed {
+                if !reused.iter().any(|(first, count)| *first <= block && block < *first + *count) {
+                    txn(state).retire(disk, block, 1)?;
+                }
+            }
+        }
         removed += overlap_end - overlap_start;
         if logical < start {
-            put_raw_extent(state, disk, object, logical, physical, start - logical)?;
+            put_raw_extent(state, disk, object, logical, physical, start - logical, unwritten)?;
         }
         if logical + count > end {
             put_raw_extent(
@@ -764,6 +871,7 @@ fn remove_extents(
                 end,
                 physical + (end - logical),
                 logical + count - end,
+                unwritten,
             )?;
         }
     }
@@ -777,10 +885,12 @@ fn put_raw_extent(
     logical: u64,
     physical: u64,
     count: u64,
+    unwritten: bool,
 ) -> Result {
     let mut value = [0u8; 16];
     value[..8].copy_from_slice(&physical.to_le_bytes());
     value[8..12].copy_from_slice(&(count as u32).to_le_bytes());
+    value[12..16].copy_from_slice(&(if unwritten { EXTENT_UNWRITTEN } else { 0 }).to_le_bytes());
     txn(state).put(
         disk,
         TreeKind::Catalog,
@@ -805,7 +915,7 @@ fn put_extent(
         .floor(
             &tree::numbered_key(object, tree::EXTENT, logical),
             |key, value| {
-                Ok(key.starts_with(&prefix).then(|| {
+                Ok((key.starts_with(&prefix) && le_u64(value, 8) >> 32 == 0).then(|| {
                     (
                         be_u64(key, 9),
                         le_u64(value, 0),
@@ -820,10 +930,10 @@ fn put_extent(
             && first + length == physical
             && length + count <= u64::from(u32::MAX)
         {
-            return put_raw_extent(state, disk, object, start, first, length + count);
+            return put_raw_extent(state, disk, object, start, first, length + count, false);
         }
     }
-    put_raw_extent(state, disk, object, logical, physical, count)
+    put_raw_extent(state, disk, object, logical, physical, count, false)
 }
 
 /// Set or clear the checksum slot of `unit`.
@@ -1017,9 +1127,9 @@ pub(crate) unsafe extern "C" fn write_begin(
 /// Free the runs a failed `publish` allocated: no record refers to them,
 /// and the transaction would otherwise commit them as owned (fstests
 /// generic/441).
-fn release(state: &mut State, disk: &Disk, runs: &[(usize, u64, u64)]) -> Result {
+fn release(state: &mut State, disk: &Disk, runs: &[(usize, u64, u64)], reused: &[(u64, u64)]) -> Result {
     for (_, first, count) in runs {
-        txn(state).retire(disk, *first, *count)?;
+        if !reused.contains(&(*first, *count)) { txn(state).retire(disk, *first, *count)?; }
     }
     Ok(())
 }
@@ -1086,7 +1196,23 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
         let mut writer = Writer::new(inode);
         writer.truncate = true;
         writer.pending(unit)?;
-        return writer.flush(None);
+        writer.flush(None)?;
+    }
+    if size <= old {
+        // Explicit truncation also releases unwritten storage past EOF.
+        mutate(sb, |state, disk| {
+            let first = size.div_ceil(BLOCK_BYTES as u64);
+            let end = size.div_ceil(UNIT_BYTES as u64) * UNIT_BLOCKS;
+            if first < end {
+                let removed = remove_extents(sb, state, disk, object, first, end, &[])?;
+                let mut record = read_record(sb, state, object)?;
+                let allocated = le_u64(&record, ALLOCATED).checked_sub(removed).ok_or(EIO)?;
+                set_u64(&mut record, ALLOCATED, allocated);
+                write_record(state, disk, object, &record)?;
+                inode.set_blocks(allocated);
+            }
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -1095,7 +1221,7 @@ pub(crate) fn set_size(inode: &Inode, size: u64) -> Result {
 /// tail, holding its claim. The tail rewrite follows.
 fn change_size(inode: &Inode, old: u64, size: u64) -> Result {
     let (sb, object) = (inode.super_block().as_ptr(), inode.object());
-    if size < old {
+    if size <= old {
         // Shrink in unit-aligned steps from the end, each a consistent state.
         let keep = size.div_ceil(UNIT_BYTES as u64) * UNIT_BLOCKS;
         loop {
@@ -1147,7 +1273,7 @@ pub(crate) fn remove_data_step(
         return Ok(true);
     };
     let end = first + 16 * UNIT_BLOCKS;
-    let removed = remove_extents(sb, state, disk, object, first, end)?;
+    let removed = remove_extents(sb, state, disk, object, first, end, &[])?;
     clear_checksums(sb, state, disk, object, first / UNIT_BLOCKS, end / UNIT_BLOCKS)?;
     let mut record = read_record(sb, state, object)?;
     let allocated = le_u64(&record, ALLOCATED).checked_sub(removed).ok_or_else(|| {
@@ -1191,7 +1317,7 @@ fn shrink_step(
     )?;
     let done = batch_end == u64::MAX / 2;
     let batch_end = batch_end.max(keep + UNIT_BLOCKS);
-    let removed = remove_extents(sb, state, disk, object, keep, batch_end)?;
+    let removed = remove_extents(sb, state, disk, object, keep, batch_end, &[])?;
     clear_checksums(
         sb,
         state,
@@ -1264,6 +1390,59 @@ fn clear_checksums(
         }
     }
     Ok(())
+}
+
+#[no_mangle]
+unsafe extern "C" fn carryfs_preallocate(raw: *mut bindings::inode, offset: u64, length: u64, keep_size: bool) -> c_int {
+    // SAFETY: The C caller holds the referenced inode locked.
+    let inode = unsafe { Inode::from_raw(raw) };
+    let result = (|| -> Result {
+        let end = offset.checked_add(length).filter(|end| *end <= i64::MAX as u64).ok_or(EFBIG)?;
+        if !keep_size && end > inode.size() { set_size(inode, end)?; }
+        let sb = inode.super_block().as_ptr();
+        for index in offset / UNIT_BYTES as u64..=(end - 1) / UNIT_BYTES as u64 {
+            mutate(sb, |state, disk| {
+                let first = index * UNIT_BLOCKS;
+                let mut present = [false; UNIT_BLOCKS as usize];
+                let prefix = tree::prefix(inode.object(), tree::EXTENT);
+                let catalog = Tree::catalog(sb, state);
+                let mut mark = |key: &[u8], value: &[u8]| -> Result {
+                    if key.starts_with(&prefix) {
+                        let logical = be_u64(key, 9);
+                        let end = logical + (le_u64(value, 8) & u64::from(u32::MAX));
+                        for block in logical.max(first)..end.min(first + UNIT_BLOCKS) { present[(block - first) as usize] = true; }
+                    }
+                    Ok(())
+                };
+                catalog.floor(&tree::numbered_key(inode.object(), tree::EXTENT, first), &mut mark)?;
+                catalog.scan(&tree::numbered_key(inode.object(), tree::EXTENT, first + 1), &mut |key, value| {
+                    if !key.starts_with(&prefix) || be_u64(key, 9) >= first + UNIT_BLOCKS { return Ok(false); }
+                    mark(key, value)?;
+                    Ok(true)
+                })?;
+                let wanted = present.iter().filter(|present| !**present).count() as u64;
+                if reserve::available(state) < wanted + HEADROOM { return Err(ENOSPC); }
+                let mut record = read_record(sb, state, inode.object())?;
+                let allocated = le_u64(&record, ALLOCATED) + wanted;
+                txn(state).features |= FEATURE_PREALLOCATION;
+                let mut index = 0;
+                while index < present.len() {
+                    if present[index] { index += 1; continue; }
+                    let count = present[index..].iter().take_while(|present| !**present).count() as u64;
+                    let (physical, count) = txn(state).allocate_data(disk, count)?;
+                    put_raw_extent(state, disk, inode.object(), first + index as u64, physical, count, true)?;
+                    index += count as usize;
+                }
+                set_u64(&mut record, ALLOCATED, allocated);
+                set_time(&mut record, 72, now());
+                write_record(state, disk, inode.object(), &record)?;
+                inode.set_blocks(allocated);
+                crate::inode::refresh_times(inode, state)
+            })?;
+        }
+        Ok(())
+    })();
+    match result { Ok(()) => 0, Err(error) => error.to_errno() }
 }
 
 pub(crate) unsafe extern "C" fn fsync(

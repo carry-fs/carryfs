@@ -57,6 +57,13 @@ do not yet publish synchronously. It accepts `uid=` and `gid=`, defaulting to th
 mounting user, as vfat and exfat do; files report mode 644, directories 755.
 `ro` mounts read-only and never writes, not even root mirroring.
 
+## Allocation
+
+The driver implements `fallocate` allocation and `FALLOC_FL_KEEP_SIZE`.
+Other allocation modes return
+`EOPNOTSUPP`. Reservations use unwritten extents behind root feature bit 1;
+older adapters reject a volume once this feature is published.
+
 ## Check
 
 ```sh
@@ -70,7 +77,6 @@ recovery, and judges each phase with the userspace `carryfs check` and
 `carryfs scrub`, comparing file contents after remount.
 It also overlaps data writeback with rename, unlink, replacement, and explicit
 mtime changes, then checks that the timestamps survive completion and remount.
-
 `bash tests/vm.sh` runs the native checks in a disposable VM using the
 installed kernel image and module. Run it from `linux/`, or run
 `bash linux/tests/vm.sh` from the repository root. It requires `virtme-run`,

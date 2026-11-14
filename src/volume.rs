@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::format::{
-    BLOCK_BYTES, FEATURE_ATTRIBUTES, Page, ROOT_MAGIC, Root, TreeKind, TreeRef, decode_page,
-    encode_leaf,
+    BLOCK_BYTES, FEATURE_ATTRIBUTES, FEATURE_PREALLOCATION, Page, ROOT_MAGIC, Root, TreeKind,
+    TreeRef, decode_page, encode_leaf,
 };
 use crate::{BlockDevice, Error, Geometry, MountMode, Result};
 
@@ -716,6 +716,28 @@ impl<D: BlockDevice> Volume<D> {
         self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
         self.sync_publication()?;
         Ok(true)
+    }
+
+    /// Whether unwritten allocations are enabled on this volume.
+    pub fn supports_preallocation(&self) -> bool {
+        self.root
+            .as_ref()
+            .is_some_and(|root| root.features & FEATURE_PREALLOCATION != 0)
+    }
+
+    /// Enable unwritten allocations. Older adapters refuse this volume afterwards.
+    /// A successful preallocation request opts the volume into this feature.
+    pub fn enable_preallocation(&mut self) -> Result<()> {
+        self.writable()?;
+        if self.supports_preallocation() {
+            return Ok(());
+        }
+        self.seal_batch()?;
+        let mut next = self.root.clone().ok_or(Error::Ejected)?;
+        next.generation = next.generation.checked_add(1).ok_or(Error::LimitExceeded)?;
+        next.features |= FEATURE_PREALLOCATION;
+        self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
+        self.sync_publication()
     }
 
     /// Report capacity for adapter statistics. Available space excludes the

@@ -244,3 +244,167 @@ fn interrupted_full_disk_refill() {
     );
     eprintln!("filled {size} bytes, deleted, drained, and interrupted every refill output");
 }
+
+#[test]
+fn preallocation_survives_remount_and_is_consumed_without_exposing_device_bytes() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume
+        .preallocate(&file, 0, (3 * UNIT_BYTES) as u64, true)
+        .unwrap();
+    assert_eq!(volume.handle_attributes(&file).unwrap().size, 0);
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (3 * UNIT_BYTES) as u64
+    );
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+    let mut volume =
+        Volume::open(FaultDevice::new(durable(&volume), MountMode::ReadWrite)).unwrap();
+    let file = volume
+        .open_file(ROOT, &name("reserved"), Access::ReadWrite)
+        .unwrap();
+    volume.write(&file, 17, b"hello").unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (3 * UNIT_BYTES) as u64
+    );
+    volume.truncate(&file, (3 * UNIT_BYTES) as u64).unwrap();
+    let mut bytes = vec![0; 3 * UNIT_BYTES];
+    volume.read(&file, 0, &mut bytes).unwrap();
+    let mut expected = bytes.clone();
+    expected.fill(0);
+    expected[17..22].copy_from_slice(b"hello");
+    assert_eq!(bytes, expected);
+    volume
+        .write(&file, (UNIT_BYTES + 3) as u64, b"second")
+        .unwrap();
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}
+
+#[test]
+fn preallocation_preserves_data_and_truncation_discards_unused_reservations() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume.write(&file, 0, b"keep me").unwrap();
+    volume
+        .preallocate(&file, 0, (3 * UNIT_BYTES) as u64, true)
+        .unwrap();
+    let mut bytes = [0; 7];
+    volume.read(&file, 0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"keep me");
+    volume.truncate(&file, 7).unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        BLOCK_BYTES as u64
+    );
+    volume
+        .preallocate(&file, UNIT_BYTES as u64, UNIT_BYTES as u64, false)
+        .unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().size,
+        (2 * UNIT_BYTES) as u64
+    );
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}
+
+#[test]
+fn preallocated_writes_and_overwrites_work_after_other_files_fill_the_volume() {
+    let geometry = GEOMETRY;
+    let device = FaultDevice::with_geometry(BTreeMap::new(), MountMode::ReadWrite, geometry);
+    let media = device.media.clone();
+    Volume::format_at(device, UUID, 1, 0).unwrap();
+    let mut volume = Volume::open(FaultDevice::with_geometry(
+        media.borrow().durable.clone(),
+        MountMode::ReadWrite,
+        geometry,
+    ))
+    .unwrap();
+    let reserved = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume
+        .preallocate(&reserved, 0, (1 << 20) as u64, true)
+        .unwrap();
+    let filler = volume.create_file(ROOT, name("filler")).unwrap();
+    let bytes = vec![0x53; 1 << 20];
+    let mut size = 0;
+    loop {
+        match volume.write(&filler, size, &bytes) {
+            Ok(done) => size += done as u64,
+            Err(Error::NoSpace) => break,
+            Err(error) => panic!("fill failed: {error}"),
+        }
+    }
+    assert!(size > 0);
+    assert_eq!(volume.write(&reserved, 0, &bytes).unwrap(), bytes.len());
+    for byte in 0..8 {
+        assert_eq!(
+            volume.write(&reserved, 0, &vec![byte; UNIT_BYTES]).unwrap(),
+            UNIT_BYTES
+        );
+        volume.sync().unwrap();
+    }
+    let mut read = vec![0; UNIT_BYTES];
+    volume.read(&reserved, 0, &mut read).unwrap();
+    assert_eq!(read, vec![7; UNIT_BYTES]);
+    volume.close_handle(filler).unwrap();
+    volume.close_handle(reserved).unwrap();
+    volume.sync().unwrap();
+    checked(&volume);
+}
+
+#[test]
+fn interrupted_unwritten_conversion_recovers_zeros_or_complete_data() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume
+        .preallocate(&file, 0, UNIT_BYTES as u64, false)
+        .unwrap();
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    let base = durable(&volume);
+    let mut complete = Volume::open(FaultDevice::new(base.clone(), MountMode::ReadWrite)).unwrap();
+    let file = complete
+        .open_file(ROOT, &name("reserved"), Access::ReadWrite)
+        .unwrap();
+    let media = complete.device.as_ref().unwrap().media.clone();
+    media.borrow_mut().events.clear();
+    complete.write(&file, 0, &vec![0x67; UNIT_BYTES]).unwrap();
+    let count = media.borrow().events.len();
+    for event in 0..count {
+        for whole_mask in [0, u64::MAX] {
+            let mut volume =
+                Volume::open(FaultDevice::new(base.clone(), MountMode::ReadWrite)).unwrap();
+            let file = volume
+                .open_file(ROOT, &name("reserved"), Access::ReadWrite)
+                .unwrap();
+            let media = volume.device.as_ref().unwrap().media.clone();
+            media.borrow_mut().events.clear();
+            media.borrow_mut().failure = Some(Failure {
+                event,
+                whole_mask,
+                tear: None,
+            });
+            let _ = volume.write(&file, 0, &vec![0x67; UNIT_BYTES]);
+            media.borrow_mut().crash();
+            let mut reader = Volume::open(FaultDevice::new(
+                media.borrow().durable.clone(),
+                MountMode::ReadOnly,
+            ))
+            .unwrap();
+            reader.check().unwrap();
+            let file = reader
+                .open_file(ROOT, &name("reserved"), Access::Read)
+                .unwrap();
+            let mut bytes = vec![0; UNIT_BYTES];
+            reader.read(&file, 0, &mut bytes).unwrap();
+            assert!(bytes.iter().all(|byte| *byte == 0) || bytes.iter().all(|byte| *byte == 0x67));
+            reader.close_handle(file).unwrap();
+        }
+    }
+    complete.close_handle(file).unwrap();
+}

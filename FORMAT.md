@@ -123,6 +123,13 @@ carries the feature bits of the root it succeeds. Formatting leaves the bit
 clear; `carryfs upgrade` sets it by publishing one root, with no page writes.
 Nothing clears it.
 
+Feature bit 1 permits unwritten extents. A successful preallocation operation
+opts the volume into this feature; ordinary writes leave it unchanged. The
+userspace engine publishes the feature before reserving blocks. The Linux
+kernel engine publishes it with the first reservation. The feature remains
+set after all reservations are consumed or released. A request that fails after
+the userspace engine enables the feature does not clear it.
+
 ### Selection and reopen
 
 1. Obtain exclusive device ownership for writable open. A read-only inspection
@@ -378,21 +385,40 @@ new object and then sets its reparse point.
 
 ### Extent
 
-Value: physical starting block `u64`, block count `u32`, reserved zero `u32`.
+Value: physical starting block `u64`, block count `u32`, flags `u32`.
+Flag bit 0 marks an unwritten extent and requires root feature bit 1. All
+other flag bits are zero. Without the feature, the entire flags word is zero.
 Count is nonzero. Logical and physical ends use checked arithmetic. Extents are
 ordered, nonoverlapping, in range, and uniquely own their data blocks.
 
 Sparse allocation has 64 KiB granularity. Each logical checksum unit is either
-entirely a hole or entirely backed for its valid bytes. Backed units need 16
+entirely zero without a checksum or entirely mapped for its valid bytes.
+Unwritten extents contribute zeros to a mapped unit. A unit with initialized
+blocks has a checksum covering both its data and any unwritten zero ranges. Backed units need 16
 blocks except the last file unit, which needs `ceil(valid_bytes/4096)`. An
 allocated unit may use multiple physically fragmented extents. Each physical
 block still holds exactly the corresponding logical 4 KiB slice. Adjacent
 logical/physical runs may be coalesced up to the `u32` count limit.
 
-No extent lies past `ceil(file_size/4096)`. Bytes beyond EOF in the last allocated
-block are zero. Missing blocks inside a backed unit, overlapping extents, and
+Initialized extents end at or before `ceil(file_size/4096)`. Unwritten extents
+may extend beyond EOF. Bytes beyond EOF in the last initialized block are zero. Missing blocks inside a backed unit, overlapping extents, and
 nonzero padding past EOF are corruption. Holes within the same checksum unit as
 a write are materialized as zero bytes when that unit becomes backed.
+
+Unwritten extents own physical blocks and count toward inode allocation and
+all tree ownership totals. Their device contents are never read as file data.
+They need no checksum while the unit contains only holes and unwritten blocks.
+The first write may initialize reserved blocks in place: before publication,
+the old mapping still reads as zeros. That publication records initialized
+extents and a checksum together, after flushing the data. Unused blocks in a
+partially written unit remain unwritten, including storage beyond EOF.
+
+Preallocation fills gaps in the requested range, rounded to 64 KiB units,
+and preserves existing data. `KEEP_SIZE` preserves EOF. Explicit truncation
+releases reservations beyond a shrinking or unchanged EOF; growth preserves
+later reservations. Deletion reclaims initialized and unwritten extents alike.
+Extent splitting and merging preserve flags; extents with different flags
+cannot merge.
 
 ### Packed checksum group
 
@@ -402,7 +428,7 @@ bitmap, least-significant bit first within each byte. Bytes 32 onward are
 little-endian CRC32C values for slots 0 through the last present slot, and the
 value ends there: a group whose last present slot is `n - 1` is `32 + 4n`
 bytes, 36 through 1,056. Slot `unit_index % 256` has bit 1 exactly when that
-logical unit is backed by extents. Hole slots below the last present slot have
+logical unit contains initialized data. Entirely unwritten units need no slot. Hole slots below the last present slot have
 bit 0 and CRC zero; bitmap bits at or above the stored length are zero. CRC
 zero is also a valid result for a present slot. Entirely empty groups are
 omitted. Slots beyond EOF are absent. Any other length or layout is corrupt,
@@ -596,7 +622,11 @@ prove every catalog deletion or open-handle lifetime can be admitted safely.
 
 Foreground allocation must leave maintenance headroom after charging its maximum
 publication cost and partial-tail rewrites. Report `available = max(free - 16384,
-0)` to users. Cleanup and space-reducing mutations may spend the reserve. Before
+0)` to users. Cleanup and space-reducing mutations may spend the reserve.
+With feature bit 1, replacing writes may borrow data blocks from it when
+retirement repays those blocks after mirroring. The userspace planner limits
+this allowance to 4,096 blocks per batch; the kernel bounds it by the current
+write batch. New reservations receive no such allowance. Before
 doing so, account for the live reserve held across publication/mirroring and the
 next reclamation step. No successful foreground operation may consume that
 required budget. Returning all newly retired blocks to users prematurely is

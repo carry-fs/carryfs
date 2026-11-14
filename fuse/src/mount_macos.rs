@@ -149,6 +149,7 @@ pub fn serve(device: &Path, directory: &Path, options: &str) -> Result<()> {
         format!("fsname={}", device.display()),
         format!("volname={escaped_name}"),
         "local".into(),
+        "sparse".into(),
         "nodev".into(),
         "nosuid".into(),
         // Not `noreadahead`, though the kernel reads about 128 MiB past a

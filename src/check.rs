@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::BuildHasherDefault;
 
 use crate::format::{
-    BLOCK_BYTES, Page, Root, TreeKind, TreeRef, checksum_slot, decode_page, validate_inode_features,
+    BLOCK_BYTES, EXTENT_UNWRITTEN, FEATURE_PREALLOCATION, Page, Root, TreeKind, TreeRef,
+    checksum_slot, decode_page, validate_inode_features,
 };
 use crate::tree::{PageHasher, Record, tree_ref, u64_be, u64_le};
 use crate::{BlockDevice, Error, Result};
@@ -187,6 +188,12 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
             self.root.blocks,
         )
         .map_err(|error| error.at_block(block))?;
+        if position.kind == TreeKind::Catalog && decoded.level == 0 {
+            for (key, value) in &decoded.records {
+                validate_inode_features(key, value, self.root.features)
+                    .map_err(|error| error.at_block(block))?;
+            }
+        }
         let first = decoded
             .records
             .first()
@@ -585,6 +592,7 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                             children: 0,
                             blocks: 0,
                             end: 0,
+                            preallocation: reader.root.features & FEATURE_PREALLOCATION != 0,
                         });
                         count += 1;
                         linked += u64::from(fused && owner != 1 && value[1] & 1 == 0);
@@ -638,9 +646,16 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                                     .map_err(|_| Error::Corrupt("extent count"))?,
                             ));
                             let size = u64_le(&state.inode[16..24])?;
+                            let unwritten = u32::from_le_bytes(
+                                value[12..16]
+                                    .try_into()
+                                    .map_err(|_| Error::Corrupt("extent flags"))?,
+                            ) & EXTENT_UNWRITTEN
+                                != 0;
                             if logical < state.end
-                                || logical + extent_count > size.div_ceil(4096)
-                                || (logical > state.end
+                                || (!unwritten && logical + extent_count > size.div_ceil(4096))
+                                || (reader.root.features & FEATURE_PREALLOCATION == 0
+                                    && logical > state.end
                                     && (!state.end.is_multiple_of(16)
                                         || !logical.is_multiple_of(16)))
                             {
@@ -654,7 +669,18 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                                 .blocks
                                 .checked_add(extent_count)
                                 .ok_or(Error::Corrupt("inode allocation overflow"))?;
-                            reader.checksums_for_extent(records, owner, logical, extent_count)?;
+                            if !unwritten {
+                                reader.checksums_for_extent(
+                                    records,
+                                    owner,
+                                    logical,
+                                    extent_count,
+                                )?;
+                                let mut held = None;
+                                for unit in logical / 16..(logical + extent_count).div_ceil(16) {
+                                    reader.backed_unit(records, owner, unit, size, &mut held)?;
+                                }
+                            }
                         }
                         4 => {
                             if state.inode[0] != 1 {
@@ -710,6 +736,7 @@ struct Object {
     children: u64,
     blocks: u64,
     end: u64,
+    preallocation: bool,
 }
 
 impl Object {
@@ -720,7 +747,7 @@ impl Object {
             return Err(Error::Corrupt("inode child or allocation count mismatch"));
         }
         let size = u64_le(&self.inode[16..24])?;
-        if self.end != size.div_ceil(4096) && !self.end.is_multiple_of(16) {
+        if !self.preallocation && self.end != size.div_ceil(4096) && !self.end.is_multiple_of(16) {
             return Err(Error::Corrupt("backed tail is not checksum-unit aligned"));
         }
         Ok(())

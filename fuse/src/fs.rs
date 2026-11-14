@@ -249,6 +249,8 @@ struct State<D: BlockDevice> {
     /// Writable attributes of a clean generation; pending edits always read the core.
     #[cfg(target_os = "macos")]
     attributes: (u64, HashMap<u64, Attributes>),
+    #[cfg(target_os = "macos")]
+    transient_allocations: HashSet<u64>,
 }
 
 /// macOS keeps a volume's Trash in `.Trashes` at its top, owned by root with
@@ -291,6 +293,8 @@ impl<D: BlockDevice> State<D> {
             directory_cache: None,
             #[cfg(target_os = "macos")]
             attributes: (0, HashMap::new()),
+            #[cfg(target_os = "macos")]
+            transient_allocations: HashSet::new(),
         }
     }
 
@@ -704,6 +708,19 @@ impl<D: BlockDevice> State<D> {
             Open::File(other, _) => *other == object,
             Open::Directory(listing) => listing.directory == object,
         });
+        #[cfg(target_os = "macos")]
+        if !pinned && self.transient_allocations.remove(&object.get()) {
+            let size = self.volume.attributes(object).map_err(|e| errno(&e))?.size;
+            let handle = self
+                .volume
+                .open_object(object, Access::ReadWrite)
+                .map_err(|e| errno(&e))?;
+            let result =
+                with_space(&mut self.volume, |v| v.truncate(&handle, size)).map_err(|e| errno(&e));
+            let closed = self.volume.close_handle(handle).map_err(|e| errno(&e));
+            result.and(closed)?;
+            self.quiet = None;
+        }
         // An unpinned orphan is new cleanup work. Marking the volume unquiet
         // lets the timer pick it up; a close does not publish. If attributes
         // fail, the next maintenance step reports the underlying error.
@@ -1162,7 +1179,9 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         #[cfg(target_os = "macos")]
         config
             .add_capabilities(
-                InitFlags::from_bits_retain(MACFUSE_CASE_INSENSITIVE) | InitFlags::FUSE_VOL_RENAME,
+                InitFlags::from_bits_retain(MACFUSE_CASE_INSENSITIVE)
+                    | InitFlags::FUSE_VOL_RENAME
+                    | InitFlags::FUSE_ALLOCATE,
             )
             .map_err(|_| {
                 io::Error::other("macFUSE lacks case-insensitive names or volume rename")
@@ -1686,6 +1705,77 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             Ok(written) => reply.written(written),
             Err(e) => reply.error(e),
         }
+    }
+
+    fn fallocate(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        length: u64,
+        mode: i32,
+        reply: ReplyEmpty,
+    ) {
+        let result = self.with(|s| {
+            let handle = match s.open.get(&u64::from(fh)) {
+                Some(Open::File(_, handle)) => handle,
+                _ => return Err(Errno::EBADF),
+            };
+            #[cfg(not(target_os = "macos"))]
+            match mode {
+                0 | 1 => with_space(&mut s.volume, |v| {
+                    v.preallocate(handle, offset, length, mode == 1)
+                })
+                .map_err(|e| errno(&e)),
+                _ => Err(Errno::EOPNOTSUPP),
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // XNU VNOP_ALLOCATE flags, forwarded unchanged by macFUSE.
+                const PREALLOCATE: i32 = 1;
+                const CONTIGUOUS: i32 = 2;
+                const ALL: i32 = 4;
+                const PERSIST: i32 = 8;
+                const FROM_EOF: i32 = 16;
+                const FROM_VOLUME: i32 = 32;
+                if mode & PREALLOCATE == 0
+                    || mode & !(PREALLOCATE | CONTIGUOUS | ALL | PERSIST | FROM_EOF | FROM_VOLUME)
+                        != 0
+                {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                // shortcut: contiguous placement is refused; add an allocator for it when needed.
+                if mode & CONTIGUOUS != 0 {
+                    return Err(Errno::ENOSPC);
+                }
+                if mode & (FROM_EOF | FROM_VOLUME) == FROM_EOF | FROM_VOLUME {
+                    return Err(Errno::EINVAL);
+                }
+                let offset = if mode & FROM_EOF != 0 {
+                    s.volume
+                        .allocation_end(handle)
+                        .map_err(|e| errno(&e))?
+                        .checked_add(offset)
+                        .ok_or(Errno::EFBIG)?
+                } else {
+                    0
+                }; // A volume offset is a physical placement hint.
+                with_space(&mut s.volume, |v| {
+                    v.preallocate(handle, offset, length, true)
+                })
+                .map_err(|e| errno(&e))?;
+                if let Some(Open::File(object, _)) = s.open.get(&u64::from(fh)) {
+                    if mode & PERSIST == 0 {
+                        s.transient_allocations.insert(object.get());
+                    } else {
+                        s.transient_allocations.remove(&object.get());
+                    }
+                }
+                Ok(())
+            }
+        });
+        reply_empty(reply, result);
     }
 
     fn release(

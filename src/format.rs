@@ -7,9 +7,9 @@ pub(crate) use carryfs_ondisk::crc::UNIT_BYTES;
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) use carryfs_ondisk::crc::crc32c;
 pub(crate) use carryfs_ondisk::format::{
-    ATTRIBUTE_HIDDEN, BLOCK_BYTES, CHECKSUM_GROUP_BYTES, FEATURE_ATTRIBUTES, INODE_ATTRIBUTES,
-    INODE_MODE, REVISION, ROOT_MAGIC, TreeKind, TreeRef, Validation, all_zero, compact_group,
-    expand_group, reserved_group_blocks, set_checksum_slot,
+    ATTRIBUTE_HIDDEN, BLOCK_BYTES, CHECKSUM_GROUP_BYTES, EXTENT_UNWRITTEN, FEATURE_ATTRIBUTES,
+    FEATURE_PREALLOCATION, INODE_ATTRIBUTES, INODE_MODE, REVISION, ROOT_MAGIC, TreeKind, TreeRef,
+    Validation, all_zero, compact_group, expand_group, reserved_group_blocks, set_checksum_slot,
 };
 
 use crate::device::Geometry;
@@ -750,7 +750,7 @@ mod tests {
         .unwrap();
         assert_eq!(decoded.features, 1);
         let mut unknown = *include_bytes!("../testdata/vectors/root-a.bin");
-        unknown[128] = 2;
+        unknown[128] = 4;
         root_crc(&mut unknown);
         assert!(matches!(
             Root::decode(&unknown, 256, GEOMETRY),
@@ -792,6 +792,24 @@ mod tests {
         let mut reserved = with(1, 0, 0);
         reserved[5] = 1;
         assert!(!valid(&reserved, 1));
+    }
+
+    #[test]
+    fn unwritten_extents_require_the_feature_and_reject_unknown_flags() {
+        let mut key = [0; 17];
+        key[..8].copy_from_slice(&2u64.to_be_bytes());
+        key[8] = 3;
+        let mut value = [0; 16];
+        value[..8].copy_from_slice(&20_000u64.to_le_bytes());
+        value[8..12].copy_from_slice(&16u32.to_le_bytes());
+        value[12..16].copy_from_slice(&EXTENT_UNWRITTEN.to_le_bytes());
+        assert!(ondisk::validate_extent(&key, &value, GEOMETRY.blocks(), Validation::Disk).is_ok());
+        assert!(validate_inode_features(&key, &value, 0).is_err());
+        assert!(validate_inode_features(&key, &value, FEATURE_PREALLOCATION).is_ok());
+        value[12] = 2;
+        assert!(
+            ondisk::validate_extent(&key, &value, GEOMETRY.blocks(), Validation::Disk).is_err()
+        );
     }
 
     #[test]

@@ -506,8 +506,8 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
             && destinations <= usable
             && self.workspace.len() >= destinations + MAX_PAGES
             && self.workspace.len() + retired <= workspace::CAPACITY
-            && free >= RESERVE
-            && (allocated == 0 || raw >= RESERVE)
+            && free >= self.data_floor()
+            && (allocated == 0 || raw >= self.data_floor())
             && destinations + self.forest.held_pages() <= MAX_PAGES
             && self.forest.data_pages() <= MAX_BATCH_DATA
             && self.forest.reads() <= MAX_BATCH_READS
@@ -521,6 +521,19 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
             .filter(|next| *next <= i64::MAX as u64)
             .ok_or(Error::LimitExceeded)?;
         Ok(id)
+    }
+
+    // A replacing write may borrow up to one maximum data batch from the
+    // reserve: its retired blocks repay it after both roots are mirrored.
+    fn data_floor(&self) -> u64 {
+        if self.forest.base.features & crate::format::FEATURE_PREALLOCATION == 0 {
+            return RESERVE;
+        }
+        let retired: u64 = self.retired_data.iter().map(|range| range.count).sum();
+        RESERVE
+            - retired
+                .min(self.allocated.len() as u64)
+                .min(MAX_BATCH_DATA as u64)
     }
 
     /// Allocate `count` raw free blocks owned by the mirrored base, starting
@@ -605,6 +618,12 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         if !self.allocated.contains(&block) {
             return Err(Error::InvalidInput("data write outside this allocation"));
         }
+        self.forest.write_data(block, page)
+    }
+
+    /// Initialize blocks an unwritten extent already owns. A crash still reads
+    /// the old extent as zeros until the initialized mapping is published.
+    pub(crate) fn write_unwritten(&mut self, block: u64, page: Page) -> Result<()> {
         self.forest.write_data(block, page)
     }
 
@@ -1095,7 +1114,7 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
             .and_then(|free| free.checked_sub(ids.len() as u64))
             .and_then(|free| free.checked_sub(self.allocated.len() as u64))
             .ok_or(Error::NoSpace)?;
-        if !use_reserve && free_blocks < RESERVE {
+        if !use_reserve && free_blocks < self.data_floor() {
             return Err(Error::NoSpace);
         }
         // free_blocks counts workspace slots, which cannot hold file data. Data
@@ -1109,7 +1128,7 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
                 .ok_or(Error::Corrupt("workspace exceeds free count"))?
                 .checked_add((freed.len() + self.release.len()) as u64)
                 .and_then(|raw| raw.checked_sub((self.refill.len() + self.allocated.len()) as u64));
-            if raw_after.is_none_or(|raw| raw < RESERVE) {
+            if raw_after.is_none_or(|raw| raw < self.data_floor()) {
                 return Err(Error::NoSpace);
             }
         }

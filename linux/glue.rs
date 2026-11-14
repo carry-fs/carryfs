@@ -38,6 +38,12 @@ pub(crate) struct BufferHead {
 // fields of these structs out, but only pointers to them cross this boundary.
 #[allow(improper_ctypes)]
 unsafe extern "C" {
+    pub(crate) fn carryfs_fallocate(
+        file: *mut file,
+        mode: c_int,
+        offset: i64,
+        length: i64,
+    ) -> kernel::ffi::c_long;
     pub(crate) fn carryfs_register() -> c_int;
     pub(crate) fn carryfs_unregister();
 

@@ -394,7 +394,7 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
     let root = Root {
         label: base.label,
         uuid: base.uuid,
-        features: base.features,
+        features: txn.features,
         generation,
         blocks: base.blocks,
         catalog: reference(txn.root(TreeKind::Catalog)),

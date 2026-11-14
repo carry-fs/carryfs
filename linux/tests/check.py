@@ -10,6 +10,7 @@ temporary directory on loop devices.
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import errno
 import hashlib
 import itertools
@@ -772,6 +773,49 @@ def full_write(volume):
     print(f"  full write: {written >> 20} MiB accepted and kept; {volume.check()}")
 
 
+PUNCH_RACE_WRITER = """
+import mmap, sys, time
+deadline = time.monotonic() + float(sys.argv[2])
+lost = rounds = 0
+with open(sys.argv[1], 'r+b') as f:
+    m = mmap.mmap(f.fileno(), 0)
+    while time.monotonic() < deadline:
+        rounds += 1
+        value = rounds % 255 + 1
+        m[5] = value
+        for _ in range(200):
+            pass
+        lost += m[5] != value
+print(rounds, lost)
+"""
+
+
+def punch_race(volume, seconds=10):
+    """A shared-mapping write outside a hole is not dropped when the punch
+    discards the cache of the units it touches."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.fallocate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+    root = volume.mount()
+    path = root / "race"
+    path.write_bytes(b"x" * (4 * 65536))
+    os.sync()
+    writer = subprocess.Popen([sys.executable, "-c", PUNCH_RACE_WRITER, path, str(seconds)],
+                              stdout=subprocess.PIPE, text=True)
+    fd = os.open(path, os.O_RDWR)
+    punches = 0
+    try:
+        while writer.poll() is None:
+            # FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, leaving byte 5 outside.
+            assert libc.fallocate(fd, 3, 17, 3 * 65536 - 10) == 0, os.strerror(ctypes.get_errno())
+            punches += 1
+    finally:
+        os.close(fd)
+    rounds, lost = map(int, writer.communicate()[0].split())
+    assert lost == 0, f"{lost} of {rounds} mapped writes lost across {punches} punches"
+    volume.unmount()
+    print(f"  punch race: {rounds} mapped writes kept across {punches} punches; {volume.check()}")
+
+
 def full_truncate(volume):
     """A truncate whose tail rewrite fails for space leaves the stored size
     past i_size; a later writeback of the file must not store i_size over
@@ -916,6 +960,8 @@ def checks(args, work):
     full_write(Volume(args.cli, work, "full-write", 512))
     print("full truncate")
     full_truncate(Volume(args.cli, work, "full-truncate", 512))
+    print("punch race")
+    punch_race(Volume(args.cli, work, "punch-race", 256))
     print("orphan")
     orphan(Volume(args.cli, work, "orphan", 512), work)
     print("fsync crash")

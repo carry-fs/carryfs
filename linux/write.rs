@@ -366,9 +366,11 @@ impl<'a> Writer<'a> {
             let mut credit = 0;
             let keep = if feature & FEATURE_PREALLOCATION != 0 { MAINTENANCE_RESERVE } else { keep };
             if feature & FEATURE_PREALLOCATION != 0 {
+                // Only written blocks are retired; unwritten ones are filled in place.
                 for unit in units {
-                    let first = unit.index * UNIT_BLOCKS;
-                    credit += mapped_blocks(sb, state, object, first, first + unit_blocks(inode.size(), unit.index))?;
+                    let (first, end) = (unit.index * UNIT_BLOCKS, unit.index * UNIT_BLOCKS + unit_blocks(inode.size(), unit.index));
+                    let unwritten: u64 = unwritten_runs(sb, state, object, first, end)?.iter().map(|(_, _, count)| *count).sum();
+                    credit += mapped_blocks(sb, state, object, first, end)?.checked_sub(unwritten).ok_or(EIO)?;
                 }
             }
             Ok(needed == 0 || free >= needed + keep.saturating_sub(credit.min(needed)))
@@ -793,8 +795,9 @@ fn write_run(
     bio
 }
 
-/// Remove `object`'s extents within logical blocks `start..end`, keeping
-/// the parts outside and retiring the blocks inside; the blocks removed.
+/// Remove `object`'s extents within logical blocks `start..end`, keeping the
+/// parts outside and retiring the blocks inside except `reused` ones, which
+/// the caller maps again; the blocks removed.
 fn remove_extents(
     sb: *mut bindings::super_block,
     state: &mut State,
@@ -1398,7 +1401,6 @@ unsafe extern "C" fn carryfs_preallocate(raw: *mut bindings::inode, offset: u64,
     let inode = unsafe { Inode::from_raw(raw) };
     let result = (|| -> Result {
         let end = offset.checked_add(length).filter(|end| *end <= i64::MAX as u64).ok_or(EFBIG)?;
-        if !keep_size && end > inode.size() { set_size(inode, end)?; }
         let sb = inode.super_block().as_ptr();
         for index in offset / UNIT_BYTES as u64..=(end - 1) / UNIT_BYTES as u64 {
             mutate(sb, |state, disk| {
@@ -1440,6 +1442,8 @@ unsafe extern "C" fn carryfs_preallocate(raw: *mut bindings::inode, offset: u64,
                 crate::inode::refresh_times(inode, state)
             })?;
         }
+        // EOF moves only once the whole range is reserved.
+        if !keep_size && end > inode.size() { set_size(inode, end)?; }
         Ok(())
     })();
     match result { Ok(()) => 0, Err(error) => error.to_errno() }
@@ -1508,7 +1512,9 @@ fn punch_hole(inode: &Inode, offset: u64, length: u64) -> Result {
             volume::of(sb).lock().claim_exclusive(object);
             let result = mutate(sb, |state, disk| {
                 let first = index * UNIT_BLOCKS;
-                let removed = remove_extents(sb, state, disk, object, first, first + UNIT_BLOCKS, &[])?;
+                // Written blocks end at EOF; keep reservations past the punched range.
+                let last = (first + UNIT_BLOCKS).min(end.div_ceil(BLOCK_BYTES as u64));
+                let removed = remove_extents(sb, state, disk, object, first, last, &[])?;
                 clear_checksums(sb, state, disk, object, index, index + 1)?;
                 let mut record = read_record(sb, state, object)?;
                 let allocated = le_u64(&record, ALLOCATED).checked_sub(removed).ok_or(EIO)?;

@@ -967,7 +967,8 @@ bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t la
 
 /*
  * filemap_page_mkwrite() from mm/filemap.c, reserving space for the folio's
- * unit while it is locked, before a shared mapping dirties it.
+ * unit while it is locked, before a shared mapping dirties it. The shared
+ * invalidate lock keeps a hole punch from dropping the folio once dirtied.
  */
 static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
 {
@@ -978,6 +979,7 @@ static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
 
 	sb_start_pagefault(mapping->host->i_sb);
 	file_update_time(vmf->vma->vm_file);
+	filemap_invalidate_lock_shared(mapping);
 	folio_lock(folio);
 	if (folio->mapping != mapping) {
 		folio_unlock(folio);
@@ -993,6 +995,7 @@ static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
 	folio_mark_dirty(folio);
 	folio_wait_stable(folio);
 out:
+	filemap_invalidate_unlock_shared(mapping);
 	sb_end_pagefault(mapping->host->i_sb);
 	return ret;
 }

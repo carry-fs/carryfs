@@ -160,6 +160,8 @@ that budget. Parser seeds come from `testdata/vectors/`. Logs go to
 
 Core tests cover reservations across remounts, conversion interruptions,
 truncation, hole punching, and writes after another file fills the volume.
+Windows adapter tests cover allocation at create, overwrite, size changes,
+and last cleanup.
 
 On macOS with macFUSE, after building the CLI and adapter:
 

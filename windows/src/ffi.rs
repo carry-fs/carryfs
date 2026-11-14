@@ -905,7 +905,7 @@ unsafe extern "system" fn create(
     access: u32,
     attributes: u32,
     _descriptor: PSECURITY_DESCRIPTOR,
-    _allocation: u64,
+    allocation: u64,
     context: *mut Context,
     info: *mut FileInfo,
 ) -> NtStatus {
@@ -918,6 +918,7 @@ unsafe extern "system" fn create(
                 options & FILE_DIRECTORY_FILE != 0,
                 options & FILE_WRITE_THROUGH != 0,
                 attributes,
+                allocation,
             )?;
             *context = key as Context;
             *info = file;
@@ -963,12 +964,12 @@ unsafe extern "system" fn overwrite(
     context: Context,
     attributes: u32,
     replace: u8,
-    _allocation: u64,
+    allocation: u64,
     info: *mut FileInfo,
 ) -> NtStatus {
     // SAFETY: WinFsp passes a writable FileInfo.
     guard("overwrite", || unsafe {
-        *info = carry(fs).overwrite(key(context), attributes, replace != 0)?;
+        *info = carry(fs).overwrite(key(context), attributes, replace != 0, allocation)?;
         Ok(())
     })
 }

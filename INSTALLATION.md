@@ -336,6 +336,15 @@ files read as `0644` and directories as `0755`. For images,
 `carryfs get` keep modes, and `carryfs attr IMAGE /PATH [mode=OCTAL]
 [hidden=yes|no]` shows or changes them.
 
+The first successful request to preallocate space upgrades a volume
+automatically: Linux `fallocate`, macOS `F_PREALLOCATE`, or a Windows
+allocation size given at create or set later. Preallocated space reads as
+zeros until written. The upgrade stays after the space is used or released.
+CarryFS 0.1.0 cannot mount a volume upgraded this way, so update CarryFS on
+every computer that uses the volume before running software that preallocates
+files, such as download managers, torrent clients, databases, and virtual
+machine images.
+
 CarryFS does not store owners, setuid, setgid or sticky bits, ACLs, extended
 attributes, resource forks, or alternate data streams, and it is not a
 security boundary: anyone holding the drive can mount it as themselves.

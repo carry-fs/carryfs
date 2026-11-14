@@ -156,12 +156,18 @@ that budget. Parser seeds come from `testdata/vectors/`. Logs go to
 `build/check-fuzz/`; corpora and failing inputs stay under `fuzz/corpus/` and
 `fuzz/artifacts/`. These are bounded runs, not exhaustive verification.
 
-### Allocation checks
+### Allocation and unnamed-file checks
 
 Core tests cover reservations across remounts, conversion interruptions,
 truncation, hole punching, and writes after another file fills the volume.
 Windows adapter tests cover allocation at create, overwrite, size changes,
 and last cleanup.
+
+On Linux with `/dev/fuse` and permission to mount:
+
+```sh
+cargo test --locked -p carryfs-fuse tmpfile -- --include-ignored
+```
 
 On macOS with macFUSE, after building the CLI and adapter:
 

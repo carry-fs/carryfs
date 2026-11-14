@@ -57,12 +57,16 @@ do not yet publish synchronously. It accepts `uid=` and `gid=`, defaulting to th
 mounting user, as vfat and exfat do; files report mode 644, directories 755.
 `ro` mounts read-only and never writes, not even root mirroring.
 
-## Allocation
+## Allocation and unnamed files
 
 The driver implements `fallocate` allocation, `FALLOC_FL_KEEP_SIZE`, and
 `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`. Other allocation modes return
 `EOPNOTSUPP`. Reservations use unwritten extents behind root feature bit 1;
 older adapters reject a volume once this feature is published.
+
+`O_TMPFILE` creates a pinned orphan without a directory entry. `linkat` may
+publish it under one name, unless it was opened with `O_EXCL`. Additional
+hard links remain unsupported. Last close reclaims an unnamed file.
 
 ## Check
 
@@ -77,6 +81,15 @@ recovery, and judges each phase with the userspace `carryfs check` and
 `carryfs scrub`, comparing file contents after remount.
 It also overlaps data writeback with rename, unlink, replacement, and explicit
 mtime changes, then checks that the timestamps survive completion and remount.
+`tests/tmpfile_and_punch.py` checks allocation, unnamed-file publication,
+exclusive temporary files, and hole punching through an active mmap. It also
+runs directly against a Linux FUSE mount:
+
+```sh
+python3 linux/tests/tmpfile_and_punch.py /path/to/mounted/carryfs
+```
+
+
 `bash tests/vm.sh` runs the native checks in a disposable VM using the
 installed kernel image and module. Run it from `linux/`, or run
 `bash linux/tests/vm.sh` from the repository root. It requires `virtme-run`,

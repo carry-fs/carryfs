@@ -1633,6 +1633,64 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         }
     }
 
+    fn tmpfile(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        mode: u32,
+        _umask: u32,
+        _flags: i32,
+        _killpriv: bool,
+        _owner: fuser::Owner,
+        reply: ReplyCreate,
+    ) {
+        match self.with(|s| {
+            let parent = id(parent)?;
+            let (object, handle) = with_space(&mut s.volume, |volume| {
+                volume.create_tmpfile(parent, created(mode))
+            })
+            .map_err(|e| open_errno(&e))?;
+            let attr = match s.entry(self, object) {
+                Ok(attr) => attr,
+                Err(error) => {
+                    s.volume.close_handle(handle).map_err(|e| errno(&e))?;
+                    return Err(error);
+                }
+            };
+            Ok((attr, s.insert(Open::File(object, handle))))
+        }) {
+            Ok((attr, fh)) => reply.created(
+                &self.attr_ttl,
+                &attr,
+                Generation(0),
+                FileHandle(fh),
+                FILE_OPEN,
+            ),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn link(&self, _req: &Request, ino: INodeNo, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        match self.with(|s| {
+            let (object, parent, parsed) = (id(ino)?, id(parent)?, parse(name)?);
+            if !s.volume.attributes(object).map_err(|e| errno(&e))?.orphan {
+                return Err(Errno::EPERM);
+            }
+            with_space(&mut s.volume, |v| {
+                v.link_tmpfile(object, parent, parsed.clone())
+            })
+            .map_err(|e| errno(&e))?;
+            s.changed_directory(parent);
+            Ok((
+                s.entry(self, object)?,
+                name_ttl(name, parsed.stored(), self.entry_ttl),
+            ))
+        }) {
+            Ok((attr, ttl)) => reply.entry_with_ttls(&self.attr_ttl, &ttl, &attr, Generation(0)),
+            Err(e) => reply.error(e),
+        }
+    }
+
     fn read(
         &self,
         _req: &Request,
@@ -2386,6 +2444,59 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tmpfile_allocation_and_publication_dispatch_through_fuse() {
+        let session = NameSession::new("tmpfile-allocation", 44, false);
+        let mut create = vec![0; 16];
+        create[..4].copy_from_slice(&(libc::O_TMPFILE | libc::O_RDWR).to_ne_bytes());
+        create[4..8].copy_from_slice(&0o100600u32.to_ne_bytes());
+        create.push(0); // The ABI carries an ignored, NUL-terminated name.
+        let reply = session.call(51, &create);
+        assert_eq!(NameSession::error(&reply), 0);
+        let object = u64::from_ne_bytes(reply[16..24].try_into().unwrap());
+        let fh = u64::from_ne_bytes(reply[144..152].try_into().unwrap());
+        let allocate = |mode: u32| {
+            let mut input = Vec::new();
+            input.extend_from_slice(&fh.to_ne_bytes());
+            input.extend_from_slice(&0u64.to_ne_bytes());
+            input.extend_from_slice(&65_536u64.to_ne_bytes());
+            input.extend_from_slice(&mode.to_ne_bytes());
+            input.extend_from_slice(&0u32.to_ne_bytes());
+            NameSession::send(&session.client, 43, object, &input);
+            assert_eq!(NameSession::error(&NameSession::recv(&session.client)), 0);
+        };
+        allocate(1);
+        {
+            let mut state = session.state.0.lock().unwrap();
+            let attr = state
+                .volume
+                .attributes(ObjectId::new(object).unwrap())
+                .unwrap();
+            assert_eq!(
+                (attr.size, attr.allocated_bytes, attr.orphan),
+                (0, 65_536, true)
+            );
+        }
+        allocate(3);
+        allocate(0);
+        let mut link = object.to_ne_bytes().to_vec();
+        link.extend_from_slice(b"published\0");
+        session.mutation(13, &link, false);
+        let mut state = session.state.0.lock().unwrap();
+        let object = state
+            .volume
+            .lookup(ROOT, &Name::parse("published").unwrap())
+            .unwrap();
+        assert!(!state.volume.attributes(object).unwrap().orphan);
+        assert_eq!(state.volume.attributes(object).unwrap().size, 65_536);
+        drop(state);
+        let mut release = vec![0; 24];
+        release[..8].copy_from_slice(&fh.to_ne_bytes());
+        NameSession::send(&session.client, 18, object.get(), &release);
+        assert_eq!(NameSession::error(&NameSession::recv(&session.client)), 0);
+    }
+
     /// A full plus reply leaves the next reply's attributes read ahead. They
     /// serve that reply unless a request changed the volume in between.
     #[cfg(target_os = "linux")]
@@ -2652,6 +2763,35 @@ mod tests {
             release[..8].copy_from_slice(&open[16..24]);
             assert_eq!(NameSession::error(&session.call(29, &release)), 0);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a Linux FUSE mount"]
+    fn tmpfile_and_allocation_syscalls() {
+        let (image, mut volume) = volume("allocation-syscalls");
+        volume.set_deferred_checkpoints(true).unwrap();
+        let (fs, _) = CarryFs::new(volume, Owner { uid: 0, gid: 0 }, false);
+        let state = fs.finisher();
+        let point = image.0.with_extension("mnt");
+        std::fs::create_dir(&point).unwrap();
+        let session = fuser::Session::new(fs, &point, &fuser::Config::default()).unwrap();
+        state.set_notifier(session.notifier()).unwrap();
+        let background = session.spawn().unwrap();
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../linux/tests/tmpfile_and_punch.py");
+        let result = std::process::Command::new("python3")
+            .arg(script)
+            .arg(&point)
+            .status();
+        background.umount_and_join().unwrap();
+        std::fs::remove_dir(point).unwrap();
+        drop(state);
+        assert!(result.unwrap().success());
+        Volume::open(ImageDevice::open(&image.0, carryfs_core::MountMode::ReadOnly).unwrap())
+            .unwrap()
+            .check()
+            .unwrap();
     }
 
     #[cfg(target_os = "linux")]

@@ -112,6 +112,9 @@ void carryfs_kunmap_local(void *addr);
 void *carryfs_page_address(struct page *page);
 u32 carryfs_crc32c(u32 crc, const void *data, size_t len);
 
+int carryfs_finish_tmpfile(struct file *file, struct inode *inode);
+void carryfs_link_tmpfile(struct dentry *dentry, struct inode *inode);
+
 long carryfs_fallocate(struct file *file, int mode, loff_t offset, loff_t length);
 
 #endif /* CARRYFS_GLUE_H */

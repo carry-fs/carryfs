@@ -1127,6 +1127,20 @@ u32 carryfs_crc32c(u32 crc, const void *data, size_t len)
 	return crc32c(crc, data, len);
 }
 
+int carryfs_finish_tmpfile(struct file *file, struct inode *inode)
+{
+	/* d_tmpfile drops the initial link count, as for a newly created inode. */
+	d_tmpfile(file, inode);
+	return finish_open_simple(file, 0);
+}
+
+void carryfs_link_tmpfile(struct dentry *dentry, struct inode *inode)
+{
+	set_nlink(inode, 1);
+	ihold(inode);
+	d_instantiate(dentry, inode);
+}
+
 extern int carryfs_punch_hole(struct inode *inode, u64 offset, u64 length);
 extern int carryfs_preallocate(struct inode *inode, u64 offset, u64 length, bool keep_size);
 

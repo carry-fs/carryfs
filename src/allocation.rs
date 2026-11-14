@@ -678,6 +678,15 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         Ok(())
     }
 
+    pub(crate) fn unmark_orphan(&mut self, object: u64) -> Result<()> {
+        let mut key = [3; 9];
+        key[1..].copy_from_slice(&object.to_be_bytes());
+        self.cleanup = self
+            .forest
+            .remove(self.cleanup.clone(), TreeKind::Cleanup, &key)?;
+        Ok(())
+    }
+
     fn bitmap(&mut self, group: u64) -> Result<Vec<u8>> {
         Ok(self
             .forest

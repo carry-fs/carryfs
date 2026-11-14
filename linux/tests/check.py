@@ -878,6 +878,12 @@ def main():
 
 
 def checks(args, work):
+    print("unnamed files and hole punching")
+    volume = Volume(args.cli, work, "tmpfile-punch", 256)
+    root = volume.mount()
+    run(sys.executable, Path(__file__).with_name("tmpfile_and_punch.py"), root)
+    volume.unmount()
+    volume.check(scrub=True)
     print("namespace")
     namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
     print("case names")

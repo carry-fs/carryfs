@@ -44,6 +44,8 @@ unsafe extern "C" {
         offset: i64,
         length: i64,
     ) -> kernel::ffi::c_long;
+    pub(crate) fn carryfs_finish_tmpfile(file: *mut file, inode: *mut inode) -> c_int;
+    pub(crate) fn carryfs_link_tmpfile(dentry: *mut dentry, inode: *mut inode);
     pub(crate) fn carryfs_register() -> c_int;
     pub(crate) fn carryfs_unregister();
 

@@ -246,6 +246,80 @@ fn interrupted_full_disk_refill() {
 }
 
 #[test]
+fn unnamed_files_are_pinned_published_and_reclaimed() {
+    let mut volume = opened();
+    let before = volume.attributes(ROOT).unwrap();
+    let (object, handle) = volume
+        .create_tmpfile(ROOT, NewAttributes::default())
+        .unwrap();
+    assert!(volume.attributes(object).unwrap().orphan);
+    assert_eq!(volume.attributes(ROOT).unwrap(), before);
+    let dir = volume.open_directory(ROOT).unwrap();
+    assert!(
+        volume
+            .read_directory(&dir, None)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    volume.close_handle(dir).unwrap();
+    volume.write(&handle, 0, b"temporary contents").unwrap();
+    for _ in 0..8 {
+        volume.sync().unwrap();
+    }
+    checked(&volume);
+    let mut bytes = [0; 18];
+    assert_eq!(volume.read(&handle, 0, &mut bytes).unwrap(), 18);
+    assert_eq!(&bytes, b"temporary contents");
+    volume
+        .link_tmpfile(object, ROOT, name("published"))
+        .unwrap();
+    assert_eq!(volume.lookup(ROOT, &name("published")).unwrap(), object);
+    assert!(!volume.attributes(object).unwrap().orphan);
+    assert!(
+        volume
+            .link_tmpfile(object, ROOT, name("second-link"))
+            .is_err()
+    );
+    volume.close_handle(handle).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+    assert_eq!(volume.lookup(ROOT, &name("published")).unwrap(), object);
+
+    let (discarded, handle) = volume
+        .create_tmpfile(ROOT, NewAttributes::default())
+        .unwrap();
+    volume.write(&handle, 0, b"discard").unwrap();
+    volume.close_handle(handle).unwrap();
+    drain(&mut volume);
+    assert!(matches!(volume.attributes(discarded), Err(Error::NotFound)));
+    checked(&volume);
+}
+
+#[test]
+fn unnamed_files_disappear_after_a_crash_and_link_collisions_leave_them_open() {
+    let mut volume = opened();
+    let named = volume.create_file(ROOT, name("exists")).unwrap();
+    let (object, handle) = volume
+        .create_tmpfile(ROOT, NewAttributes::default())
+        .unwrap();
+    assert!(matches!(
+        volume.link_tmpfile(object, ROOT, name("exists")),
+        Err(Error::NameCollision)
+    ));
+    volume.write(&handle, 0, b"still writable").unwrap();
+    volume.close_handle(named).unwrap();
+    volume.sync_publication().unwrap();
+    checked(&volume);
+    let mut reopened =
+        Volume::open(FaultDevice::new(durable(&volume), MountMode::ReadWrite)).unwrap();
+    drain(&mut reopened);
+    assert!(matches!(reopened.attributes(object), Err(Error::NotFound)));
+    checked(&reopened);
+    volume.close_handle(handle).unwrap();
+}
+
+#[test]
 fn hole_punch_preserves_edges_size_and_survives_remount() {
     let mut volume = opened();
     let file = volume.create_file(ROOT, name("punch")).unwrap();

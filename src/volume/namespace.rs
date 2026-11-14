@@ -643,6 +643,97 @@ impl<D: BlockDevice> Volume<D> {
         Ok(object)
     }
 
+    /// Create an unnamed file, pinned until its handle closes or it is linked.
+    pub fn create_tmpfile(
+        &mut self,
+        parent: ObjectId,
+        new: NewAttributes,
+    ) -> Result<(ObjectId, Handle)> {
+        if !self.handles.has_room() {
+            return Err(Error::LimitExceeded);
+        }
+        let new = if self.stores_attributes() {
+            new
+        } else {
+            NewAttributes::default()
+        };
+        let now = Timestamp::now()?;
+        let object = self.edit(|transaction| {
+            create_object_in(transaction, parent, None, ObjectKind::File, &[], new, now)
+        })?;
+        let handle = self.handles.open(object, Access::ReadWrite)?;
+        Ok((object, handle))
+    }
+
+    /// Give an orphaned regular file its single directory entry.
+    /// Existing named files cannot acquire a second link.
+    pub fn link_tmpfile(&mut self, object: ObjectId, parent: ObjectId, name: Name) -> Result<()> {
+        let now = Timestamp::now()?;
+        self.edit(|transaction| {
+            let catalog = transaction.catalog.clone();
+            let key = inode_key(object.0);
+            let mut inode = transaction
+                .forest
+                .lookup_with(&catalog, TreeKind::Catalog, &key, Inode::decode)?
+                .ok_or(Error::NotFound)?;
+            if inode.kind != ObjectKind::File || !inode.orphan {
+                return Err(Error::InvalidInput("only an unnamed file can be linked"));
+            }
+            let parent_key = inode_key(parent.0);
+            let mut directory = transaction
+                .forest
+                .lookup_with(&catalog, TreeKind::Catalog, &parent_key, Inode::decode)?
+                .ok_or(Error::NotFound)?;
+            if directory.kind != ObjectKind::Directory {
+                return Err(Error::WrongType);
+            }
+            if directory.orphan {
+                return Err(Error::NotFound);
+            }
+            let entry_key = dirent_key(parent.0, &name.folded);
+            if transaction
+                .forest
+                .lookup(&catalog, TreeKind::Catalog, &entry_key)?
+                .is_some()
+            {
+                return Err(Error::NameCollision);
+            }
+            directory.child_count = directory
+                .child_count
+                .checked_add(1)
+                .ok_or(Error::LimitExceeded)?;
+            directory.modification = now;
+            directory.metadata_change = now;
+            inode.orphan = false;
+            inode.parent = parent.0;
+            inode.metadata_change = now;
+            let entry = DirentValue {
+                target: object.0,
+                kind: ObjectKind::File,
+                stored_name: &name.stored,
+            }
+            .encode()?;
+            let catalog =
+                transaction
+                    .forest
+                    .put(catalog, TreeKind::Catalog, &key, &inode.encode())?;
+            let catalog = transaction.forest.put(
+                catalog,
+                TreeKind::Catalog,
+                &parent_key,
+                &directory.encode(),
+            )?;
+            transaction.catalog =
+                transaction
+                    .forest
+                    .put(catalog, TreeKind::Catalog, &entry_key, &entry)?;
+            transaction.unmark_orphan(object.0)?;
+            Ok(())
+        })?;
+        self.namespace_epoch = self.namespace_epoch.wrapping_add(1);
+        Ok(())
+    }
+
     /// Remove a file or an empty directory from its parent.
     ///
     /// Sets the object's orphan flag and records a cleanup marker; the actual
@@ -1454,6 +1545,18 @@ pub(super) fn create_in<D: BlockDevice>(
     new: NewAttributes,
     now: Timestamp,
 ) -> Result<ObjectId> {
+    create_object_in(transaction, parent, Some(name), kind, target, new, now)
+}
+
+fn create_object_in<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    parent: ObjectId,
+    name: Option<Name>,
+    kind: ObjectKind,
+    target: &[u8],
+    new: NewAttributes,
+    now: Timestamp,
+) -> Result<ObjectId> {
     let parent_key = inode_key(parent.0);
     let mut parent_inode = transaction
         .forest
@@ -1472,18 +1575,19 @@ pub(super) fn create_in<D: BlockDevice>(
             "cannot create a child in an orphaned directory",
         ));
     }
-    let dirent_key_bytes = dirent_key(parent.0, &name.folded);
-    if transaction
-        .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &dirent_key_bytes)?
-        .is_some()
+    let dirent_key_bytes = name.as_ref().map(|name| dirent_key(parent.0, &name.folded));
+    if let Some(key) = &dirent_key_bytes
+        && transaction
+            .forest
+            .lookup(&transaction.catalog, TreeKind::Catalog, key)?
+            .is_some()
     {
         return Err(Error::NameCollision);
     }
     let child = transaction.new_object()?;
     let child_inode = Inode {
         kind,
-        orphan: false,
+        orphan: name.is_none(),
         directory_link: None,
         parent: parent.0,
         size: target.len() as u64,
@@ -1496,19 +1600,6 @@ pub(super) fn create_in<D: BlockDevice>(
         attributes: if new.hidden { ATTRIBUTE_HIDDEN } else { 0 },
         target: target.to_vec(),
     };
-    let dirent = DirentValue {
-        target: child,
-        kind,
-        stored_name: &name.stored,
-    }
-    .encode()?;
-    parent_inode.child_count = parent_inode
-        .child_count
-        .checked_add(1)
-        .ok_or(Error::LimitExceeded)?;
-    parent_inode.modification = now;
-    parent_inode.metadata_change = now;
-
     let mut catalog = transaction.catalog.clone();
     catalog = transaction.forest.put(
         catalog,
@@ -1516,15 +1607,31 @@ pub(super) fn create_in<D: BlockDevice>(
         &inode_key(child),
         &child_inode.encode(),
     )?;
-    catalog = transaction
-        .forest
-        .put(catalog, TreeKind::Catalog, &dirent_key_bytes, &dirent)?;
-    catalog = transaction.forest.put(
-        catalog,
-        TreeKind::Catalog,
-        &parent_key,
-        &parent_inode.encode(),
-    )?;
+    if let (Some(name), Some(key)) = (name, dirent_key_bytes) {
+        let dirent = DirentValue {
+            target: child,
+            kind,
+            stored_name: &name.stored,
+        }
+        .encode()?;
+        parent_inode.child_count = parent_inode
+            .child_count
+            .checked_add(1)
+            .ok_or(Error::LimitExceeded)?;
+        parent_inode.modification = now;
+        parent_inode.metadata_change = now;
+        catalog = transaction
+            .forest
+            .put(catalog, TreeKind::Catalog, &key, &dirent)?;
+        catalog = transaction.forest.put(
+            catalog,
+            TreeKind::Catalog,
+            &parent_key,
+            &parent_inode.encode(),
+        )?;
+    } else {
+        transaction.mark_orphan(child)?;
+    }
     transaction.catalog = catalog;
     Ok(ObjectId(child))
 }

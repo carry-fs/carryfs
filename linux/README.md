@@ -59,8 +59,8 @@ mounting user, as vfat and exfat do; files report mode 644, directories 755.
 
 ## Allocation
 
-The driver implements `fallocate` allocation and `FALLOC_FL_KEEP_SIZE`.
-Other allocation modes return
+The driver implements `fallocate` allocation, `FALLOC_FL_KEEP_SIZE`, and
+`FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`. Other allocation modes return
 `EOPNOTSUPP`. Reservations use unwritten extents behind root feature bit 1;
 older adapters reject a volume once this feature is published.
 

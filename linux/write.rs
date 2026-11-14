@@ -1445,6 +1445,116 @@ unsafe extern "C" fn carryfs_preallocate(raw: *mut bindings::inode, offset: u64,
     match result { Ok(()) => 0, Err(error) => error.to_errno() }
 }
 
+/// The C caller flushes and invalidates the touched cache units under the
+/// inode and mapping-invalidation locks before changing their mappings.
+#[no_mangle]
+unsafe extern "C" fn carryfs_punch_hole(
+    raw: *mut bindings::inode,
+    offset: u64,
+    length: u64,
+) -> c_int {
+    // SAFETY: glue.c holds the inode referenced and locked.
+    let inode = unsafe { Inode::from_raw(raw) };
+    match punch_hole(inode, offset, length) {
+        Ok(()) => 0,
+        Err(error) => error.to_errno(),
+    }
+}
+
+fn punch_hole(inode: &Inode, offset: u64, length: u64) -> Result {
+    let sb = inode.super_block().as_ptr();
+    let object = inode.object();
+    let end = offset.checked_add(length).ok_or(EFBIG)?;
+    if offset >= end {
+        return Ok(());
+    }
+    let mut index = offset / UNIT_BYTES as u64;
+    while index <= (end - 1) / UNIT_BYTES as u64 {
+        let first = index * UNIT_BLOCKS;
+        let next = {
+            let state = volume::of(sb).lock();
+            let prefix = tree::prefix(object, tree::EXTENT);
+            let key = tree::numbered_key(object, tree::EXTENT, first);
+            let covering = Tree::catalog(sb, &state)
+                .floor(&key, |key, value| {
+                    let logical = be_u64(key, 9);
+                    let count = le_u64(value, 8) & u64::from(u32::MAX);
+                    Ok(key.starts_with(&prefix) && logical <= first && first - logical < count)
+                })?
+                .unwrap_or(false);
+            let mut next = if covering { Some(index) } else { None };
+            if next.is_none() {
+                Tree::catalog(sb, &state).scan(&key, &mut |key, _| {
+                    if key.starts_with(&prefix) {
+                        let unit = be_u64(key, 9) / UNIT_BLOCKS;
+                        if unit <= (end - 1) / UNIT_BYTES as u64 {
+                            next = Some(unit);
+                        }
+                    }
+                    Ok(false)
+                })?;
+            }
+            next
+        };
+        let Some(next) = next else {
+            break;
+        };
+        index = next;
+        let start = index * UNIT_BYTES as u64;
+        let until = (start + UNIT_BYTES as u64).min(inode.size().max(start));
+        let from = offset.max(start);
+        let to = end.min(until);
+        if from == start && (end >= start + UNIT_BYTES as u64 || (end >= inode.size() && until > start)) {
+            volume::of(sb).lock().claim_exclusive(object);
+            let result = mutate(sb, |state, disk| {
+                let first = index * UNIT_BLOCKS;
+                let removed = remove_extents(sb, state, disk, object, first, first + UNIT_BLOCKS, &[])?;
+                clear_checksums(sb, state, disk, object, index, index + 1)?;
+                let mut record = read_record(sb, state, object)?;
+                let allocated = le_u64(&record, ALLOCATED).checked_sub(removed).ok_or(EIO)?;
+                set_u64(&mut record, ALLOCATED, allocated);
+                let time = now();
+                set_time(&mut record, 56, time);
+                set_time(&mut record, 72, time);
+                write_record(state, disk, object, &record)?;
+                inode.set_blocks(allocated);
+                crate::inode::refresh_times(inode, state)
+            });
+            volume::of(sb).lock().end_exclusive(object);
+            result?;
+        } else if start < inode.size() && from < to {
+            let backed = {
+                let state = volume::of(sb).lock();
+                Tree::catalog(sb, &state)
+                    .get(
+                        &tree::numbered_key(object, tree::CHECKSUMS, index / 256),
+                        |group| checksum_slot(group, (index % 256) as usize).map_err(errno),
+                    )?
+                    .flatten()
+                    .is_some()
+            };
+            if !backed {
+                index += 1;
+                continue;
+            }
+            let mut writer = Writer::new(inode);
+            writer.pending(index)?;
+            writer.fill(&None)?;
+            for (slot, page) in writer.units[0].pages.iter().enumerate() {
+                let block = start + (slot * BLOCK_BYTES) as u64;
+                let low = from.max(block);
+                let high = to.min(block + BLOCK_BYTES as u64);
+                if low < high {
+                    page_bytes(page)[(low - block) as usize..(high - block) as usize].fill(0);
+                }
+            }
+            writer.flush(None)?;
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
 pub(crate) unsafe extern "C" fn fsync(
     file: *mut bindings::file,
     start: i64,

@@ -1143,6 +1143,153 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    /// Zero a range without changing EOF, releasing fully covered 64 KiB units.
+    pub fn punch_hole(&mut self, file: &Handle, offset: u64, length: u64) -> Result<()> {
+        let (object, access) = self.handles.validate_access(file)?;
+        self.writable()?;
+        if access != Access::ReadWrite {
+            return Err(Error::ReadOnly);
+        }
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= i64::MAX as u64)
+            .ok_or(Error::LimitExceeded)?;
+        if length == 0 {
+            return Err(Error::InvalidInput("empty allocation range"));
+        }
+        let current = self.attributes(object)?;
+        if current.kind != ObjectKind::File {
+            return Err(Error::WrongType);
+        }
+        if offset >= end {
+            return Ok(());
+        }
+        let now = Timestamp::now()?;
+        let unit_bytes = UNIT_BYTES as u64;
+        let zeros = vec![0; UNIT_BYTES];
+        let mut hint = self.data_hint;
+        let mut unit = offset / unit_bytes;
+        while unit <= (end - 1) / unit_bytes {
+            let next = self.read_catalog(|forest, catalog| {
+                Ok(extents_from(
+                    forest,
+                    &catalog,
+                    object.0,
+                    unit * BLOCKS_PER_UNIT,
+                    end.div_ceil(BLOCK_BYTES as u64),
+                )?
+                .first()
+                .map(|extent| extent.logical / BLOCKS_PER_UNIT))
+            })?;
+            let Some(next) = next else {
+                break;
+            };
+            unit = unit.max(next);
+            self.edit(|transaction| {
+                let key = inode_key(object.0);
+                let mut inode = transaction
+                    .forest
+                    .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
+                    .ok_or(Error::Corrupt("handle target inode is missing"))?;
+                let start = unit * unit_bytes;
+                let until = (start + unit_bytes).min(inode.size.max(start));
+                let from = offset.max(start);
+                let to = end.min(until);
+                if from == start
+                    && (end >= start + unit_bytes || (end >= inode.size && until > start))
+                {
+                    let first = unit * BLOCKS_PER_UNIT;
+                    let last = first + BLOCKS_PER_UNIT;
+                    let extents = unit_extents(
+                        &mut transaction.forest,
+                        &transaction.catalog.clone(),
+                        object.0,
+                        first,
+                    )?;
+                    for extent in extents {
+                        let extent_end = extent.end()?;
+                        remove(transaction, &extent_key(object.0, extent.logical))?;
+                        if extent.logical < first {
+                            put(
+                                transaction,
+                                &extent_key(object.0, extent.logical),
+                                &encode_extent(
+                                    extent.physical,
+                                    first - extent.logical,
+                                    extent.unwritten,
+                                )?,
+                            )?;
+                        }
+                        if extent_end > last {
+                            put(
+                                transaction,
+                                &extent_key(object.0, last),
+                                &encode_extent(
+                                    extent.physical + last - extent.logical,
+                                    extent_end - last,
+                                    extent.unwritten,
+                                )?,
+                            )?;
+                        }
+                        let low = first.max(extent.logical);
+                        let high = last.min(extent_end);
+                        let removed = high - low;
+                        transaction.retire_data(extent.physical + low - extent.logical, removed);
+                        inode.allocated_blocks = inode
+                            .allocated_blocks
+                            .checked_sub(removed)
+                            .ok_or(Error::Corrupt(
+                                "inode allocation count disagrees with extents",
+                            ))?;
+                    }
+                    let group_key = group_key(object.0, unit / UNITS_PER_GROUP);
+                    if let Some(existing) = transaction.forest.lookup(
+                        &transaction.catalog,
+                        TreeKind::Catalog,
+                        &group_key,
+                    )? {
+                        let mut group = crate::format::expand_group(&existing);
+                        set_checksum_slot(&mut group, (unit % UNITS_PER_GROUP) as usize, None);
+                        if group[..32].iter().all(|byte| *byte == 0) {
+                            remove(transaction, &group_key)?;
+                        } else {
+                            put(
+                                transaction,
+                                &group_key,
+                                crate::format::compact_group(&group),
+                            )?;
+                        }
+                    }
+                } else if start < inode.size
+                    && from < to
+                    && read_unit(
+                        &mut transaction.forest,
+                        &transaction.catalog.clone(),
+                        object.0,
+                        inode.size,
+                        unit,
+                    )?
+                    .is_some()
+                {
+                    let change = Change {
+                        object: object.0,
+                        offset: from,
+                        bytes: &zeros[..(to - from) as usize],
+                        old_size: inode.size,
+                        new_size: inode.size,
+                    };
+                    rewrite_units(transaction, &change, &mut inode, &[unit], &mut hint)?;
+                }
+                inode.modification = now;
+                inode.metadata_change = now;
+                put(transaction, &key, &inode.encode())
+            })?;
+            unit += 1;
+        }
+        self.data_hint = hint;
+        Ok(())
+    }
+
     /// Read verified bytes at `offset`. Returns 0 at or past EOF, otherwise a
     /// nonzero prefix of at most 1 MiB. Holes read as zeros; damaged data is
     /// an error, never zeros.

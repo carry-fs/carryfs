@@ -159,7 +159,7 @@ that budget. Parser seeds come from `testdata/vectors/`. Logs go to
 ### Allocation checks
 
 Core tests cover reservations across remounts, conversion interruptions,
-truncation, and writes after another file fills the volume.
+truncation, hole punching, and writes after another file fills the volume.
 
 On macOS with macFUSE, after building the CLI and adapter:
 

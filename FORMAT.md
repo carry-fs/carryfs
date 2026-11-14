@@ -416,7 +416,8 @@ partially written unit remain unwritten, including storage beyond EOF.
 Preallocation fills gaps in the requested range, rounded to 64 KiB units,
 and preserves existing data. `KEEP_SIZE` preserves EOF. Explicit truncation
 releases reservations beyond a shrinking or unchanged EOF; growth preserves
-later reservations. Deletion reclaims initialized and unwritten extents alike.
+later reservations. Hole punching frees covered units and zeros requested
+boundary bytes. Deletion reclaims initialized and unwritten extents alike.
 Extent splitting and merging preserve flags; extents with different flags
 cannot merge.
 

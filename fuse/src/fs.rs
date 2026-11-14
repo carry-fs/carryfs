@@ -1728,6 +1728,8 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                     v.preallocate(handle, offset, length, mode == 1)
                 })
                 .map_err(|e| errno(&e)),
+                3 => with_space(&mut s.volume, |v| v.punch_hole(handle, offset, length))
+                    .map_err(|e| errno(&e)),
                 _ => Err(Errno::EOPNOTSUPP),
             }
             #[cfg(target_os = "macos")]

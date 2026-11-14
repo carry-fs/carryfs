@@ -1127,27 +1127,44 @@ u32 carryfs_crc32c(u32 crc, const void *data, size_t len)
 	return crc32c(crc, data, len);
 }
 
+extern int carryfs_punch_hole(struct inode *inode, u64 offset, u64 length);
 extern int carryfs_preallocate(struct inode *inode, u64 offset, u64 length, bool keep_size);
 
 long carryfs_fallocate(struct file *file, int mode, loff_t offset, loff_t length)
 {
 	struct inode *inode = file_inode(file);
 	struct address_space *mapping = inode->i_mapping;
-	loff_t first;
+	loff_t first, last;
 	int error;
 
-	if (mode != 0 && mode != FALLOC_FL_KEEP_SIZE)
+	if (mode != 0 && mode != FALLOC_FL_KEEP_SIZE &&
+	    mode != (FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE))
 		return -EOPNOTSUPP;
 	if (offset < 0 || length <= 0 || offset > LLONG_MAX - length)
 		return -EINVAL;
 	inode_lock(inode);
 	filemap_invalidate_lock(mapping);
 	first = round_down(offset, 65536);
-	/* Publish dirty data before reserving additional storage. */
+	last = offset + length;
+	if (offset >= last) {
+		error = 0;
+		goto out;
+	}
+	/* Flush before invalidating, including the preserved boundary bytes. */
 	error = filemap_write_and_wait_range(mapping, first, LLONG_MAX);
 	if (error)
 		goto out;
-	error = carryfs_preallocate(inode, offset, length, mode & FALLOC_FL_KEEP_SIZE);
+	if (!(mode & FALLOC_FL_PUNCH_HOLE)) {
+		error = carryfs_preallocate(inode, offset, length, mode & FALLOC_FL_KEEP_SIZE);
+		goto out;
+	}
+	last = min_t(loff_t, last, i_size_read(inode));
+	if (first < last) {
+		last = round_up((u64)last, 65536ULL) - 1;
+		unmap_mapping_range(mapping, first, 0, 0);
+		truncate_inode_pages_range(mapping, first, last);
+	}
+	error = carryfs_punch_hole(inode, offset, length);
 out:
 	filemap_invalidate_unlock(mapping);
 	inode_unlock(inode);

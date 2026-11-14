@@ -246,6 +246,50 @@ fn interrupted_full_disk_refill() {
 }
 
 #[test]
+fn hole_punch_preserves_edges_size_and_survives_remount() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("punch")).unwrap();
+    let mut expected = vec![0x5a; 3 * UNIT_BYTES + 19];
+    volume.write(&file, 0, &expected).unwrap();
+    let before = volume.handle_attributes(&file).unwrap();
+    let offset = 17;
+    let end = 3 * UNIT_BYTES + 7;
+    volume
+        .punch_hole(&file, offset, (end - offset as usize) as u64)
+        .unwrap();
+    expected[offset as usize..end].fill(0);
+    let after = volume.handle_attributes(&file).unwrap();
+    assert_eq!(after.size, before.size);
+    assert_eq!(
+        before.allocated_bytes - after.allocated_bytes,
+        (2 * UNIT_BYTES) as u64
+    );
+    let mut actual = vec![0; expected.len()];
+    volume.read(&file, 0, &mut actual).unwrap();
+    assert_eq!(actual, expected);
+    volume
+        .punch_hole(&file, (3 * UNIT_BYTES) as u64, UNIT_BYTES as u64)
+        .unwrap();
+    expected[3 * UNIT_BYTES..].fill(0);
+    volume.punch_hole(&file, u64::from(1u32 << 30), 1).unwrap();
+    assert!(volume.punch_hole(&file, 0, 0).is_err());
+    assert!(volume.punch_hole(&file, u64::MAX, 2).is_err());
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+    let mut reader = Volume::open(FaultDevice::new(durable(&volume), MountMode::ReadOnly)).unwrap();
+    let file = reader
+        .open_file(ROOT, &name("punch"), Access::Read)
+        .unwrap();
+    reader.read(&file, 0, &mut actual).unwrap();
+    assert_eq!(actual, expected);
+    assert!(matches!(
+        reader.punch_hole(&file, 0, 1),
+        Err(Error::ReadOnly)
+    ));
+}
+
+#[test]
 fn preallocation_survives_remount_and_is_consumed_without_exposing_device_bytes() {
     let mut volume = opened();
     let file = volume.create_file(ROOT, name("reserved")).unwrap();
@@ -280,6 +324,13 @@ fn preallocation_survives_remount_and_is_consumed_without_exposing_device_bytes(
     volume
         .write(&file, (UNIT_BYTES + 3) as u64, b"second")
         .unwrap();
+    volume
+        .punch_hole(&file, (2 * UNIT_BYTES) as u64, UNIT_BYTES as u64)
+        .unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (2 * UNIT_BYTES) as u64
+    );
     volume.close_handle(file).unwrap();
     drain(&mut volume);
     checked(&volume);
@@ -296,6 +347,13 @@ fn preallocation_preserves_data_and_truncation_discards_unused_reservations() {
     let mut bytes = [0; 7];
     volume.read(&file, 0, &mut bytes).unwrap();
     assert_eq!(&bytes, b"keep me");
+    volume
+        .punch_hole(&file, (2 * UNIT_BYTES) as u64, UNIT_BYTES as u64)
+        .unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (2 * UNIT_BYTES) as u64
+    );
     volume.truncate(&file, 7).unwrap();
     assert_eq!(
         volume.handle_attributes(&file).unwrap().allocated_bytes,

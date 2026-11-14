@@ -5,14 +5,14 @@
   </picture>
 </h1>
 
-<p align="center"><b>Your files, across macOS, Linux, and Windows.</b></p>
+<p align="center"><b>Your files, across macOS, Linux, FreeBSD, and Windows.</b></p>
 
 <p align="center">
   <a href="https://github.com/carry-fs/carryfs/releases"><img alt="Release version" src="https://img.shields.io/github/v/release/carry-fs/carryfs?include_prereleases&amp;style=flat-square"></a>
   <a href="https://github.com/carry-fs/carryfs/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/carry-fs/carryfs/ci.yml?branch=master&label=ci&style=flat-square"></a>
   <a href="#current-status"><img alt="Status: public beta" src="https://img.shields.io/badge/status-public%20beta-orange?style=flat-square"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0 OR GPL-2.0-only" src="https://img.shields.io/badge/license-Apache--2.0%20OR%20GPL--2.0--only-blue?style=flat-square"></a>
-  <img alt="Platforms: macOS, Linux, Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square">
+  <img alt="Platforms: macOS, Linux, FreeBSD, Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20FreeBSD%20%7C%20Windows-lightgrey?style=flat-square">
 </p>
 
 CarryFS is an open-source filesystem for sharing data across operating systems,
@@ -22,7 +22,7 @@ with copy-on-write storage and built-in checksums.
 
 First install the [framework for your platform](INSTALLATION.md#requirements).
 
-Linux and macOS:
+Linux, macOS, and FreeBSD:
 
 ```sh
 curl -fsSL https://carryfs.com/install.sh | bash
@@ -65,7 +65,7 @@ written, provided the device honors flushes. Checksums detect corruption in
 file data and metadata; the scrub tool verifies stored files. Damaged data
 must be restored from an independent backup.
 
-CarryFS runs in user space through FUSE on Linux, macFUSE on macOS, and WinFsp
+CarryFS runs in user space through FUSE on Linux and FreeBSD, macFUSE on macOS, and WinFsp
 on Windows. See the [limits and data safety notes](INSTALLATION.md#limits-and-data-safety)
 before using it for backups.
 

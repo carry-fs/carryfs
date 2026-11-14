@@ -45,6 +45,17 @@ class ReleaseIndexTests(unittest.TestCase):
                   release("0.1.2-rc.1"), release("00.1.3"), release("0.1.4", assets=[]), uploading]]
         self.assertEqual(self.generate(pages), "")
 
+    def test_freebsd_releases_require_every_freebsd_payload(self):
+        complete = release("0.1.1")
+        freebsd = [dict(name=f"carryfs-0.1.1-{platform}.tar.gz", state="uploaded") for platform in
+                   ("freebsd14-x86_64", "freebsd14-arm64", "freebsd15-x86_64", "freebsd15-arm64")]
+        complete["assets"].extend(freebsd)
+        self.assertEqual(self.generate([[release("0.1.0"), complete]]), "0.1.0\n0.1.1\n")
+        for missing in freebsd:
+            with self.subTest(missing=missing["name"]):
+                assets = [asset for asset in complete["assets"] if asset != missing]
+                self.assertEqual(self.generate([[release("0.1.1", assets=assets)]]), "")
+
     def test_empty_repository_has_empty_index(self):
         self.assertEqual(self.generate([[]]), "")
 
@@ -110,14 +121,14 @@ class PublisherTests(unittest.TestCase):
 
 @unittest.skipIf(os.name == "nt", "Unix installer runs on Linux and macOS")
 class UnixSelectionTests(unittest.TestCase):
-    def select(self, index, installed="", upgrade=0, requested="", download_status=0):
+    def select(self, index, installed="", upgrade=0, requested="", download_status=0, unpackaged=""):
         # Load the real functions without invoking the installer's system entry point.
         functions = (ROOT / "install.sh").read_text().split("\nmain() {", 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Path(temporary) / "index"
             fixture.write_bytes(index.encode())
             script = functions + '''
-work=$1 installed=$2 upgrade=$3 requested=$4
+work=$1 installed=$2 upgrade=$3 requested=$4 unpackaged_through=$5
 download() {
     [ "$1" = https://carryfs.com/releases.txt ] || exit 99
     [ "$DOWNLOAD_STATUS" = 0 ] || exit "$DOWNLOAD_STATUS"
@@ -127,7 +138,7 @@ select_release
 printf '%s\\n' "$selected"
 '''
             env = dict(os.environ, INDEX_FIXTURE=str(fixture), DOWNLOAD_STATUS=str(download_status))
-            return subprocess.run(["sh", "-s", "--", temporary, installed, str(upgrade), requested],
+            return subprocess.run(["sh", "-s", "--", temporary, installed, str(upgrade), requested, unpackaged],
                                   input=script, env=env, capture_output=True, text=True)
 
     def test_fresh_install_chooses_highest_stable_version(self):
@@ -141,6 +152,22 @@ printf '%s\\n' "$selected"
                 result = self.select("0.1.10\r\n\r\n1.0.0\r\n", "0.1.0", upgrade)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, expected + "\n")
+
+    def test_releases_without_a_package_for_this_system_are_skipped(self):
+        result = self.select("0.1.0\n0.1.1\n", unpackaged="0.1.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "0.1.1\n")
+        result = self.select("0.0.9\n0.1.0\n", unpackaged="0.1.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("./install.sh --local", result.stderr)
+        for requested, allowed in [("0.1.0", False), ("0.1.0-rc.1", False), ("0.1.1-rc.1", True)]:
+            with self.subTest(requested=requested):
+                result = self.select("", requested=requested, unpackaged="0.1.0")
+                self.assertEqual(result.returncode == 0, allowed, result.stderr)
+                if allowed:
+                    self.assertEqual(result.stdout, requested + "\n")
+                else:
+                    self.assertIn("no package for this system", result.stderr)
 
     def test_missing_major_and_empty_index_fail(self):
         for index in ["", "1.0.0\n"]:

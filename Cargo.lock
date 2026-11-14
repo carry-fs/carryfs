@@ -19,6 +19,7 @@ name = "carryfs-core"
 version = "0.1.0"
 dependencies = [
  "carryfs-ondisk",
+ "libc",
 ]
 
 [[package]]

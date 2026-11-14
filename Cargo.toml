@@ -13,6 +13,9 @@ exclude = ["fuzz"]
 [dependencies]
 carryfs-ondisk = { path = "ondisk", features = ["std"] }
 
+[target.'cfg(target_os = "freebsd")'.dependencies]
+libc = "0.2"
+
 [[bin]]
 name = "carryfs"
 path = "src/main.rs"

@@ -194,6 +194,12 @@ Run the additional checks for the adapter you touch:
 - Linux: `cargo test --locked -p carryfs-fuse -- --ignored` mounts a volume
   through FUSE and checks the kernel's directory cache. It needs `/dev/fuse`,
   `fusermount3` and root.
+- FreeBSD: load `fusefs`, then run `sh scripts/check-freebsd.sh`. It runs
+  workspace tests and actual mount, durability, raw-format, and device-lock
+  tests against disposable md devices. The mount tests require root or sudo.
+  CI runs this on FreeBSD 14.5 and 15.1, on amd64 and arm64. On macOS, edit
+  locally and synchronize the checkout into a FreeBSD QEMU VM; build and run
+  this script inside the guest. Keep the checkout on the guest filesystem.
 - macOS: `bash macos/tests/layout.sh` checks the ioctl constants in
   `macos/src/raw.rs` against the macOS SDK.
 - Windows: `windows/tests/layout.sh` compares the struct layouts in

@@ -8,10 +8,9 @@
 //! `-q` only selects the root and validates its tree-root pages: the writable
 //! open that follows runs the complete structural check anyway, so repeating
 //! it here doubled mount time. `-n` and `-y` run that complete check on a
-//! read-only device. CarryFS has no
-//! in-place repair, so `-y` reports damage the same way and points to
-//! recovery by extraction. Exit status 0 means the check passed, 8 that it
-//! did not, as with the other fsck tools.
+//! read-only device. This helper verifies only. On failure, `-y` points to
+//! the separate offline `fsck.carryfs` repair tool. Exit status 0 means the
+//! check passed, 8 that it did not, as with the other fsck tools.
 
 use std::process::ExitCode;
 
@@ -80,7 +79,7 @@ fn main() -> ExitCode {
             println!("** Check failed: {error}");
             if repair {
                 println!(
-                    "** CarryFS does not repair in place. Copy files off with carryfs get, then erase"
+                    "** Unmount and run fsck.carryfs --plan, --recover, or --repair; see RECOVERY.md"
                 );
             }
             ExitCode::from(FAILED)

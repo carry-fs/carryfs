@@ -191,6 +191,34 @@ fn cli_reports_damaged_ranges_and_keeps_verified_output() {
     assert_eq!(recovered.len(), bytes.len());
     assert_eq!(&recovered[..65_536], &[0; 65_536]);
     assert_eq!(&recovered[65_536..], &bytes[65_536..]);
+    let before = fingerprint(&temp.0.join("image"));
+    let result = fsck(&temp, &["--recover", "fsck-out", "image"]);
+    assert_eq!(result.status.code(), Some(4));
+    let report = fs::read_to_string(temp.0.join("fsck-out.recovery.txt")).unwrap();
+    assert!(report.contains("offset Some(0), length 65536"));
+    assert_eq!(
+        &fs::read(temp.0.join("fsck-out/data")).unwrap()[65_536..],
+        &bytes[65_536..]
+    );
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    let result = fsck(&temp, &["--repair", "--output", "partial-image", "image"]);
+    assert_eq!(
+        result.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report = fs::read_to_string(temp.0.join("partial-image.recovery.txt")).unwrap();
+    assert!(report.contains("offset Some(0), length 65536"));
+    assert!(report.contains("path [\"data\"]"));
+    assert!(report.contains("unreadable_ranges: 1"));
+    temp.pass(&["check", "partial-image"]);
+    temp.pass(&["scrub", "partial-image"]);
+    temp.pass(&["get", "partial-image", "/data", "partial-copy"]);
+    let partial = fs::read(temp.0.join("partial-copy")).unwrap();
+    assert_eq!(&partial[..65_536], &[0; 65_536]);
+    assert_eq!(&partial[65_536..], &bytes[65_536..]);
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
 }
 
 fn fingerprint(path: &Path) -> u64 {
@@ -324,4 +352,333 @@ fn cli_keeps_hidden_symlinks_without_hiding_their_targets() {
         Path::new("target")
     );
     temp.pass(&["check", "image"]);
+}
+
+fn fsck(temp: &Temp, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fsck-carryfs"))
+        .current_dir(&temp.0)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn disk_root(temp: &Temp) -> carryfs_ondisk::format::Root {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut image = fs::File::open(temp.0.join("image")).unwrap();
+    let mut page = [0; 4096];
+    image.seek(SeekFrom::Start(256 * 4096)).unwrap();
+    image.read_exact(&mut page).unwrap();
+    carryfs_ondisk::format::Root::decode(&page, 256, 268435456 / 4096).unwrap()
+}
+
+fn damage_page(temp: &Temp, block: u64) {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut image = fs::OpenOptions::new()
+        .write(true)
+        .open(temp.0.join("image"))
+        .unwrap();
+    image.seek(SeekFrom::Start(block * 4096)).unwrap();
+    image.write_all(&[0xff]).unwrap();
+}
+
+#[test]
+fn fsck_plans_exports_and_repairs_the_original_offline() {
+    let temp = Temp::new();
+    let bytes = vec![0x79; 150_001];
+    fs::write(temp.0.join("source"), &bytes).unwrap();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/notes"]);
+    damage_page(&temp, disk_root(&temp).allocation.block);
+    let before = fingerprint(&temp.0.join("image"));
+    let plan = fsck(&temp, &["--plan", "image"]);
+    assert_eq!(
+        plan.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&plan.stdout).contains("rebuild catalog, allocation and cleanup")
+    );
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    assert!(!temp.0.join("image.repair.txt").exists());
+    let export = fsck(&temp, &["--recover", "recovered", "image"]);
+    assert!(
+        export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert_eq!(fs::read(temp.0.join("recovered/notes")).unwrap(), bytes);
+    assert!(temp.0.join("recovered.recovery.txt").exists());
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    fs::write(temp.0.join("existing"), b"keep").unwrap();
+    assert_eq!(
+        fsck(&temp, &["--repair", "--report", "existing", "image"])
+            .status
+            .code(),
+        Some(8)
+    );
+    assert_eq!(fs::read(temp.0.join("existing")).unwrap(), b"keep");
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    let repair = fsck(&temp, &["--repair", "image"]);
+    assert_eq!(
+        repair.status.code(),
+        Some(1),
+        "{}\n{}",
+        String::from_utf8_lossy(&repair.stdout),
+        String::from_utf8_lossy(&repair.stderr)
+    );
+    assert!(
+        fs::read_to_string(temp.0.join("image.repair.txt"))
+            .unwrap()
+            .contains("Repair committed")
+    );
+    temp.pass(&["check", "image"]);
+    temp.pass(&["scrub", "image"]);
+    temp.pass(&["get", "image", "/notes", "verified"]);
+    assert_eq!(fs::read(temp.0.join("verified")).unwrap(), bytes);
+    temp.pass(&["put", "image", "source", "/after-repair"]);
+    temp.pass(&["check", "image"]);
+    temp.pass(&["scrub", "image"]);
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_carryfs"), temp.0.join("fsck.carryfs")).unwrap();
+    assert!(
+        Command::new(temp.0.join("fsck.carryfs"))
+            .current_dir(&temp.0)
+            .arg("image")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let repaired = fingerprint(&temp.0.join("image"));
+    assert_eq!(fsck(&temp, &["--repair", "image"]).status.code(), Some(0));
+    temp.pass(&["fsck", "image"]);
+    assert_eq!(fingerprint(&temp.0.join("image")), repaired);
+}
+
+#[test]
+fn fsck_refuses_implicit_data_loss_and_exports_with_a_broken_workspace() {
+    let temp = Temp::new();
+    fs::write(temp.0.join("source"), b"keep these bytes").unwrap();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/notes"]);
+    damage_page(&temp, disk_root(&temp).workspace.block);
+    let before = fingerprint(&temp.0.join("image"));
+    let export = fsck(&temp, &["--recover", "recovered", "image"]);
+    assert!(
+        export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert_eq!(
+        fs::read(temp.0.join("recovered/notes")).unwrap(),
+        b"keep these bytes"
+    );
+    assert_eq!(fsck(&temp, &["--repair", "image"]).status.code(), Some(4));
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    // A fresh volume with its catalog root destroyed requires explicit loss
+    // acceptance, and the report remains next to the repaired original.
+    temp.pass(&["mkfs", "fresh", "268435456"]);
+    fs::rename(temp.0.join("image"), temp.0.join("workspace-damaged")).unwrap();
+    fs::rename(temp.0.join("fresh"), temp.0.join("image")).unwrap();
+    damage_page(&temp, disk_root(&temp).catalog.block);
+    let before = fingerprint(&temp.0.join("image"));
+    assert_eq!(fsck(&temp, &["--repair", "image"]).status.code(), Some(4));
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    let copy = fsck(
+        &temp,
+        &["--repair", "--output", "metadata-partial", "image"],
+    );
+    assert_eq!(
+        copy.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&copy.stderr)
+    );
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    temp.pass(&["check", "metadata-partial"]);
+    assert!(
+        fs::read_to_string(temp.0.join("metadata-partial.recovery.txt"))
+            .unwrap()
+            .contains("complete: false")
+    );
+    let result = fsck(&temp, &["--repair", "--accept-data-loss", "image"]);
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    temp.pass(&["check", "image"]);
+    assert!(
+        fs::read_to_string(temp.0.join("image.repair.txt"))
+            .unwrap()
+            .contains("possible data loss: true")
+    );
+    damage_page(&temp, 256);
+    damage_page(&temp, 268435456 / 4096 - 257);
+    let before = fingerprint(&temp.0.join("image"));
+    assert_eq!(fsck(&temp, &["--plan", "image"]).status.code(), Some(4));
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn fsck_refuses_busy_images_before_planning_or_creating_output() {
+    let temp = Temp::new();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    let reader = fs::File::open(temp.0.join("image")).unwrap();
+    let output = fsck(&temp, &["--repair", "image"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("image is in use"));
+    assert!(!temp.0.join("image.repair.txt").exists());
+    drop(reader);
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .open(temp.0.join("image"))
+        .unwrap();
+    assert!(
+        !fsck(&temp, &["--recover", "recovered", "image"])
+            .status
+            .success()
+    );
+    assert!(!temp.0.join("recovered").exists());
+    drop(writer);
+}
+
+#[test]
+fn fsck_rebuilds_a_new_image_without_repairing_the_source() {
+    let temp = Temp::new();
+    let bytes = vec![0x79; 150_001];
+    fs::write(temp.0.join("source"), &bytes).unwrap();
+    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/notes"]);
+    temp.pass(&["attr", "image", "/notes", "mode=400", "hidden=yes"]);
+    let original_uuid = disk_root(&temp).uuid;
+    damage_page(&temp, disk_root(&temp).workspace.block);
+    let before = fingerprint(&temp.0.join("image"));
+    // A concurrent read handle is compatible with a read-only source lease.
+    let reader = fs::File::open(temp.0.join("image")).unwrap();
+    let result = fsck(&temp, &["--repair", "--output", "new-image", "image"]);
+    assert_eq!(
+        result.status.code(),
+        Some(1),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    drop(reader);
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    assert_eq!(
+        fs::metadata(temp.0.join("new-image")).unwrap().len(),
+        268435456
+    );
+    assert!(!temp.run(&["check", "image"]).status.success());
+    temp.pass(&["check", "new-image"]);
+    temp.pass(&["scrub", "new-image"]);
+    temp.pass(&["get", "new-image", "/notes", "verified"]);
+    assert_eq!(fs::read(temp.0.join("verified")).unwrap(), bytes);
+    assert_eq!(
+        String::from_utf8(temp.pass(&["attr", "new-image", "/notes"]).stdout).unwrap(),
+        "file 0400 hidden\n"
+    );
+    let mut volume = carryfs_core::Volume::open(
+        carryfs_core::ImageDevice::open(
+            temp.0.join("new-image"),
+            carryfs_core::MountMode::ReadOnly,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(volume.info().unwrap().uuid, original_uuid);
+    volume.eject().unwrap();
+    let report = fs::read_to_string(temp.0.join("new-image.recovery.txt")).unwrap();
+    assert!(report.contains("Image recovery finished; structural verification passed"));
+    assert!(report.contains("complete: true"));
+    temp.pass(&["put", "new-image", "source", "/new-write"]);
+    temp.pass(&["check", "new-image"]);
+}
+
+#[test]
+fn fsck_new_image_refuses_existing_outputs_aliases_reports_and_invalid_flags() {
+    use std::os::unix::fs::symlink;
+    let temp = Temp::new();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    fs::write(temp.0.join("existing"), b"keep").unwrap();
+    fs::hard_link(temp.0.join("image"), temp.0.join("hardlink")).unwrap();
+    symlink("image", temp.0.join("symlink")).unwrap();
+    symlink("missing", temp.0.join("dangling")).unwrap();
+    let before = fingerprint(&temp.0.join("image"));
+    for output in ["existing", "image", "hardlink", "symlink", "dangling"] {
+        let result = fsck(&temp, &["--repair", "--output", output, "image"]);
+        assert_eq!(
+            result.status.code(),
+            Some(8),
+            "{output}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    assert_eq!(fs::read(temp.0.join("existing")).unwrap(), b"keep");
+    assert_eq!(
+        fs::read_link(temp.0.join("symlink")).unwrap(),
+        Path::new("image")
+    );
+    assert_eq!(
+        fs::read_link(temp.0.join("dangling")).unwrap(),
+        Path::new("missing")
+    );
+    assert!(!temp.0.join("missing").exists());
+    assert_eq!(
+        fsck(
+            &temp,
+            &[
+                "--repair",
+                "--output",
+                "not-created",
+                "--report",
+                "existing",
+                "image"
+            ]
+        )
+        .status
+        .code(),
+        Some(8)
+    );
+    assert!(!temp.0.join("not-created").exists());
+    for arguments in [
+        vec!["--output", "invalid", "image"],
+        vec!["--repair", "--plan", "--output", "invalid", "image"],
+        vec![
+            "--repair",
+            "--recover",
+            "directory",
+            "--output",
+            "invalid",
+            "image",
+        ],
+        vec!["image", "--repair", "--output"],
+    ] {
+        assert_eq!(
+            fsck(&temp, &arguments).status.code(),
+            Some(16),
+            "{arguments:?}"
+        );
+    }
+    assert!(!temp.0.join("invalid").exists());
+    assert_eq!(fingerprint(&temp.0.join("image")), before);
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .open(temp.0.join("image"))
+        .unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            !fsck(&temp, &["--repair", "--output", "busy-output", "image"])
+                .status
+                .success()
+        );
+        assert!(!temp.0.join("busy-output").exists());
+        assert!(!temp.0.join("busy-output.recovery.txt").exists());
+    }
+    drop(writer);
 }

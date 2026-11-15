@@ -16,10 +16,12 @@ mod file;
 mod handles;
 mod inspection;
 mod namespace;
+mod repair;
 
 pub use handles::Handle;
 pub use inspection::{ExtractionSink, ExtractionSummary, Finding};
 pub use namespace::{DirectoryCursor, DirectoryEntry, DirectoryPage};
+pub use repair::{Repair, RepairPlan};
 
 const ROOT_A: u64 = 256;
 const MAX_PUBLICATION_PAGES: usize = 4096 + crate::workspace::MAX_BANK_PAGES;

@@ -709,8 +709,24 @@ Extraction writes to a distinct destination and records every unreadable object
 or range. It never overwrites a destination silently or reports zero-filled
 damaged ranges as recovered data. Holes in verified source mappings may remain
 sparse. A missing parent or unreadable subtree limits enumeration and is itself
-reported. No in-place repair, snapshot recovery, or historical rollback is
-promised.
+reported. Offline repair reconstructs a catalog from independently validated,
+reachable pages, reconnects disconnected inodes under lost+found, and rebuilds
+allocation and cleanup metadata. The proposal is structurally checked before
+output. In-place writes use the selected root's verified workspace, leaving at
+least 4,096 slots for normal operations, and the inactive workspace bank. Missing
+catalog pages or file mappings require explicit acceptance of data loss.
+
+Repair finishes mirroring the selected original root before workspace reuse,
+writes and durably flushes replacement metadata, then writes and flushes root A
+and root B in order. Old metadata and file data are not overwritten during this
+sequence. Root records and the resulting forest are read back after publication.
+An unprovable workspace or an invalid proposal blocks writes. Recovery export can
+use a validated in-memory reconstruction without modifying the source. Neither
+repair nor export scans historical pages, rolls back silently, or repairs damaged
+file bytes. Recovery into a fresh image copies verified backed units through the
+normal filesystem writer. The source remains read-only, and the destination has
+independent allocation metadata, a new UUID, and newly assigned object IDs.
+Unrecoverable ranges remain unwritten and are identified in the recovery report. See [recovery instructions and limits](RECOVERY.md).
 
 ## 9. Test vectors and reference checks
 

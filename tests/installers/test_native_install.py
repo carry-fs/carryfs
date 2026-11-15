@@ -122,6 +122,7 @@ fi''')
         self.assertFalse(self.module(other).parent.exists())
         self.assertFalse(manifest.parent.exists())
         self.assertFalse((self.host / "usr/local/bin/carryfs").exists())
+        self.assertFalse((self.host / "usr/local/bin/fsck.carryfs").is_symlink())
         self.assertFalse((self.host / "usr/sbin/mount.carryfs").is_symlink())
         self.assertEqual(unrelated.read_text(), "keep")
         self.assertEqual((self.host / "etc/udisks2/mount_options.conf").read_text(),

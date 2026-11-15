@@ -320,6 +320,7 @@ Copy-on-write preserves the previous committed state during updates, provided
 the device honors flushes. Changes that have not been synchronized can be lost
 after an interruption. Checksums detect damage but do not repair files;
 CarryFS has no self-healing. Restore damaged files from an independent backup.
+For metadata damage, use [offline diagnosis, repair, and recovery](RECOVERY.md).
 
 A volume upgraded with `carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE`
 on Linux, macOS, and FreeBSD, or `carryfs-windows upgrade VOLUME` on Windows, stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn file_operations_match_their_oracle() {
     // Partial tails, sparse growth, replacement with an open destination,
-    // unlink with a pin, writes through the pin, sync and crash.
+    // unlink with a pin, writes through the pin, hard links, sync and crash.
     let actions = [
         [0, 0, 0, 0],
         [1, 0, 3, 2],
@@ -17,6 +17,18 @@ fn file_operations_match_their_oracle() {
         [5, 1, 0, 0],
         [9, 0, 0, 0],
         [8, 0, 0, 0],
+        [10, 0, 0, 0],
+        // A second name, a write through it, a rename onto it, then removal
+        // of both names under a pin.
+        [0, 3, 0, 0],
+        [12, 3, 4, 0],
+        [1, 4, 2, 1],
+        [4, 3, 4, 0],
+        [6, 3, 0, 0],
+        [5, 3, 0, 0],
+        [5, 4, 0, 0],
+        [7, 0, 1, 1],
+        [9, 0, 0, 0],
         [10, 0, 0, 0],
     ];
     for deferred in [false, true] {
@@ -271,16 +283,12 @@ fn unnamed_files_are_pinned_published_and_reclaimed() {
     let mut bytes = [0; 18];
     assert_eq!(volume.read(&handle, 0, &mut bytes).unwrap(), 18);
     assert_eq!(&bytes, b"temporary contents");
-    volume
-        .link_tmpfile(object, ROOT, name("published"))
-        .unwrap();
+    volume.link(object, ROOT, name("published")).unwrap();
     assert_eq!(volume.lookup(ROOT, &name("published")).unwrap(), object);
     assert!(!volume.attributes(object).unwrap().orphan);
-    assert!(
-        volume
-            .link_tmpfile(object, ROOT, name("second-link"))
-            .is_err()
-    );
+    assert_eq!(volume.attributes(object).unwrap().links, 1);
+    // Relinking an unnamed file does not opt the volume into hard links.
+    assert!(!volume.supports_links());
     volume.close_handle(handle).unwrap();
     drain(&mut volume);
     checked(&volume);
@@ -304,7 +312,7 @@ fn unnamed_files_disappear_after_a_crash_and_link_collisions_leave_them_open() {
         .create_tmpfile(ROOT, NewAttributes::default())
         .unwrap();
     assert!(matches!(
-        volume.link_tmpfile(object, ROOT, name("exists")),
+        volume.link(object, ROOT, name("exists")),
         Err(Error::NameCollision)
     ));
     volume.write(&handle, 0, b"still writable").unwrap();

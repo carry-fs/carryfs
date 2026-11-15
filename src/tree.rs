@@ -710,6 +710,9 @@ pub(crate) struct Forest<'a, D> {
     pub device: &'a mut D,
     pub base: &'a Root,
     pub generation: u64,
+    /// Root feature bits this forest publishes: the base's, plus any an
+    /// operation enables, such as the first hard link.
+    pub features: u64,
     nodes: Vec<Node>,
     pub retired: BTreeSet<u64>,
     /// Blocks added to `retired` by this forest, in order, so a mark records
@@ -739,6 +742,7 @@ pub(crate) struct Forest<'a, D> {
 #[derive(Default)]
 pub(crate) struct Drafts {
     generation: u64,
+    features: u64,
     nodes: Vec<Node>,
     retired: BTreeSet<u64>,
     reads: usize,
@@ -759,6 +763,7 @@ impl Drafts {
 /// undoing them truncates; `retired` is the one set an edit adds to, and its
 /// additions are undone from the log.
 pub(crate) struct Mark {
+    features: u64,
     nodes: usize,
     retired: usize,
     reads: usize,
@@ -788,6 +793,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             base,
             cache,
             generation: base.generation.checked_add(1).ok_or(Error::LimitExceeded)?,
+            features: base.features,
             nodes: Vec::new(),
             retired: BTreeSet::new(),
             retired_log: Vec::new(),
@@ -819,6 +825,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             base,
             cache,
             generation: drafts.generation,
+            features: drafts.features | base.features,
             nodes: drafts.nodes,
             retired: drafts.retired,
             retired_log: Vec::new(),
@@ -835,6 +842,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     pub fn suspend(self) -> Drafts {
         Drafts {
             generation: self.generation,
+            features: self.features,
             nodes: self.nodes,
             retired: self.retired,
             reads: self.reads,
@@ -914,6 +922,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     pub fn mark(&mut self) -> Mark {
         self.owned = self.nodes.len();
         Mark {
+            features: self.features,
             nodes: self.nodes.len(),
             retired: self.retired_log.len(),
             reads: self.reads,
@@ -925,6 +934,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     /// Undo everything since `mark`. Nothing reachable from the transaction's
     /// roots at `mark` is touched, because edits only ever append drafts.
     pub fn rewind(&mut self, mark: Mark) {
+        self.features = mark.features;
         self.nodes.truncate(mark.nodes);
         for block in self.retired_log.drain(mark.retired..) {
             self.retired.remove(&block);
@@ -1758,7 +1768,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                     value,
                     self.base.blocks,
                     self.generation,
-                    self.base.features,
+                    self.features,
                 )?;
                 let appended = records
                     .len()
@@ -1775,7 +1785,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                                 old_value,
                                 self.base.blocks,
                                 self.generation,
-                                self.base.features,
+                                self.features,
                             )?
                         } else {
                             0
@@ -1902,7 +1912,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                 value,
                 self.base.blocks,
                 self.generation,
-                self.base.features,
+                self.features,
             )
         } else {
             Ok(0)

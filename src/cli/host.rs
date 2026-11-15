@@ -315,6 +315,7 @@ mod tests {
             size: 0,
             allocated_bytes: 0,
             parent: ROOT,
+            links: 1,
             creation: time,
             modification: time,
             metadata_change: time,

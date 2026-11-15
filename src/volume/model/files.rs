@@ -91,7 +91,7 @@ pub(super) fn fuzz(data: &[u8]) {
     for &[op, a, b, c] in data.as_chunks::<4>().0.iter().take(64) {
         let source = name(a);
         let text = String::from_utf8(source.stored().to_vec()).unwrap();
-        match op % 12 {
+        match op % 13 {
             0 => match volume.create_file(ROOT, source) {
                 Ok(handle) => {
                     let object = volume.lookup(ROOT, &name(a)).unwrap();
@@ -107,7 +107,7 @@ pub(super) fn fuzz(data: &[u8]) {
                     && let State::File(bytes) = objects.get_mut(&object).unwrap()
                 {
                     let handle = volume.open_object(object, Access::ReadWrite).unwrap();
-                    if op % 12 == 3 {
+                    if op % 13 == 3 {
                         let size = [0, 1, 4095, 65_535, 65_536, 131_073][usize::from(b) % 6];
                         volume.truncate(&handle, size as u64).unwrap();
                         bytes.resize(size, 0);
@@ -124,8 +124,11 @@ pub(super) fn fuzz(data: &[u8]) {
                     volume
                         .rename(ROOT, &source, ROOT, target, Replace::Allowed)
                         .unwrap();
-                    names.remove(&text);
-                    names.insert(to, object);
+                    // Renaming onto another name of the same file changes nothing.
+                    if names.get(&to) != Some(&object) {
+                        names.remove(&text);
+                        names.insert(to, object);
+                    }
                 }
             }
             5 => {
@@ -207,7 +210,25 @@ pub(super) fn fuzz(data: &[u8]) {
                     Err(error) => panic!("symlink: {error:?}"),
                 }
             }
-            _ => unreachable!("op % 12"),
+            12 => {
+                if let Some(&object) = names.get(&text) {
+                    let target = name(b);
+                    let to = String::from_utf8(target.stored().to_vec()).unwrap();
+                    match volume.link(object, ROOT, target) {
+                        Ok(()) => assert!(names.insert(to, object).is_none()),
+                        Err(Error::NameCollision) => assert!(names.contains_key(&to)),
+                        Err(Error::WrongType) => {
+                            assert!(matches!(objects[&object], State::Link(_)));
+                        }
+                        Err(error) => panic!("link: {error:?}"),
+                    }
+                }
+            }
+            _ => unreachable!("op % 13"),
+        }
+        for &object in names.values() {
+            let count = names.values().filter(|&&other| other == object).count();
+            assert_eq!(volume.attributes(object).unwrap().links as usize, count);
         }
         let expected: Snapshot = names
             .iter()

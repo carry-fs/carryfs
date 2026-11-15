@@ -8,8 +8,9 @@ pub(crate) use carryfs_ondisk::crc::UNIT_BYTES;
 pub(crate) use carryfs_ondisk::crc::crc32c;
 pub(crate) use carryfs_ondisk::format::{
     ATTRIBUTE_HIDDEN, BLOCK_BYTES, CHECKSUM_GROUP_BYTES, EXTENT_UNWRITTEN, FEATURE_ATTRIBUTES,
-    FEATURE_PREALLOCATION, INODE_ATTRIBUTES, INODE_MODE, REVISION, ROOT_MAGIC, TreeKind, TreeRef,
-    Validation, all_zero, compact_group, expand_group, reserved_group_blocks, set_checksum_slot,
+    FEATURE_LINKS, FEATURE_PREALLOCATION, INODE_ATTRIBUTES, INODE_EXTRA_LINKS, INODE_MODE,
+    MAX_EXTRA_LINKS, REVISION, ROOT_MAGIC, TreeKind, TreeRef, Validation, all_zero, compact_group,
+    expand_group, extra_links, link_hash, reserved_group_blocks, set_checksum_slot,
 };
 
 use crate::device::Geometry;
@@ -609,6 +610,7 @@ mod tests {
             include_bytes!("../testdata/vectors/symlink-catalog-leaf.bin"),
             include_bytes!("../testdata/vectors/checksum-catalog-leaf.bin"),
             include_bytes!("../testdata/vectors/attributes-catalog-leaf.bin"),
+            include_bytes!("../testdata/vectors/link-catalog-leaf.bin"),
         ] {
             assert_eq!(read_u16_le(fixture, 8, "revision").unwrap(), 1);
             for revision in [0_u16, 2] {
@@ -750,7 +752,7 @@ mod tests {
         .unwrap();
         assert_eq!(decoded.features, 1);
         let mut unknown = *include_bytes!("../testdata/vectors/root-a.bin");
-        unknown[128] = 4;
+        unknown[128] = 8;
         root_crc(&mut unknown);
         assert!(matches!(
             Root::decode(&unknown, 256, GEOMETRY),
@@ -881,6 +883,45 @@ mod tests {
 
         assert!(validate_owner_id(MAX_ID - 1, Validation::Input).is_ok());
         assert!(validate_owner_id(MAX_ID, Validation::Input).is_err());
+    }
+
+    #[test]
+    fn extra_links_are_bounded_gated_and_only_on_linked_files() {
+        let key = [0, 0, 0, 0, 0, 0, 0, 2, 1];
+        let with = |kind: u8, flags: u8, links: u32| {
+            let mut value = inode(0).to_vec();
+            value[0] = kind;
+            value[1] = flags;
+            value[88..92].copy_from_slice(&links.to_le_bytes());
+            if kind == 3 {
+                value[16..24].copy_from_slice(&1u64.to_le_bytes());
+                value.push(b'x');
+            }
+            value
+        };
+        let valid = |value: &[u8], features: u64| {
+            validate_inode(value, GEOMETRY.blocks(), Validation::Disk).is_ok()
+                && validate_inode_features(&key, value, features).is_ok()
+        };
+        assert!(valid(&with(1, 0, 1), FEATURE_LINKS));
+        assert!(valid(&with(1, 0, MAX_EXTRA_LINKS), FEATURE_LINKS));
+        assert!(valid(&with(1, 0, 0), 0));
+        for (value, why) in [
+            (with(1, 0, MAX_EXTRA_LINKS + 1), "beyond the cap"),
+            (with(1, 0, u32::MAX), "wrapping count"),
+            (with(1, 1, 1), "orphan"),
+            (with(2, 0, 1), "directory"),
+            (with(3, 0, 1), "symlink"),
+        ] {
+            assert!(!valid(&value, FEATURE_LINKS), "{why}");
+        }
+        assert!(!valid(
+            &with(1, 0, 1),
+            FEATURE_ATTRIBUTES | FEATURE_PREALLOCATION
+        ));
+        let mut reserved = with(1, 0, 1);
+        reserved[92] = 1;
+        assert!(!valid(&reserved, FEATURE_LINKS));
     }
 
     #[test]

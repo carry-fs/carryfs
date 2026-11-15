@@ -1143,6 +1143,7 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         }
         let mut root = self.forest.base.clone();
         root.generation = self.forest.generation;
+        root.features = self.forest.features;
         root.catalog = self.forest.resolve(&self.catalog, &assignments)?;
         root.allocation = self.forest.resolve(&allocation, &assignments)?;
         root.cleanup = self.forest.resolve(&cleanup, &assignments)?;

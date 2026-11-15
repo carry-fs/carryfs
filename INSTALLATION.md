@@ -348,7 +348,8 @@ machine images.
 Files and symlinks can have hard links: `ln` on Linux, macOS, and FreeBSD, up
 to 65,535 names each. Directories cannot be hard linked.
 Windows opens, renames, and deletes the names but cannot create new ones.
-`carryfs put` and `carryfs get` copy each name as a separate file. The first
+`carryfs put` and `carryfs get` keep the hard links inside the copied tree;
+if the destination cannot link, `get` writes a separate copy. The first
 hard link upgrades a volume automatically, like preallocation, and versions
 of CarryFS without hard links cannot mount it afterwards.
 

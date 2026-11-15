@@ -50,6 +50,13 @@ unsafe extern "C" {
     fn mkdirat(dirfd: i32, path: *const std::ffi::c_char, mode: Mode) -> i32;
     fn symlinkat(target: *const std::ffi::c_char, dirfd: i32, path: *const std::ffi::c_char)
     -> i32;
+    fn linkat(
+        olddirfd: i32,
+        oldpath: *const std::ffi::c_char,
+        newdirfd: i32,
+        newpath: *const std::ffi::c_char,
+        flags: i32,
+    ) -> i32;
     #[cfg(target_os = "macos")]
     fn fchflags(fd: i32, flags: u32) -> i32;
 }
@@ -202,6 +209,27 @@ impl Sink {
             .then(|| (u32::from(attributes.mode.bits()), attributes.hidden))
     }
 
+    /// Open the parent of an entry this sink created, from the extraction
+    /// root: that branch's descriptors may be gone and its modes restored.
+    fn reopen(&self, path: &[Name]) -> Result<(File, CString)> {
+        let Some((last, directories)) = path.split_last() else {
+            let parent = self
+                .parent
+                .try_clone()
+                .map_err(|e| io_error("reopen destination parent", e))?;
+            return Ok((parent, self.name.clone()));
+        };
+        let mut directory = open_at(&self.parent, &self.name, DIRECTORY)?;
+        for name in directories {
+            directory = open_at(
+                &directory,
+                &component(OsStr::from_bytes(name.stored()))?,
+                DIRECTORY,
+            )?;
+        }
+        Ok((directory, component(OsStr::from_bytes(last.stored()))?))
+    }
+
     fn entry(&mut self, path: &[Name]) -> Result<(&File, CString)> {
         self.leave(path.len())?;
         if let Some(name) = path.last() {
@@ -277,6 +305,29 @@ impl ExtractionSink for Sink {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = hidden;
+        Ok(())
+    }
+
+    fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()> {
+        let (existing_parent, existing_name) = self.reopen(existing)?;
+        let (parent, name) = self.entry(path)?;
+        // SAFETY: both directory descriptors and NUL-terminated names remain
+        // live for this call. Flags 0 links a symlink itself.
+        if unsafe {
+            linkat(
+                existing_parent.as_raw_fd(),
+                existing_name.as_ptr(),
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io_error(
+                "create extraction link",
+                io::Error::last_os_error(),
+            ));
+        }
         Ok(())
     }
 }

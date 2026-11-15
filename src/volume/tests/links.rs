@@ -380,3 +380,29 @@ fn link_and_unlink_output_cuts_recover_old_or_new() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn extraction_links_later_names_to_the_first() {
+    use std::os::unix::fs::MetadataExt;
+    let mut volume = opened();
+    let dir = volume.create_directory(ROOT, name("dir")).unwrap();
+    let file = write_file(&mut volume, ROOT, "a", b"shared");
+    volume.link(file, dir, name("b")).unwrap();
+    let symlink = volume.create_symlink(ROOT, name("s"), b"a").unwrap();
+    volume.link(symlink, dir, name("s2")).unwrap();
+    volume.sync().unwrap();
+    let image = volume.into_model_image();
+    let mut reader = Volume::open(FaultDevice::new(image, MountMode::ReadOnly)).unwrap();
+    let mut output = RecoveryOutput::new();
+    let summary = reader
+        .extract_to(ROOT, &mut output, &mut |_| panic!("valid tree"))
+        .unwrap();
+    assert!(summary.complete);
+    assert_eq!(summary.files, 1, "the second name is a link, not a copy");
+    let inode = |path: &str| std::fs::symlink_metadata(output.root.join(path)).unwrap();
+    for (first, second) in [("a", "dir/b"), ("s", "dir/s2")] {
+        assert_eq!(inode(first).ino(), inode(second).ino());
+        assert_eq!(inode(first).nlink(), 2);
+    }
+    assert_eq!(std::fs::read(output.root.join("dir/b")).unwrap(), b"shared");
+}

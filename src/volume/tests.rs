@@ -2418,6 +2418,10 @@ impl ExtractionSink for RecoveryOutput {
         let made = std::os::windows::fs::symlink_file(target, self.path(path));
         made.map_err(|e| Error::io("test symlink", e))
     }
+    fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()> {
+        std::fs::hard_link(self.path(existing), self.path(path))
+            .map_err(|e| Error::io("test link", e))
+    }
 }
 
 #[test]
@@ -2629,6 +2633,9 @@ fn inspection_reports_incomplete_traversal_after_a_later_metadata_read_failure()
         }
         fn create_symlink(&mut self, _: &[Name], _: &[u8], _: &Attributes) -> Result<()> {
             panic!("enumeration must stop before symlinks");
+        }
+        fn create_link(&mut self, _: &[Name], _: &[Name]) -> Result<()> {
+            panic!("enumeration must stop before links");
         }
     }
     let volume = opened();

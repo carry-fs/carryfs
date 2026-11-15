@@ -60,6 +60,19 @@ def check(mount):
             os.close(fd)
         assert not list(root.iterdir())
 
+        # A punch over a hole still updates the times.
+        sparse = root / "sparse"
+        with open(sparse, "wb") as stream:
+            stream.truncate(4 * 65536)
+        os.utime(sparse, ns=(10**18, 10**18))
+        fd = os.open(sparse, os.O_RDWR)
+        try:
+            call(libc.fallocate(fd, 3, 65536, 65536))
+            stamp = os.fstat(fd)
+            assert stamp.st_mtime_ns > 10**18 and stamp.st_ctime_ns > 10**18, stamp
+        finally:
+            os.close(fd)
+
 
 if __name__ == "__main__":
     check(Path(sys.argv[1]))

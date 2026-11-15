@@ -1,6 +1,7 @@
 //! Host operations used by offline transfer. All extraction creates are relative
 //! to held directory descriptors and refuse existing entries.
 
+use std::collections::HashMap;
 use std::ffi::{CString, OsStr};
 use std::fs::{File, OpenOptions, Permissions};
 use std::io;
@@ -19,6 +20,7 @@ mod flags {
     pub const CLOEXEC: i32 = 0o2000000;
     pub const CREATE: i32 = 0o100 | 0o200 | 1;
     pub const NONBLOCK: i32 = 0o4000;
+    pub const IDENTITY: i32 = 0o10000000;
     pub type Mode = u32;
     pub type OpenMode = u32;
 }
@@ -30,6 +32,7 @@ mod flags {
     pub const CREATE: i32 = 0x200 | 0x800 | 1;
     pub const NONBLOCK: i32 = 4;
     pub const SYMLINK: i32 = 0x00200000;
+    pub const IDENTITY: i32 = SYMLINK;
     pub type Mode = u16;
     pub type OpenMode = i32;
 }
@@ -40,6 +43,7 @@ mod flags {
     pub const CLOEXEC: i32 = 0x00100000;
     pub const CREATE: i32 = 0x200 | 0x800 | 1;
     pub const NONBLOCK: i32 = 4;
+    pub const IDENTITY: i32 = 0x00400000;
     pub type Mode = u16;
     pub type OpenMode = i32;
 }
@@ -57,6 +61,7 @@ unsafe extern "C" {
         newpath: *const std::ffi::c_char,
         flags: i32,
     ) -> i32;
+    fn unlinkat(dirfd: i32, path: *const std::ffi::c_char, flags: i32) -> i32;
     #[cfg(target_os = "macos")]
     fn fchflags(fd: i32, flags: u32) -> i32;
 }
@@ -149,6 +154,49 @@ pub(super) struct Sink {
     /// Restore stored modes: only from a volume that stores them. Otherwise
     /// extracted entries keep the private modes they are created with.
     modes: bool,
+    /// Created entries whose objects have other names, by path, so a later
+    /// link reaches only the object extraction wrote.
+    held: HashMap<Vec<Vec<u8>>, Held>,
+}
+
+/// An extracted object kept open so its inode, and so its identity, cannot
+/// be freed and reused while later names may link to it.
+struct Held {
+    _object: File,
+    identity: (u64, u64),
+    /// Names still to link before the descriptor can close.
+    remaining: u32,
+}
+
+// ponytail: at most this many objects are held at once; later names of other
+// objects are copied. Raise it, or hold fewer per object, if link farms need more.
+const MAX_HELD: usize = 128;
+
+impl Held {
+    fn new(object: File, links: u32) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = object
+            .metadata()
+            .map_err(|e| io_error("inspect extracted entry", e))?;
+        Ok(Self {
+            _object: object,
+            identity: (metadata.dev(), metadata.ino()),
+            remaining: links - 1,
+        })
+    }
+}
+
+/// The device and inode `name` in `directory` names, without following it.
+fn identity(directory: &File, name: &CString) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = open_at(directory, name, IDENTITY)?
+        .metadata()
+        .map_err(|e| io_error("inspect extracted entry", e))?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn path_key(path: &[Name]) -> Vec<Vec<u8>> {
+    path.iter().map(|name| name.stored().to_vec()).collect()
 }
 
 impl Sink {
@@ -186,6 +234,7 @@ impl Sink {
             name,
             directories: Vec::new(),
             modes,
+            held: HashMap::new(),
         })
     }
 
@@ -265,6 +314,13 @@ impl ExtractionSink for Sink {
         let stored = self.stored(attributes);
         let (parent, name) = self.entry(path)?;
         let file = open_at(parent, &name, CREATE)?;
+        if attributes.links > 1 && self.held.len() < MAX_HELD {
+            let object = file
+                .try_clone()
+                .map_err(|e| io_error("hold extracted file", e))?;
+            self.held
+                .insert(path_key(path), Held::new(object, attributes.links)?);
+        }
         // Extraction writes through this descriptor, which the mode does not
         // limit once open.
         if let Some(stored) = stored {
@@ -280,6 +336,7 @@ impl ExtractionSink for Sink {
         attributes: &Attributes,
     ) -> Result<()> {
         let hidden = self.modes && attributes.hidden;
+        let hold = attributes.links > 1 && self.held.len() < MAX_HELD;
         let (parent, name) = self.entry(path)?;
         let target =
             CString::new(target).map_err(|_| Error::InvalidInput("NUL in symlink target"))?;
@@ -305,11 +362,27 @@ impl ExtractionSink for Sink {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = hidden;
+        // An object not held has its later names extracted as copies.
+        if hold && let Ok(object) = open_at(parent, &name, IDENTITY) {
+            self.held
+                .insert(path_key(path), Held::new(object, attributes.links)?);
+        }
         Ok(())
     }
 
     fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()> {
+        let key = path_key(existing);
+        let created = self
+            .held
+            .get(&key)
+            .ok_or(Error::InvalidInput("no extracted object to link"))?
+            .identity;
         let (existing_parent, existing_name) = self.reopen(existing)?;
+        // Another process may have replaced the first name since extraction
+        // wrote it; link only the object extraction verified.
+        if identity(&existing_parent, &existing_name)? != created {
+            return Err(Error::InvalidInput("extracted entry was replaced"));
+        }
         let (parent, name) = self.entry(path)?;
         // SAFETY: both directory descriptors and NUL-terminated names remain
         // live for this call. Flags 0 links a symlink itself.
@@ -327,6 +400,24 @@ impl ExtractionSink for Sink {
                 "create extraction link",
                 io::Error::last_os_error(),
             ));
+        }
+        // A replacement between the check and the link shows here.
+        if identity(parent, &name).ok() != Some(created) {
+            // SAFETY: the directory descriptor and NUL-terminated name remain
+            // live for this call.
+            if unsafe { unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+                return Err(io_error(
+                    "remove mislinked extraction entry",
+                    io::Error::last_os_error(),
+                ));
+            }
+            return Err(Error::InvalidInput("extracted entry was replaced"));
+        }
+        if let Some(held) = self.held.get_mut(&key) {
+            held.remaining = held.remaining.saturating_sub(1);
+            if held.remaining == 0 {
+                self.held.remove(&key);
+            }
         }
         Ok(())
     }
@@ -438,6 +529,40 @@ mod tests {
         if sink.create_link(&second, &first).is_ok() {
             assert_eq!(std::fs::read(held.join("second")).unwrap(), b"verified");
         }
+    }
+
+    #[test]
+    fn extraction_links_only_the_object_it_wrote() {
+        use std::os::unix::fs::MetadataExt;
+        let linked = Attributes {
+            kind: ObjectKind::File,
+            links: 2,
+            ..attributes()
+        };
+        let temp = Temp::new();
+        let root = temp.0.join("output");
+        let mut sink = Sink::new(&root, false).unwrap();
+        sink.create_directory(&[], &attributes()).unwrap();
+        let name = |text: &str| [Name::parse(text).unwrap()];
+        sink.create_file(&name("first"), &linked)
+            .unwrap()
+            .write_all(b"verified")
+            .unwrap();
+        sink.create_link(&name("second"), &name("first")).unwrap();
+        let inode = |file: &str| std::fs::metadata(root.join(file)).unwrap().ino();
+        assert_eq!(inode("first"), inode("second"));
+        // Its last name is linked, so the object is no longer held open.
+        assert!(sink.held.is_empty());
+
+        // A replaced first name is refused, leaving no entry behind. The held
+        // object keeps its inode from being reused by the replacement.
+        sink.create_file(&name("third"), &linked).unwrap();
+        std::fs::remove_file(root.join("third")).unwrap();
+        std::fs::write(root.join("third"), b"unverified").unwrap();
+        assert!(sink.create_link(&name("fourth"), &name("third")).is_err());
+        assert!(!root.join("fourth").exists());
+        // A name with no recorded object is refused too.
+        assert!(sink.create_link(&name("fifth"), &name("missing")).is_err());
     }
 
     #[test]

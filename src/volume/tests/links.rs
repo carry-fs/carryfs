@@ -71,6 +71,16 @@ fn links_share_contents_and_survive_until_the_last_name_goes() {
 }
 
 #[test]
+fn deferred_link_is_visible_in_the_feature_query() {
+    let mut volume = opened();
+    let file = write_file(&mut volume, ROOT, "a", b"shared");
+    volume.set_deferred_checkpoints(true).unwrap();
+    volume.link(file, ROOT, name("b")).unwrap();
+    assert_eq!(volume.attributes(file).unwrap().links, 2);
+    assert!(volume.supports_links());
+}
+
+#[test]
 fn an_open_file_keeps_its_other_names_when_one_is_removed() {
     let mut volume = opened();
     let file = write_file(&mut volume, ROOT, "a", b"open");

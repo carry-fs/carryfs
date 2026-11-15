@@ -2975,6 +2975,25 @@ mod tests {
     }
 
     #[test]
+    fn linked_file_rename_updates_opens_with_different_case() {
+        let (_image, fs) = mount("links-rename-case");
+        make(&fs, "\\._A", false);
+        {
+            let mut s = fs.state.lock().unwrap();
+            let object = s.volume.lookup(ROOT, &Name::parse("._A").unwrap()).unwrap();
+            s.volume
+                .link(object, ROOT, Name::parse("b").unwrap())
+                .unwrap();
+        }
+        let (context, info, _) = fs.open(&w("\\._a"), false, false).unwrap();
+        assert_ne!(info.file_attributes & FILE_ATTRIBUTE_HIDDEN, 0);
+        fs.rename(&w("\\._A"), &w("\\visible"), false).unwrap();
+        let info = fs.file_info(context).unwrap();
+        fs.close(context);
+        assert_eq!(info.file_attributes & FILE_ATTRIBUTE_HIDDEN, 0);
+    }
+
+    #[test]
     fn a_read_only_mount_refuses_deletion() {
         let (image, volume) = {
             let (image, fs) = mount("readonly-setup");

@@ -419,6 +419,28 @@ mod tests {
     }
 
     #[test]
+    fn extraction_links_retain_the_original_object_after_path_replacement() {
+        let temp = Temp::new();
+        let root = temp.0.join("output");
+        let held = temp.0.join("held");
+        let mut sink = Sink::new(&root, false).unwrap();
+        sink.create_directory(&[], &attributes()).unwrap();
+        let first = [Name::parse("first").unwrap()];
+        let second = [Name::parse("second").unwrap()];
+        let mut file = sink.create_file(&first, &attributes()).unwrap();
+        file.write_all(b"verified").unwrap();
+        drop(file);
+
+        std::fs::rename(&root, &held).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("first"), b"unverified replacement").unwrap();
+        // Refusing the link lets extraction copy verified bytes instead.
+        if sink.create_link(&second, &first).is_ok() {
+            assert_eq!(std::fs::read(held.join("second")).unwrap(), b"verified");
+        }
+    }
+
+    #[test]
     fn extraction_refuses_entries_inserted_after_preflight() {
         let temp = Temp::new();
         let output = temp.0.join("output");

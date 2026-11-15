@@ -32,6 +32,18 @@ def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
 
+def detach(loop):
+    """Detach a loop device and wait until it releases its image, which
+    `losetup -d` leaves to finish asynchronously."""
+    run("losetup", "-d", loop)
+    backing = Path("/sys/block") / Path(loop).name / "loop/backing_file"
+    deadline = time.monotonic() + 30
+    while backing.exists():
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"{loop} did not detach")
+        time.sleep(0.02)
+
+
 class Volume:
     """A fresh image, mounted through the kernel driver while in use."""
 
@@ -54,10 +66,7 @@ class Volume:
     def unmount(self):
         run("umount", self.point)
         Volume.mounted.discard(self)
-        run("losetup", "-d", self.loop)
-        backing = Path("/sys/block") / Path(self.loop).name / "loop/backing_file"
-        while backing.exists():
-            time.sleep(0.02)
+        detach(self.loop)
         self.loop = None
 
     def check(self, scrub=False):
@@ -344,7 +353,7 @@ def unsupported_mount_options(volume):
                 run("umount", volume.point)
                 raise AssertionError(f"unsupported {option} mount succeeded")
     finally:
-        run("losetup", "-d", loop)
+        detach(loop)
     volume.mount()
     for option in ("sync", "dirsync"):
         result = subprocess.run(["mount", "-i", "-o", f"remount,{option}", volume.point], capture_output=True)
@@ -448,7 +457,7 @@ def corrupt_records(volume):
                 run("umount", volume.point)
                 raise AssertionError(f"native driver accepted {case}")
         finally:
-            run("losetup", "-d", loop)
+            detach(loop)
         with volume.image.open("rb") as image:
             assert hashlib.file_digest(image, "sha256").digest() == before, f"{case}: failed mount changed the image"
         print(f"  {case}: rejected without writes or root repair; {checked.stderr.strip()}")

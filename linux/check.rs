@@ -2,7 +2,10 @@
 
 //! Read-only mount validation, before root repair or allocation.
 
-use crate::ondisk::format::{self, checksum_slot, TreeKind, TreeRef, FEATURE_PREALLOCATION};
+use crate::ondisk::format::{
+    self, checksum_slot, extra_links, link_hash, TreeKind, TreeRef, FEATURE_PREALLOCATION,
+};
+use crate::namei::FILE;
 use crate::tree::{self, be_u64, le_u64, Link, Tree};
 use crate::volume::State;
 use kernel::bindings::super_block;
@@ -42,13 +45,20 @@ impl Bits {
         if id < self.start || id >= self.end {
             return Ok(());
         }
+        if !self.insert(id) {
+            return Err(bad("duplicate ownership"));
+        }
+        Ok(())
+    }
+    /// Set `id`'s bit, which lies in the window; false if it was set.
+    fn insert(&mut self, id: u64) -> bool {
         if self.holds(id) {
-            return Err(bad("duplicate ownership or directory link"));
+            return false;
         }
         let bit = (id - self.start) as usize;
         self.pages[bit / 32768][bit % 32768 / 8] |= 1 << (bit % 8);
         self.count += 1;
-        Ok(())
+        true
     }
     fn range(&mut self, first: u64, count: u64, blocks: u64) -> Result {
         let end = first
@@ -300,7 +310,7 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
             )
             .is_err()
             {
-                return Err(bad("inode mode or attributes without the root feature"));
+                return Err(bad("inode field without its root feature"));
             }
             let mut orphan = [3; 9];
             orphan[1..].copy_from_slice(&owner.to_be_bytes());
@@ -313,6 +323,11 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
             if owner == 1 {
                 if inode[0] != 2 || marker || le_u64(&inode, 8) != 1 {
                     return Err(bad("invalid root directory"));
+                }
+            } else if !marker && inode[0] == FILE {
+                // A file's parent is only a hint; its entries prove it is reachable.
+                if le_u64(&inode, 8) >= state.root.next_object {
+                    return Err(bad("file parent exceeds allocated IDs"));
                 }
             } else if !marker {
                 let mut seen = KVec::new();
@@ -348,13 +363,19 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                 if current.inode[0] != 2 {
                     return Err(bad("non-directory has entries"));
                 }
+                if current.inode[1] & 1 != 0 {
+                    return Err(bad("orphaned directory has entries"));
+                }
                 crate::names::validate_disk(&value[12..], &key[9..])?;
                 let target = le_u64(value, 0);
                 if target <= 1 || target >= state.root.next_object {
                     return Err(bad("invalid entry target"));
                 }
                 let inode = record(sb, state, target)?;
-                if inode[0] != value[8] || inode[1] & 1 != 0 || le_u64(&inode, 8) != owner {
+                if inode[0] != value[8]
+                    || inode[1] & 1 != 0
+                    || (inode[0] != FILE && le_u64(&inode, 8) != owner)
+                {
                     return Err(bad("directory target type or parent mismatch"));
                 }
                 current.children += 1;
@@ -449,12 +470,15 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
     Ok(())
 }
 
+// Distinct entry targets must equal linked inodes, one bit per ID. A
+// target's later entries and its inode's extra links meet in one wrapping sum
+// of `link_hash`, which a miscounted object cannot balance.
 fn links(sb: *mut super_block, state: &State) -> Result {
     let mut start = 0;
     while start < state.root.next_object {
         let end = (start + WINDOW).min(state.root.next_object);
         let mut bits = Bits::new(start, end)?;
-        let mut linked = 0;
+        let (mut linked, mut repeated, mut extra) = (0, 0u128, 0u128);
         let mut next = state.root.next_object;
         Tree::catalog(sb, state).scan(&[], &mut |key, value| {
             let owner = be_u64(key, 0);
@@ -464,14 +488,19 @@ fn links(sb: *mut super_block, state: &State) -> Result {
                 }
                 if owner > 1 && owner >= start && owner < end && value[1] & 1 == 0 {
                     linked += 1;
+                    let weight = link_hash(owner).wrapping_mul(u128::from(extra_links(value)));
+                    extra = extra.wrapping_add(weight);
                 }
             } else if key[8] == tree::ENTRY {
-                bits.mark(le_u64(value, 0))?;
+                let target = le_u64(value, 0);
+                if (start..end).contains(&target) && !bits.insert(target) {
+                    repeated = repeated.wrapping_add(link_hash(target));
+                }
             }
             Ok(true)
         })?;
-        if bits.count != linked {
-            return Err(bad("linked inode does not have exactly one entry"));
+        if bits.count != linked || repeated != extra {
+            return Err(bad("linked inode's directory entries do not match its links"));
         }
         if next == state.root.next_object {
             break;

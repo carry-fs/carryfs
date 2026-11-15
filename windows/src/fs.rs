@@ -905,15 +905,25 @@ impl<D: BlockDevice> CarryFs<D> {
             // WinFsp knows the file by its new name from here on. A renamed
             // directory has no open file below it: Windows refuses that. Opens
             // through the file's other names keep their paths.
-            let renamed = |known: &[u16]| single || known == path;
-            for open in s.open.values_mut().filter(|open| open.object == moved) {
-                if let Some(known) = open.path.as_mut().filter(|known| renamed(known)) {
-                    *known = new_path.to_vec();
+            let opens: Vec<(u64, Vec<u16>)> = s
+                .open
+                .iter()
+                .filter(|(_, open)| open.object == moved)
+                .filter_map(|(context, open)| Some((*context, open.path.clone()?)))
+                .collect();
+            for (context, known) in opens {
+                if (single || s.names_entry(&known, source_parent, &source))
+                    && let Some(open) = s.open.get_mut(&context)
+                {
+                    open.path = Some(new_path.to_vec());
                 }
             }
-            for (context, known) in &mut s.kept {
-                if s.cleaned.get(context) == Some(&moved) && renamed(known) {
-                    *known = new_path.to_vec();
+            for index in 0..s.kept.len() {
+                let (context, known) = s.kept[index].clone();
+                if s.cleaned.get(&context) == Some(&moved)
+                    && (single || s.names_entry(&known, source_parent, &source))
+                {
+                    s.kept[index].1 = new_path.to_vec();
                 }
             }
             s.touched(source_parent, path);
@@ -1206,6 +1216,13 @@ impl<D: BlockDevice> State<D> {
 
     /// The parent directory, the final name, and the parent's stored spelling,
     /// for a path that is not the root.
+    /// Whether `path` spells the entry `name` in `parent`, by the volume's
+    /// name rules rather than its UTF-16 bytes.
+    fn names_entry(&mut self, path: &[u16], parent: ObjectId, name: &Name) -> bool {
+        self.parent(path)
+            .is_ok_and(|(found, last, _)| found == parent && last.collides_with(name))
+    }
+
     fn parent(&mut self, path: &[u16]) -> Reply<(ObjectId, Name, Vec<u16>)> {
         let (prefix, last) = split(path).ok_or(STATUS_ACCESS_DENIED)?;
         let name = component(last)?;

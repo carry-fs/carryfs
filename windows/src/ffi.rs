@@ -951,7 +951,7 @@ unsafe extern "system" fn open(
             *context = key as Context;
             *info = file;
             set_normalized_name(info, &normalized, wstr(name).unwrap_or_default());
-            if writes(access) {
+            if writes(access) || carry(fs).has_other_names(key)? {
                 bypass_cache()?;
             }
         }

@@ -24,7 +24,55 @@ const LEAF_RUNS: usize = 250;
 const MAX_PAGES: usize = 4_096;
 /// Open drafts after which the next operation commits first, so that no
 /// transaction outgrows `MAX_PAGES` with what commit adds.
-pub(crate) const COMMIT_DRAFTS: usize = 3_072;
+const COMMIT_DRAFTS: usize = 3_072;
+/// Drafts one operation and the commit after it may add at most.
+const OPERATION_DRAFTS: usize = MAX_PAGES - COMMIT_DRAFTS;
+
+/// Whether the workspace is too small to fund one more operation.
+fn workspace_low(state: &State) -> bool {
+    state.slots.len() < MIN_SLOTS + OPERATION_DRAFTS
+}
+
+/// Whether the workspace is too full to take back the pages one more
+/// operation may supersede.
+fn workspace_high(state: &State) -> bool {
+    state.slots.len() > CAPACITY - OPERATION_DRAFTS
+}
+
+/// Prepare the open transaction for one more operation. The successor list
+/// is the slots less this transaction's drafts, plus the pages it supersedes
+/// and any refill, and must hold `MIN_SLOTS` through `CAPACITY` entries. So
+/// commit first when the operation could take it past either bound, and
+/// refill or release a workspace too far out to absorb one operation.
+/// Creating many files adds pages faster than refill returns them, and
+/// removing many supersedes pages faster than release takes them; either
+/// gets smaller transactions instead of a failed publication. ENOSPC when no
+/// free block can refill the workspace.
+pub(crate) fn make_room(sb: *mut super_block, state: &mut Locked<'_>) -> Result {
+    let (drafts, superseded) = state
+        .txn
+        .as_ref()
+        .map_or((0, 0), |txn| (txn.drafts.len(), txn.superseded.len()));
+    let slots = state.slots.len();
+    let low = drafts + OPERATION_DRAFTS > slots.saturating_sub(MIN_SLOTS);
+    let high = superseded + OPERATION_DRAFTS > CAPACITY.saturating_sub(slots);
+    if drafts > 0 && (drafts >= COMMIT_DRAFTS || low || high) {
+        commit(sb, state)?;
+    }
+    while workspace_low(state) || workspace_high(state) {
+        let before = state.slots.len();
+        commit(sb, state)?;
+        let moved = if workspace_low(state) {
+            state.slots.len() > before
+        } else {
+            state.slots.len() != before
+        };
+        if !moved {
+            return Err(ENOSPC);
+        }
+    }
+    Ok(())
+}
 
 fn root_b(root: &Root) -> u64 {
     root.blocks - 257
@@ -206,8 +254,10 @@ fn commit_quiesced(sb: *mut super_block, state: &mut State) -> Result {
     }
     let txn = match state.txn.take() {
         Some(txn) => txn,
-        // A commit may run for reclamation alone.
-        None if state.reclaim_pending => Txn::new(&state.root, state.hint)?,
+        // A commit may run for reclamation or workspace balance alone.
+        None if state.reclaim_pending || workspace_low(state) || workspace_high(state) => {
+            Txn::new(&state.root, state.hint)?
+        }
         None => return Ok(()),
     };
     match publish(sb, state, txn) {
@@ -252,8 +302,12 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
 
     let more = txn.reclaim(&disk, base.cleanup)?;
     state.reclaim_pending = more || !txn.retired.is_empty();
-    if txn.edits == 0 && txn.data_allocated == 0 {
-        // Nothing to publish: no change and nothing reclaimable.
+    if txn.edits == 0
+        && txn.data_allocated == 0
+        && !workspace_low(state)
+        && !workspace_high(state)
+    {
+        // Nothing to publish: no change, nothing reclaimable, no balance due.
         return Ok(());
     }
 
@@ -273,6 +327,10 @@ fn publish(sb: *mut super_block, state: &mut State, mut txn: Txn) -> Result {
         txn.set_allocation(&disk, &refill, true)?;
     }
     txn.flush_space(&disk)?;
+    if txn.edits == 0 && txn.data_allocated == 0 {
+        // A refill that found no free block changes nothing.
+        return Ok(());
+    }
 
     // Every live draft gets a base slot that is neither released nor
     // already holding one of this transaction's data blocks.

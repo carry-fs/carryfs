@@ -11,7 +11,7 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
-use crate::commit::{self, COMMIT_DRAFTS};
+use crate::commit;
 use crate::edit::{Disk, Txn};
 use crate::glue;
 use crate::ondisk::format::{
@@ -93,8 +93,8 @@ fn changed(dir: &Inode) {
 }
 
 /// Run `f` on the open transaction of a writable volume, opening one, and
-/// committing a large one first. Faults the volume if `f` fails after its
-/// first edit.
+/// committing first when the transaction is large or the workspace is short
+/// (`commit::make_room`). Faults the volume if `f` fails after its first edit.
 pub(crate) fn mutate<T>(
     sb: *mut bindings::super_block,
     f: impl FnOnce(&mut State, &Disk) -> Result<T>,
@@ -107,13 +107,7 @@ pub(crate) fn mutate<T>(
     if state.faulted {
         return Err(EIO);
     }
-    if state
-        .txn
-        .as_ref()
-        .is_some_and(|txn| txn.drafts.len() >= COMMIT_DRAFTS)
-    {
-        commit::commit(sb, &mut state)?;
-    }
+    commit::make_room(sb, &mut state)?;
     if state.txn.is_none() {
         let txn = Txn::new(&state.root, state.hint)?;
         state.txn = Some(txn);

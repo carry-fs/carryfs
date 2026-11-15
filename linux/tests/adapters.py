@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import time
 
-from check import Volume, run
+from check import Volume, detach, run
 
 
 def main():
@@ -47,7 +47,7 @@ def main():
             if daemon is not None and daemon.poll() is None:
                 daemon.terminate()
                 daemon.wait(timeout=30)
-            run("losetup", "-d", loop)
+            detach(loop)
         print(f"default helper used FUSE with native loaded; explicit native mount preserved data; {volume.check(scrub=True)}", flush=True)
 
 

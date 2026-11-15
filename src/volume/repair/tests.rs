@@ -728,7 +728,7 @@ fn new_image_aborts_failed_data_writes_and_flushes_without_changing_the_source()
         completed
             .events
             .iter()
-            .position(|event| match event {
+            .rposition(|event| match event {
                 crate::volume::model::Event::Write(block) => completed
                     .durable
                     .get(block)
@@ -762,6 +762,12 @@ fn new_image_aborts_failed_data_writes_and_flushes_without_changing_the_source()
         ))
         .unwrap();
         volume.check().unwrap();
+        if failure != final_flush {
+            assert!(
+                embedded_manifest(&mut volume, &Name::parse("RECOVERY-REPORT.json").unwrap())
+                    .contains("\"state\":\"in_progress\"")
+            );
+        }
     }
 }
 
@@ -810,4 +816,152 @@ fn new_image_copies_every_directory_page_and_keeps_parent_paths() {
     );
     assert_eq!(media.borrow().durable, image);
     assert!(media.borrow().events.is_empty());
+}
+
+fn embedded_manifest(volume: &mut Volume<FaultDevice>, name: &Name) -> String {
+    let file = volume.open_file(ROOT, name, Access::Read).unwrap();
+    let size = volume.handle_attributes(&file).unwrap().size as usize;
+    let mut bytes = vec![0; size];
+    let mut offset = 0;
+    while offset < size {
+        offset += volume
+            .read(&file, offset as u64, &mut bytes[offset..])
+            .unwrap();
+    }
+    volume.close_handle(file).unwrap();
+    String::from_utf8(bytes).unwrap()
+}
+
+#[test]
+fn manifest_preserves_colliding_names_and_records_verified_source_provenance() {
+    let (image, _, _) = fixture();
+    let mut source = Volume::open(FaultDevice::new(image, MountMode::ReadWrite)).unwrap();
+    for name in ["recovery-report.JSON", "RECOVERY-REPORT.1.json.working"] {
+        let file = source
+            .create_file(ROOT, Name::parse(name).unwrap())
+            .unwrap();
+        source.write(&file, 0, b"original report").unwrap();
+        source.close_handle(file).unwrap();
+    }
+    source.sync().unwrap();
+    let image = source.into_model_image();
+    let original = root(&image);
+    let mut repair = Repair::diagnose(FaultDevice::new(image, MountMode::ReadOnly)).unwrap();
+    let destination = FaultDevice::new(BTreeMap::new(), MountMode::ReadWrite);
+    let media = destination.media.clone();
+    let result = repair
+        .recover_image_with_verification(destination, true, &mut |finding| panic!("{finding:?}"))
+        .unwrap();
+    assert!(!result.verification_failed);
+    assert_eq!(result.manifest_name.stored(), b"RECOVERY-REPORT.2.json");
+    assert!(result.manifest_json.contains("\"verification\":\"passed\""));
+    assert!(
+        result
+            .manifest_json
+            .contains(&format!("\"generation\":{}", original.generation))
+    );
+    let mut volume = Volume::open(FaultDevice::new(
+        media.borrow().durable.clone(),
+        MountMode::ReadOnly,
+    ))
+    .unwrap();
+    assert_eq!(
+        embedded_manifest(&mut volume, &result.manifest_name),
+        result.manifest_json
+    );
+    for name in ["recovery-report.JSON", "RECOVERY-REPORT.1.json.working"] {
+        assert_file(
+            FaultDevice::new(media.borrow().durable.clone(), MountMode::ReadOnly),
+            &[name],
+            b"original report",
+        );
+    }
+}
+
+#[test]
+fn manifest_identifies_missing_mappings_even_when_rebuilt_data_scrubs_clean() {
+    let (mut image, id, _) = fixture();
+    edit_catalog(&mut image, |records| {
+        records.retain(|(key, _)| !(key[8] == 4 && u64_be(&key[..8]).unwrap() == id))
+    });
+    let mut repair = Repair::diagnose(FaultDevice::new(image, MountMode::ReadOnly)).unwrap();
+    let destination = FaultDevice::new(BTreeMap::new(), MountMode::ReadWrite);
+    let media = destination.media.clone();
+    let result = repair
+        .recover_image_with_verification(destination, true, &mut |finding| panic!("{finding:?}"))
+        .unwrap();
+    assert!(!result.summary.complete);
+    assert!(!result.verification_failed);
+    assert!(result.manifest_json.contains("\"state\":\"partial\""));
+    assert!(
+        result
+            .manifest_json
+            .contains("\"offset\":0,\"length\":150001")
+    );
+    assert!(result.manifest_json.contains("\"status\":\"partial\""));
+    let mut volume = Volume::open(FaultDevice::new(
+        media.borrow().durable.clone(),
+        MountMode::ReadOnly,
+    ))
+    .unwrap();
+    assert_eq!(
+        volume
+            .scrub(&mut |finding| panic!("{finding:?}"))
+            .unwrap()
+            .unreadable_ranges,
+        0
+    );
+    assert_eq!(
+        embedded_manifest(&mut volume, &result.manifest_name),
+        result.manifest_json
+    );
+}
+
+#[test]
+fn destination_verification_records_output_damage_without_blessing_it() {
+    let (image, _, bytes) = fixture();
+    let source = FaultDevice::new(image.clone(), MountMode::ReadOnly);
+    let source_media = source.media.clone();
+    let mut repair = Repair::diagnose(source).unwrap();
+    let baseline = FaultDevice::new(BTreeMap::new(), MountMode::ReadWrite);
+    let baseline_media = baseline.media.clone();
+    repair
+        .recover_image_with_verification(baseline, true, &mut |finding| panic!("{finding:?}"))
+        .unwrap();
+    let block = *baseline_media
+        .borrow()
+        .durable
+        .iter()
+        .find(|(_, page)| page.0[..] == bytes[..BLOCK_BYTES])
+        .unwrap()
+        .0;
+    let destination = FaultDevice::new(BTreeMap::new(), MountMode::ReadWrite);
+    let media = destination.media.clone();
+    media.borrow_mut().persistent_unreadable.insert(block);
+    let mut findings = Vec::new();
+    let result = repair
+        .recover_image_with_verification(destination, true, &mut |finding| {
+            findings.push((finding.offset, finding.length));
+        })
+        .unwrap();
+    assert!(result.verification_failed);
+    assert_eq!(findings, [(Some(0), 65_536)]);
+    assert!(
+        result
+            .manifest_json
+            .contains("\"state\":\"verification_failed\"")
+    );
+    assert!(result.manifest_json.contains("\"verification\":\"failed\""));
+    assert!(result.manifest_json.contains("\"status\":\"damaged\""));
+    let mut volume = Volume::open(FaultDevice::new(
+        media.borrow().durable.clone(),
+        MountMode::ReadOnly,
+    ))
+    .unwrap();
+    assert_eq!(
+        embedded_manifest(&mut volume, &result.manifest_name),
+        result.manifest_json
+    );
+    assert_eq!(source_media.borrow().durable, image);
+    assert!(source_media.borrow().events.is_empty());
 }

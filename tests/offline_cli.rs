@@ -212,6 +212,12 @@ fn cli_reports_damaged_ranges_and_keeps_verified_output() {
     assert!(report.contains("offset Some(0), length 65536"));
     assert!(report.contains("path [\"data\"]"));
     assert!(report.contains("unreadable_ranges: 1"));
+    let parsed = Command::new("python3").args(["-c", "import json,sys; d=json.load(open(sys.argv[1])); assert d['state']=='partial'; f=d['files'][0]; assert f['path']==['data']; assert f['status']=='partial'; assert f['source_damage'][0]['offset']==0; assert f['source_damage'][0]['length']==65536", temp.0.join("partial-image.recovery.json").to_str().unwrap()]).output().unwrap();
+    assert!(
+        parsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&parsed.stderr)
+    );
     temp.pass(&["check", "partial-image"]);
     temp.pass(&["scrub", "partial-image"]);
     temp.pass(&["get", "partial-image", "/data", "partial-copy"]);
@@ -559,7 +565,16 @@ fn fsck_rebuilds_a_new_image_without_repairing_the_source() {
     let before = fingerprint(&temp.0.join("image"));
     // A concurrent read handle is compatible with a read-only source lease.
     let reader = fs::File::open(temp.0.join("image")).unwrap();
-    let result = fsck(&temp, &["--repair", "--output", "new-image", "image"]);
+    let result = fsck(
+        &temp,
+        &[
+            "--repair",
+            "--output",
+            "new-image",
+            "--verify-data",
+            "image",
+        ],
+    );
     assert_eq!(
         result.status.code(),
         Some(1),
@@ -595,6 +610,17 @@ fn fsck_rebuilds_a_new_image_without_repairing_the_source() {
     let report = fs::read_to_string(temp.0.join("new-image.recovery.txt")).unwrap();
     assert!(report.contains("Image recovery finished; structural verification passed"));
     assert!(report.contains("complete: true"));
+    temp.pass(&["get", "new-image", "/RECOVERY-REPORT.json", "embedded.json"]);
+    assert_eq!(
+        fs::read(temp.0.join("embedded.json")).unwrap(),
+        fs::read(temp.0.join("new-image.recovery.json")).unwrap()
+    );
+    let parsed = Command::new("python3").args(["-c", "import json,sys; d=json.load(open(sys.argv[1])); assert d['state']=='complete'; assert d['verification']=='passed'; assert d['source']['metadata_complete']; assert d['files'][0]['path']==['notes']; assert d['files'][0]['copied_bytes']==150001; assert d['files'][0]['destination_verified_bytes']==150001", temp.0.join("embedded.json").to_str().unwrap()]).output().unwrap();
+    assert!(
+        parsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&parsed.stderr)
+    );
     temp.pass(&["put", "new-image", "source", "/new-write"]);
     temp.pass(&["check", "new-image"]);
 }
@@ -609,6 +635,19 @@ fn fsck_new_image_refuses_existing_outputs_aliases_reports_and_invalid_flags() {
     symlink("image", temp.0.join("symlink")).unwrap();
     symlink("missing", temp.0.join("dangling")).unwrap();
     let before = fingerprint(&temp.0.join("image"));
+    fs::write(temp.0.join("json-collision.recovery.json"), b"keep-json").unwrap();
+    assert_eq!(
+        fsck(&temp, &["--repair", "--output", "json-collision", "image"])
+            .status
+            .code(),
+        Some(8)
+    );
+    assert!(!temp.0.join("json-collision").exists());
+    assert_eq!(
+        fs::read(temp.0.join("json-collision.recovery.json")).unwrap(),
+        b"keep-json"
+    );
+
     for output in ["existing", "image", "hardlink", "symlink", "dangling"] {
         let result = fsck(&temp, &["--repair", "--output", output, "image"]);
         assert_eq!(
@@ -647,6 +686,7 @@ fn fsck_new_image_refuses_existing_outputs_aliases_reports_and_invalid_flags() {
     assert!(!temp.0.join("not-created").exists());
     for arguments in [
         vec!["--output", "invalid", "image"],
+        vec!["--repair", "--verify-data", "image"],
         vec!["--repair", "--plan", "--output", "invalid", "image"],
         vec![
             "--repair",

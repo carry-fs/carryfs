@@ -726,7 +726,12 @@ repair nor export scans historical pages, rolls back silently, or repairs damage
 file bytes. Recovery into a fresh image copies verified backed units through the
 normal filesystem writer. The source remains read-only, and the destination has
 independent allocation metadata, a new UUID, and newly assigned object IDs.
-Unrecoverable ranges remain unwritten and are identified in the recovery report. See [recovery instructions and limits](RECOVERY.md).
+Unrecoverable ranges remain unwritten and are identified in the recovery report. New images include a collision-safe JSON recovery manifest as an ordinary
+catalog file, with the same JSON in a sidecar. The manifest records source and
+destination identities, per-file damage, metadata uncertainty, and destination
+verification status. A durable in-progress report is replaced by atomic rename.
+Optional destination verification reads back recovered file data after flushing
+and checks the final manifest bytes. These reports require no disk-format change. See [recovery instructions and limits](RECOVERY.md).
 
 ## 9. Test vectors and reference checks
 

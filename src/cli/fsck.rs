@@ -10,7 +10,7 @@ use carryfs_core::{BlockDevice, ImageDevice, MountMode, Repair};
 
 use super::Result;
 
-const USAGE: &str = "usage: fsck.carryfs [--plan|-n | --repair [-y] [--output NEW_IMAGE] [--accept-data-loss] | --recover NEW_DIRECTORY] [--report NEW_FILE] [--bytes N] IMAGE_OR_DEVICE\nDiagnosis is read-only by default. --repair --output rebuilds a new image without modifying the source. Unmount first.";
+const USAGE: &str = "usage: fsck.carryfs [--plan|-n | --repair [-y] [--output NEW_IMAGE [--verify-data]] [--accept-data-loss] | --recover NEW_DIRECTORY] [--report NEW_FILE] [--bytes N] IMAGE_OR_DEVICE\nDiagnosis is read-only by default. --repair --output rebuilds a new image with an embedded JSON manifest and JSON sidecar. Unmount first.";
 
 #[derive(Default)]
 struct Options {
@@ -19,6 +19,7 @@ struct Options {
     accept_loss: bool,
     recover: Option<PathBuf>,
     output: Option<PathBuf>,
+    verify_data: bool,
     report: Option<PathBuf>,
     bytes: Option<u64>,
 }
@@ -34,6 +35,7 @@ impl Options {
                 Some("--plan" | "--readonly" | "-n") => readonly = true,
                 Some("--repair" | "-y") => options.repair = true,
                 Some("--accept-data-loss") => options.accept_loss = true,
+                Some("--verify-data") => options.verify_data = true,
                 Some("--recover") => {
                     options.recover =
                         Some(args.next().ok_or("--recover needs a new directory")?.into())
@@ -83,8 +85,9 @@ impl Options {
         if (options.repair && (readonly || options.recover.is_some()))
             || (options.accept_loss && !options.repair)
             || (options.output.is_some() && !options.repair)
+            || (options.verify_data && options.output.is_none())
         {
-            return Err("--repair conflicts with read-only diagnosis and --recover; --output and --accept-data-loss require --repair".into());
+            return Err("--repair conflicts with read-only diagnosis and --recover; --output and --accept-data-loss require --repair; --verify-data requires --output".into());
         }
         Ok(options)
     }
@@ -157,18 +160,43 @@ fn run(options: Options) -> Result<u8> {
             .unwrap_or_else(|| suffix(&output, ".recovery.txt"));
         text.push_str(&format!("Rebuild destination: {output:?}; {image_bytes} bytes\nImage recovery starting; a missing completion entry means the output is partial.\n"));
         let mut report = new_report(&path, &text)?;
+        let json_path = suffix(&output, ".recovery.json");
+        let mut json_report =
+            new_report(&json_path, "{\"version\":1,\"state\":\"in_progress\"}\n")?;
         let destination = ImageDevice::create_new(&output, image_bytes)?;
         let mut report_error = Ok(());
-        let summary = repair.recover_image(destination, &mut |finding| {
-            if report_error.is_ok() {
-                report_error = record_finding(&mut report, &finding);
-            }
-            super::report(finding);
-        })?;
+        let recovery = repair.recover_image_with_verification(
+            destination,
+            options.verify_data,
+            &mut |finding| {
+                if report_error.is_ok() {
+                    report_error = record_finding(&mut report, &finding);
+                }
+                super::report(finding);
+            },
+        )?;
         report_error?;
+        json_report.set_len(0)?;
+        use std::io::{Seek, SeekFrom};
+        json_report.seek(SeekFrom::Start(0))?;
+        json_report.write_all(recovery.manifest_json.as_bytes())?;
+        json_report.sync_all()?;
+        let summary = recovery.summary;
         writeln!(
             report,
             "Image recovery finished; structural verification passed. Summary: {summary:?}"
+        )?;
+        writeln!(
+            report,
+            "Embedded manifest: {:?}; JSON sidecar: {json_path:?}; destination data verification: {}",
+            String::from_utf8_lossy(recovery.manifest_name.stored()),
+            if recovery.verification_failed {
+                "FAILED"
+            } else if options.verify_data {
+                "passed"
+            } else {
+                "not requested"
+            }
         )?;
         report.sync_all()?;
         println!(
@@ -176,7 +204,9 @@ fn run(options: Options) -> Result<u8> {
             output.display(),
             path.display()
         );
-        return Ok(if summary.complete && summary.unreadable_ranges == 0 {
+        return Ok(if recovery.verification_failed {
+            8
+        } else if summary.complete && summary.unreadable_ranges == 0 {
             1
         } else {
             4

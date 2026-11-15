@@ -63,6 +63,25 @@ writer, rebuilding allocation and metadata independently of the source's writabl
 workspace. Existing output files, symlinks, and source aliases are refused.
 A clean source can also be rebuilt this way.
 
+Every new image contains `RECOVERY-REPORT.json` at its root. If that name or its
+working filename conflicts with a recovered entry, the tool chooses
+`RECOVERY-REPORT.1.json` or the next available suffix. Existing source files keep
+their names and contents. The exact same JSON is saved beside the image as
+`recovered.cfs.recovery.json`. Both sidecars must be new files.
+
+The manifest records the source UUID and generation, destination UUID, recovery
+plan, per-file paths and object IDs, copied bytes, missing source ranges, and
+output verification failures. A file is `partial` when a known range is missing,
+`unknown` when metadata completeness cannot be established, and `damaged` when
+destination verification detects bad output data. Damage findings can overlap.
+A clean scrub does not change a partial or unknown source status.
+
+Once file copying begins, the embedded report is durable with state
+`in_progress`. Complete reports replace it through an atomic rename. Interrupted
+updates retain the earlier report and can leave a `.working` file. A completed
+report has state `complete`, `partial`, or `verification_failed`. Generated
+manifest files are excluded from recovered object and file totals.
+
 The new image retains the volume label, recovered paths, symlink targets,
 timestamps, permission bits, and hidden attributes. It receives a fresh UUID
 and assigns object IDs during reconstruction. Sparse file contents are retained.
@@ -73,6 +92,20 @@ report path, supply `--report NEW_FILE`. The report is synchronized before the
 image is created and records missing metadata and unreadable file ranges, including
 their recovered paths. Review this report even when the new image passes scrub:
 missing data remains unwritten and reads as zeros in partial files.
+
+To read back and verify destination data after copying and flushing, add
+`--verify-data`:
+
+```sh
+fsck.carryfs --repair --output recovered.cfs --verify-data volume.cfs
+```
+
+This checks the backed ranges of recovered regular files and reads back the final
+manifest. It does not treat source gaps as verified original zeros. The manifest
+records verification as `not_requested`, `pending`, `passed`, or `failed`.
+Destination data failures produce `verification_failed`, retain both damage
+reports, and exit with status 8. Source damage still produces a partial result
+with status 4 even when all surviving output data verifies successfully.
 
 New-image recovery does not require `--accept-data-loss` because the source is
 preserved. Complete recovery exits with status 1. Partial recovery retains the

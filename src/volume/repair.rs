@@ -16,6 +16,21 @@ use super::{
     Handle, ObjectId, ObjectKind, ROOT, ROOT_A, Volume,
 };
 
+mod manifest;
+use manifest::{Damage, FileRecord, Manifest, MissingRange};
+
+/// A rebuilt image and the exact JSON stored in its embedded manifest.
+pub struct ImageRecovery {
+    /// Recovered object and source-data totals, excluding the generated manifest.
+    pub summary: ExtractionSummary,
+    /// Collision-safe root filename of the embedded manifest.
+    pub manifest_name: Name,
+    /// Manifest contents, suitable for a JSON sidecar.
+    pub manifest_json: String,
+    /// Whether requested destination verification detected damaged output data.
+    pub verification_failed: bool,
+}
+
 /// An offline repair proposal. Diagnosis and planning never write to the source.
 #[derive(Debug, Default)]
 pub struct RepairPlan {
@@ -49,6 +64,7 @@ pub struct Repair<D> {
     mirrors: Vec<u64>,
     pages: BTreeMap<u64, Page>,
     plan: RepairPlan,
+    missing: Vec<MissingRange>,
 }
 
 #[derive(Clone, Copy)]
@@ -231,6 +247,7 @@ impl<D: BlockDevice> Repair<D> {
                 mirrors,
                 pages: BTreeMap::new(),
                 plan,
+                missing: Vec::new(),
             });
         }
         plan.recovery_available = false;
@@ -355,7 +372,8 @@ impl<D: BlockDevice> Repair<D> {
         catalog.records.retain(|key, _| {
             !deleted.contains(&u64_be(&key[..8]).expect("validated catalog owner"))
         });
-        normalize_catalog(&mut catalog.records, &original, &mut plan)?;
+        let mut missing = Vec::new();
+        normalize_catalog(&mut catalog.records, &original, &mut plan, &mut missing)?;
         if force_virtual && plan.blocked.is_none() {
             plan.blocked = Some("replacement metadata exceeds the safe workspace".into());
         }
@@ -466,6 +484,7 @@ impl<D: BlockDevice> Repair<D> {
             mirrors,
             pages,
             plan,
+            missing,
         })
     }
 
@@ -566,6 +585,19 @@ impl<D: BlockDevice> Repair<D> {
         destination: E,
         report: &mut dyn FnMut(Finding<'_>),
     ) -> Result<ExtractionSummary> {
+        self.recover_image_with_verification(destination, false, report)
+            .map(|recovery| recovery.summary)
+    }
+
+    /// Rebuild an image with an embedded JSON manifest and optional data read-back.
+    /// Source failures produce partial results. Destination verification failures
+    /// are recorded separately and set `verification_failed`; they are not success.
+    pub fn recover_image_with_verification<E: BlockDevice>(
+        &mut self,
+        destination: E,
+        verify_data: bool,
+        report: &mut dyn FnMut(Finding<'_>),
+    ) -> Result<ImageRecovery> {
         if !self.plan.recovery_available {
             return Err(Error::InvalidInput(
                 "recovery forest could not be validated",
@@ -586,6 +618,51 @@ impl<D: BlockDevice> Repair<D> {
             complete: !self.plan.data_loss,
             ..Default::default()
         };
+        let mut suffix = 0u64;
+        let (manifest_name, working_name) = loop {
+            let name = Name::parse(&if suffix == 0 {
+                "RECOVERY-REPORT.json".into()
+            } else {
+                format!("RECOVERY-REPORT.{suffix}.json")
+            })?;
+            let working = Name::parse(&format!(
+                "{}.working",
+                std::str::from_utf8(name.stored()).expect("manifest name")
+            ))?;
+            let mut available = true;
+            for candidate in [&name, &working] {
+                match source.lookup(ROOT, candidate) {
+                    Err(Error::NotFound) => {}
+                    Ok(_) => available = false,
+                    Err(error) => return Err(error),
+                }
+            }
+            if available {
+                break (name, working);
+            }
+            suffix += 1;
+        };
+        let mut manifest = Manifest {
+            source_uuid: self.original.uuid,
+            source_generation: self.original.generation,
+            source_bytes: self.geometry.byte_len,
+            destination_uuid: target.info()?.uuid,
+            metadata_complete: !self.plan.data_loss,
+            actions: self.plan.actions.clone(),
+            files: Vec::new(),
+            verification: if verify_data {
+                "pending"
+            } else {
+                "not_requested"
+            },
+        };
+        write_manifest(
+            &mut target,
+            &manifest_name,
+            &working_name,
+            &manifest.json("in_progress", &summary),
+        )?;
+        target.sync_publication()?;
         let mut directories: Vec<ImageDirectory> = Vec::new();
         let mut path = Vec::new();
         let mut pending = Some((ROOT, ROOT));
@@ -619,6 +696,12 @@ impl<D: BlockDevice> Repair<D> {
                         let file = target.create_file(directory.destination, entry.name.clone())?;
                         let object = target.lookup(directory.destination, &entry.name)?;
                         target.truncate(&file, attributes.size)?;
+                        let mut source_damage: Vec<_> = self
+                            .missing
+                            .iter()
+                            .filter(|range| range.object == entry.object.0)
+                            .map(|range| range.damage.clone())
+                            .collect();
                         let copied = source.copy_verified_file(
                             entry.object,
                             attributes.size,
@@ -633,11 +716,24 @@ impl<D: BlockDevice> Repair<D> {
                                 }
                                 Ok(())
                             },
-                            report,
+                            &mut |finding| {
+                                source_damage.push(Damage::finding(&finding));
+                                report(finding);
+                            },
                         );
                         let closed = target.close_handle(file);
                         let (bytes, unreadable) = copied?;
                         closed?;
+                        manifest.files.push(FileRecord {
+                            path: path.clone(),
+                            source: entry.object,
+                            destination: object,
+                            size: attributes.size,
+                            copied_bytes: bytes,
+                            verified_bytes: 0,
+                            source_damage,
+                            destination_damage: Vec::new(),
+                        });
                         summary.files += 1;
                         summary.verified_bytes += bytes;
                         summary.unreadable_ranges += unreadable;
@@ -664,22 +760,122 @@ impl<D: BlockDevice> Repair<D> {
                 path.pop();
             }
         }
+        let state = if summary.complete && summary.unreadable_ranges == 0 {
+            "complete"
+        } else {
+            "partial"
+        };
+        write_manifest(
+            &mut target,
+            &manifest_name,
+            &working_name,
+            &manifest.json(if verify_data { "unverified" } else { state }, &summary),
+        )?;
+        target.sync()?;
+        let mut verification_failed = false;
+        if verify_data {
+            let pages = BTreeMap::new();
+            let mut verified = Volume::open(Overlay {
+                device: target.device.as_mut().ok_or(Error::Ejected)?,
+                pages: &pages,
+            })?;
+            verified.check()?;
+            for file in &mut manifest.files {
+                let (bytes, unreadable) = verified.copy_verified_file(
+                    file.destination,
+                    file.size,
+                    &file.path,
+                    &mut |_, _| Ok(()),
+                    &mut |finding| {
+                        file.destination_damage.push(Damage::finding(&finding));
+                        report(finding);
+                    },
+                )?;
+                file.verified_bytes = bytes;
+                verification_failed |= unreadable != 0;
+            }
+            verified.eject()?;
+            manifest.verification = if verification_failed {
+                "failed"
+            } else {
+                "passed"
+            };
+        }
+        let manifest_json = manifest.json(
+            if verification_failed {
+                "verification_failed"
+            } else {
+                state
+            },
+            &summary,
+        );
+        write_manifest(&mut target, &manifest_name, &working_name, &manifest_json)?;
+        restore_image_attributes(&mut target, ROOT, source.attributes_fresh(ROOT)?)?;
         target.sync()?;
         let mut device = target.device.take().ok_or(Error::Ejected)?;
         {
-            // Check the created file through its held device, so a replaced
-            // host pathname cannot redirect verification to another image.
+            // Keep verification tied to the held device, not a replaceable path.
             let pages = BTreeMap::new();
             let mut verified = Volume::open(Overlay {
                 device: &mut device,
                 pages: &pages,
             })?;
             verified.check()?;
+            if verify_data {
+                let file = verified.open_file(ROOT, &manifest_name, super::Access::Read)?;
+                let mut buffer = vec![0; UNIT_BYTES];
+                let mut offset = 0;
+                for expected in manifest_json.as_bytes().chunks(UNIT_BYTES) {
+                    let count = verified.read(&file, offset, &mut buffer[..expected.len()])?;
+                    if count != expected.len() || &buffer[..count] != expected {
+                        return Err(Error::io(
+                            "verify recovery manifest",
+                            std::io::Error::from(std::io::ErrorKind::InvalidData),
+                        ));
+                    }
+                    offset += count as u64;
+                }
+                verified.close_handle(file)?;
+            }
             verified.eject()?;
         }
         source.eject()?;
-        Ok(summary)
+        Ok(ImageRecovery {
+            summary,
+            manifest_name,
+            manifest_json,
+            verification_failed,
+        })
     }
+}
+
+fn write_manifest<D: BlockDevice>(
+    volume: &mut Volume<D>,
+    name: &Name,
+    working: &Name,
+    json: &str,
+) -> Result<()> {
+    let file = volume.create_file(ROOT, working.clone())?;
+    let result = (|| {
+        let mut offset = 0;
+        while offset < json.len() {
+            let count = volume.write(&file, offset as u64, &json.as_bytes()[offset..])?;
+            if count == 0 {
+                return Err(Error::io(
+                    "write recovery manifest",
+                    std::io::Error::from(std::io::ErrorKind::WriteZero),
+                ));
+            }
+            offset += count;
+        }
+        volume.sync_publication()
+    })();
+    let closed = volume.close_handle(file);
+    result?;
+    closed?;
+    // Publish the complete JSON atomically. A crash retains the older marker
+    // rather than a truncated report claiming that recovery finished.
+    volume.rename(ROOT, working, ROOT, name.clone(), super::Replace::Allowed)
 }
 
 struct ImageDirectory {
@@ -936,6 +1132,7 @@ fn normalize_catalog(
     records: &mut BTreeMap<Vec<u8>, Vec<u8>>,
     root: &Root,
     plan: &mut RepairPlan,
+    missing: &mut Vec<MissingRange>,
 ) -> Result<()> {
     let mut inodes = BTreeMap::new();
     for (key, value) in records.iter().filter(|(key, _)| key[8] == 1) {
@@ -1110,7 +1307,7 @@ fn normalize_catalog(
     }
     for (id, inode) in &mut inodes {
         if inode.kind == ObjectKind::File {
-            normalize_file(*id, inode, records, plan)?;
+            normalize_file(*id, inode, records, plan, missing)?;
         }
         inode.orphan = false;
         inode.parent = links.get(id).map_or(1, |(parent, _)| *parent);
@@ -1140,6 +1337,7 @@ fn normalize_file(
     inode: &mut Inode,
     records: &mut BTreeMap<Vec<u8>, Vec<u8>>,
     plan: &mut RepairPlan,
+    missing: &mut Vec<MissingRange>,
 ) -> Result<()> {
     use super::file::{extent_key, group_key};
     let low = extent_key(id, 0).to_vec();
@@ -1195,6 +1393,14 @@ fn normalize_file(
             }
             if offset >= inode.size || at != end {
                 set_checksum_slot(&mut checksums, slot, None);
+                missing.push(MissingRange {
+                    object: id,
+                    damage: Damage {
+                        offset: Some(offset.min(inode.size)),
+                        length: inode.size.saturating_sub(offset).min(UNIT_BYTES as u64),
+                        error: "checksum mapping incomplete".into(),
+                    },
+                });
                 plan.data_loss = true;
                 plan.actions.push(format!(
                     "Unrecoverable object {id} bytes {offset}..{}: checksum mapping incomplete",
@@ -1233,7 +1439,7 @@ fn normalize_file(
             let start = logical.max(*first);
             let until = end.min(*until);
             if covered < start && flags & EXTENT_UNWRITTEN == 0 {
-                lost_mapping(plan, id, covered, start);
+                lost_mapping(plan, id, covered, start, inode.size, missing);
             }
             let mut value = (physical + start - logical).to_le_bytes().to_vec();
             value.extend_from_slice(&((until - start) as u32).to_le_bytes());
@@ -1243,7 +1449,7 @@ fn normalize_file(
             covered = until;
         }
         if covered < end && flags & EXTENT_UNWRITTEN == 0 {
-            lost_mapping(plan, id, covered, end);
+            lost_mapping(plan, id, covered, end, inode.size, missing);
         }
     }
     for key in source.keys() {
@@ -1254,7 +1460,23 @@ fn normalize_file(
     Ok(())
 }
 
-fn lost_mapping(plan: &mut RepairPlan, id: u64, first: u64, end: u64) {
+fn lost_mapping(
+    plan: &mut RepairPlan,
+    id: u64,
+    first: u64,
+    end: u64,
+    size: u64,
+    missing: &mut Vec<MissingRange>,
+) {
+    let offset = (first * BLOCK_BYTES as u64).min(size);
+    missing.push(MissingRange {
+        object: id,
+        damage: Damage {
+            offset: Some(offset),
+            length: (end * BLOCK_BYTES as u64).min(size).saturating_sub(offset),
+            error: "no complete checksum mapping".into(),
+        },
+    });
     plan.data_loss = true;
     plan.actions.push(format!(
         "Unrecoverable object {id} bytes {}..{}: no complete checksum mapping",

@@ -8,6 +8,7 @@
 #include <linux/crc32.h>
 #include <linux/cred.h>
 #include <linux/fs.h>
+#include <linux/falloc.h>
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
 #include <linux/highmem.h>
@@ -966,7 +967,8 @@ bool carryfs_range_busy(struct address_space *mapping, pgoff_t first, pgoff_t la
 
 /*
  * filemap_page_mkwrite() from mm/filemap.c, reserving space for the folio's
- * unit while it is locked, before a shared mapping dirties it.
+ * unit while it is locked, before a shared mapping dirties it. The shared
+ * invalidate lock keeps a hole punch from dropping the folio once dirtied.
  */
 static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
 {
@@ -977,6 +979,7 @@ static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
 
 	sb_start_pagefault(mapping->host->i_sb);
 	file_update_time(vmf->vma->vm_file);
+	filemap_invalidate_lock_shared(mapping);
 	folio_lock(folio);
 	if (folio->mapping != mapping) {
 		folio_unlock(folio);
@@ -992,6 +995,7 @@ static vm_fault_t carryfs_page_mkwrite(struct vm_fault *vmf)
 	folio_mark_dirty(folio);
 	folio_wait_stable(folio);
 out:
+	filemap_invalidate_unlock_shared(mapping);
 	sb_end_pagefault(mapping->host->i_sb);
 	return ret;
 }
@@ -1124,4 +1128,62 @@ void *carryfs_page_address(struct page *page)
 u32 carryfs_crc32c(u32 crc, const void *data, size_t len)
 {
 	return crc32c(crc, data, len);
+}
+
+int carryfs_finish_tmpfile(struct file *file, struct inode *inode)
+{
+	/* d_tmpfile drops the initial link count, as for a newly created inode. */
+	d_tmpfile(file, inode);
+	return finish_open_simple(file, 0);
+}
+
+void carryfs_link_tmpfile(struct dentry *dentry, struct inode *inode)
+{
+	set_nlink(inode, 1);
+	ihold(inode);
+	d_instantiate(dentry, inode);
+}
+
+extern int carryfs_punch_hole(struct inode *inode, u64 offset, u64 length);
+extern int carryfs_preallocate(struct inode *inode, u64 offset, u64 length, bool keep_size);
+
+long carryfs_fallocate(struct file *file, int mode, loff_t offset, loff_t length)
+{
+	struct inode *inode = file_inode(file);
+	struct address_space *mapping = inode->i_mapping;
+	loff_t first, last;
+	int error;
+
+	if (mode != 0 && mode != FALLOC_FL_KEEP_SIZE &&
+	    mode != (FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE))
+		return -EOPNOTSUPP;
+	if (offset < 0 || length <= 0 || offset > LLONG_MAX - length)
+		return -EINVAL;
+	inode_lock(inode);
+	filemap_invalidate_lock(mapping);
+	first = round_down(offset, 65536);
+	last = offset + length;
+	if (offset >= last) {
+		error = 0;
+		goto out;
+	}
+	/* Flush before invalidating, including the preserved boundary bytes. */
+	error = filemap_write_and_wait_range(mapping, first, LLONG_MAX);
+	if (error)
+		goto out;
+	if (!(mode & FALLOC_FL_PUNCH_HOLE)) {
+		error = carryfs_preallocate(inode, offset, length, mode & FALLOC_FL_KEEP_SIZE);
+		goto out;
+	}
+	last = min_t(loff_t, last, i_size_read(inode));
+	if (first < last) {
+		last = round_up((u64)last, 65536ULL) - 1;
+		unmap_mapping_range(mapping, first, 0, 0);
+		truncate_inode_pages_range(mapping, first, last);
+	}
+	error = carryfs_punch_hole(inode, offset, length);
+out:
+	filemap_invalidate_unlock(mapping);
+	inode_unlock(inode);
+	return error;
 }

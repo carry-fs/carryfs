@@ -249,6 +249,8 @@ struct State<D: BlockDevice> {
     /// Writable attributes of a clean generation; pending edits always read the core.
     #[cfg(target_os = "macos")]
     attributes: (u64, HashMap<u64, Attributes>),
+    #[cfg(target_os = "macos")]
+    transient_allocations: HashSet<u64>,
 }
 
 /// macOS keeps a volume's Trash in `.Trashes` at its top, owned by root with
@@ -291,6 +293,8 @@ impl<D: BlockDevice> State<D> {
             directory_cache: None,
             #[cfg(target_os = "macos")]
             attributes: (0, HashMap::new()),
+            #[cfg(target_os = "macos")]
+            transient_allocations: HashSet::new(),
         }
     }
 
@@ -704,6 +708,14 @@ impl<D: BlockDevice> State<D> {
             Open::File(other, _) => *other == object,
             Open::Directory(listing) => listing.directory == object,
         });
+        let trimmed: Reply<()> = Ok(());
+        #[cfg(target_os = "macos")]
+        let trimmed = if !pinned && self.transient_allocations.remove(&object.get()) {
+            self.quiet = None;
+            with_space(&mut self.volume, |v| v.trim_allocation(object)).map_err(|e| errno(&e))
+        } else {
+            trimmed
+        };
         // An unpinned orphan is new cleanup work. Marking the volume unquiet
         // lets the timer pick it up; a close does not publish. If attributes
         // fail, the next maintenance step reports the underlying error.
@@ -715,7 +727,7 @@ impl<D: BlockDevice> State<D> {
         if unpinned_orphan {
             self.quiet = None;
         }
-        Ok(())
+        trimmed
     }
 
     /// Publish pending changes and run bounded cleanup when there may be work.
@@ -1162,7 +1174,9 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         #[cfg(target_os = "macos")]
         config
             .add_capabilities(
-                InitFlags::from_bits_retain(MACFUSE_CASE_INSENSITIVE) | InitFlags::FUSE_VOL_RENAME,
+                InitFlags::from_bits_retain(MACFUSE_CASE_INSENSITIVE)
+                    | InitFlags::FUSE_VOL_RENAME
+                    | InitFlags::FUSE_ALLOCATE,
             )
             .map_err(|_| {
                 io::Error::other("macFUSE lacks case-insensitive names or volume rename")
@@ -1614,6 +1628,64 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         }
     }
 
+    fn tmpfile(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        mode: u32,
+        _umask: u32,
+        _flags: i32,
+        _killpriv: bool,
+        _owner: fuser::Owner,
+        reply: ReplyCreate,
+    ) {
+        match self.with(|s| {
+            let parent = id(parent)?;
+            let (object, handle) = with_space(&mut s.volume, |volume| {
+                volume.create_tmpfile(parent, created(mode))
+            })
+            .map_err(|e| open_errno(&e))?;
+            let attr = match s.entry(self, object) {
+                Ok(attr) => attr,
+                Err(error) => {
+                    s.volume.close_handle(handle).map_err(|e| errno(&e))?;
+                    return Err(error);
+                }
+            };
+            Ok((attr, s.insert(Open::File(object, handle))))
+        }) {
+            Ok((attr, fh)) => reply.created(
+                &self.attr_ttl,
+                &attr,
+                Generation(0),
+                FileHandle(fh),
+                FILE_OPEN,
+            ),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn link(&self, _req: &Request, ino: INodeNo, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        match self.with(|s| {
+            let (object, parent, parsed) = (id(ino)?, id(parent)?, parse(name)?);
+            if !s.volume.attributes(object).map_err(|e| errno(&e))?.orphan {
+                return Err(Errno::EPERM);
+            }
+            with_space(&mut s.volume, |v| {
+                v.link_tmpfile(object, parent, parsed.clone())
+            })
+            .map_err(|e| errno(&e))?;
+            s.changed_directory(parent);
+            Ok((
+                s.entry(self, object)?,
+                name_ttl(name, parsed.stored(), self.entry_ttl),
+            ))
+        }) {
+            Ok((attr, ttl)) => reply.entry_with_ttls(&self.attr_ttl, &ttl, &attr, Generation(0)),
+            Err(e) => reply.error(e),
+        }
+    }
+
     fn read(
         &self,
         _req: &Request,
@@ -1686,6 +1758,78 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             Ok(written) => reply.written(written),
             Err(e) => reply.error(e),
         }
+    }
+
+    fn fallocate(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        length: u64,
+        mode: i32,
+        reply: ReplyEmpty,
+    ) {
+        let result = self.with(|s| {
+            let handle = match s.open.get(&u64::from(fh)) {
+                Some(Open::File(_, handle)) => handle,
+                _ => return Err(Errno::EBADF),
+            };
+            #[cfg(not(target_os = "macos"))]
+            match mode {
+                0 | 1 => with_space(&mut s.volume, |v| {
+                    v.preallocate(handle, offset, length, mode == 1)
+                })
+                .map_err(|e| errno(&e)),
+                3 => with_space(&mut s.volume, |v| v.punch_hole(handle, offset, length))
+                    .map_err(|e| errno(&e)),
+                _ => Err(Errno::EOPNOTSUPP),
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // XNU VNOP_ALLOCATE flags, forwarded unchanged by macFUSE.
+                const PREALLOCATE: i32 = 1;
+                const CONTIGUOUS: i32 = 2;
+                const ALL: i32 = 4;
+                const PERSIST: i32 = 8;
+                const FROM_EOF: i32 = 16;
+                const FROM_VOLUME: i32 = 32;
+                if mode & PREALLOCATE == 0
+                    || mode & !(PREALLOCATE | CONTIGUOUS | ALL | PERSIST | FROM_EOF | FROM_VOLUME)
+                        != 0
+                {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                // shortcut: contiguous placement is refused; add an allocator for it when needed.
+                if mode & CONTIGUOUS != 0 {
+                    return Err(Errno::ENOSPC);
+                }
+                if mode & (FROM_EOF | FROM_VOLUME) == FROM_EOF | FROM_VOLUME {
+                    return Err(Errno::EINVAL);
+                }
+                // Both modes extend the allocation past its end; a volume
+                // offset is only a physical placement hint.
+                let end = s.volume.allocation_end(handle).map_err(|e| errno(&e))?;
+                let offset = if mode & FROM_EOF != 0 {
+                    end.checked_add(offset).ok_or(Errno::EFBIG)?
+                } else {
+                    end
+                };
+                with_space(&mut s.volume, |v| {
+                    v.preallocate(handle, offset, length, true)
+                })
+                .map_err(|e| errno(&e))?;
+                if let Some(Open::File(object, _)) = s.open.get(&u64::from(fh)) {
+                    if mode & PERSIST == 0 {
+                        s.transient_allocations.insert(object.get());
+                    } else {
+                        s.transient_allocations.remove(&object.get());
+                    }
+                }
+                Ok(())
+            }
+        });
+        reply_empty(reply, result);
     }
 
     fn release(
@@ -2294,6 +2438,59 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tmpfile_allocation_and_publication_dispatch_through_fuse() {
+        let session = NameSession::new("tmpfile-allocation", 44, false);
+        let mut create = vec![0; 16];
+        create[..4].copy_from_slice(&(libc::O_TMPFILE | libc::O_RDWR).to_ne_bytes());
+        create[4..8].copy_from_slice(&0o100600u32.to_ne_bytes());
+        create.push(0); // The ABI carries an ignored, NUL-terminated name.
+        let reply = session.call(51, &create);
+        assert_eq!(NameSession::error(&reply), 0);
+        let object = u64::from_ne_bytes(reply[16..24].try_into().unwrap());
+        let fh = u64::from_ne_bytes(reply[144..152].try_into().unwrap());
+        let allocate = |mode: u32| {
+            let mut input = Vec::new();
+            input.extend_from_slice(&fh.to_ne_bytes());
+            input.extend_from_slice(&0u64.to_ne_bytes());
+            input.extend_from_slice(&65_536u64.to_ne_bytes());
+            input.extend_from_slice(&mode.to_ne_bytes());
+            input.extend_from_slice(&0u32.to_ne_bytes());
+            NameSession::send(&session.client, 43, object, &input);
+            assert_eq!(NameSession::error(&NameSession::recv(&session.client)), 0);
+        };
+        allocate(1);
+        {
+            let mut state = session.state.0.lock().unwrap();
+            let attr = state
+                .volume
+                .attributes(ObjectId::new(object).unwrap())
+                .unwrap();
+            assert_eq!(
+                (attr.size, attr.allocated_bytes, attr.orphan),
+                (0, 65_536, true)
+            );
+        }
+        allocate(3);
+        allocate(0);
+        let mut link = object.to_ne_bytes().to_vec();
+        link.extend_from_slice(b"published\0");
+        session.mutation(13, &link, false);
+        let mut state = session.state.0.lock().unwrap();
+        let object = state
+            .volume
+            .lookup(ROOT, &Name::parse("published").unwrap())
+            .unwrap();
+        assert!(!state.volume.attributes(object).unwrap().orphan);
+        assert_eq!(state.volume.attributes(object).unwrap().size, 65_536);
+        drop(state);
+        let mut release = vec![0; 24];
+        release[..8].copy_from_slice(&fh.to_ne_bytes());
+        NameSession::send(&session.client, 18, object.get(), &release);
+        assert_eq!(NameSession::error(&NameSession::recv(&session.client)), 0);
+    }
+
     /// A full plus reply leaves the next reply's attributes read ahead. They
     /// serve that reply unless a request changed the volume in between.
     #[cfg(target_os = "linux")]
@@ -2560,6 +2757,35 @@ mod tests {
             release[..8].copy_from_slice(&open[16..24]);
             assert_eq!(NameSession::error(&session.call(29, &release)), 0);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a Linux FUSE mount"]
+    fn tmpfile_and_allocation_syscalls() {
+        let (image, mut volume) = volume("allocation-syscalls");
+        volume.set_deferred_checkpoints(true).unwrap();
+        let (fs, _) = CarryFs::new(volume, Owner { uid: 0, gid: 0 }, false);
+        let state = fs.finisher();
+        let point = image.0.with_extension("mnt");
+        std::fs::create_dir(&point).unwrap();
+        let session = fuser::Session::new(fs, &point, &fuser::Config::default()).unwrap();
+        state.set_notifier(session.notifier()).unwrap();
+        let background = session.spawn().unwrap();
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../linux/tests/tmpfile_and_punch.py");
+        let result = std::process::Command::new("python3")
+            .arg(script)
+            .arg(&point)
+            .status();
+        background.umount_and_join().unwrap();
+        std::fs::remove_dir(point).unwrap();
+        drop(state);
+        assert!(result.unwrap().success());
+        Volume::open(ImageDevice::open(&image.0, carryfs_core::MountMode::ReadOnly).unwrap())
+            .unwrap()
+            .check()
+            .unwrap();
     }
 
     #[cfg(target_os = "linux")]

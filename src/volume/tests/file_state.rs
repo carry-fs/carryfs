@@ -244,3 +244,351 @@ fn interrupted_full_disk_refill() {
     );
     eprintln!("filled {size} bytes, deleted, drained, and interrupted every refill output");
 }
+
+#[test]
+fn unnamed_files_are_pinned_published_and_reclaimed() {
+    let mut volume = opened();
+    let before = volume.attributes(ROOT).unwrap();
+    let (object, handle) = volume
+        .create_tmpfile(ROOT, NewAttributes::default())
+        .unwrap();
+    assert!(volume.attributes(object).unwrap().orphan);
+    assert_eq!(volume.attributes(ROOT).unwrap(), before);
+    let dir = volume.open_directory(ROOT).unwrap();
+    assert!(
+        volume
+            .read_directory(&dir, None)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    volume.close_handle(dir).unwrap();
+    volume.write(&handle, 0, b"temporary contents").unwrap();
+    for _ in 0..8 {
+        volume.sync().unwrap();
+    }
+    checked(&volume);
+    let mut bytes = [0; 18];
+    assert_eq!(volume.read(&handle, 0, &mut bytes).unwrap(), 18);
+    assert_eq!(&bytes, b"temporary contents");
+    volume
+        .link_tmpfile(object, ROOT, name("published"))
+        .unwrap();
+    assert_eq!(volume.lookup(ROOT, &name("published")).unwrap(), object);
+    assert!(!volume.attributes(object).unwrap().orphan);
+    assert!(
+        volume
+            .link_tmpfile(object, ROOT, name("second-link"))
+            .is_err()
+    );
+    volume.close_handle(handle).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+    assert_eq!(volume.lookup(ROOT, &name("published")).unwrap(), object);
+
+    let (discarded, handle) = volume
+        .create_tmpfile(ROOT, NewAttributes::default())
+        .unwrap();
+    volume.write(&handle, 0, b"discard").unwrap();
+    volume.close_handle(handle).unwrap();
+    drain(&mut volume);
+    assert!(matches!(volume.attributes(discarded), Err(Error::NotFound)));
+    checked(&volume);
+}
+
+#[test]
+fn unnamed_files_disappear_after_a_crash_and_link_collisions_leave_them_open() {
+    let mut volume = opened();
+    let named = volume.create_file(ROOT, name("exists")).unwrap();
+    let (object, handle) = volume
+        .create_tmpfile(ROOT, NewAttributes::default())
+        .unwrap();
+    assert!(matches!(
+        volume.link_tmpfile(object, ROOT, name("exists")),
+        Err(Error::NameCollision)
+    ));
+    volume.write(&handle, 0, b"still writable").unwrap();
+    volume.close_handle(named).unwrap();
+    volume.sync_publication().unwrap();
+    checked(&volume);
+    let mut reopened =
+        Volume::open(FaultDevice::new(durable(&volume), MountMode::ReadWrite)).unwrap();
+    drain(&mut reopened);
+    assert!(matches!(reopened.attributes(object), Err(Error::NotFound)));
+    checked(&reopened);
+    volume.close_handle(handle).unwrap();
+}
+
+#[test]
+fn hole_punch_preserves_edges_size_and_survives_remount() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("punch")).unwrap();
+    let mut expected = vec![0x5a; 3 * UNIT_BYTES + 19];
+    volume.write(&file, 0, &expected).unwrap();
+    let before = volume.handle_attributes(&file).unwrap();
+    let offset = 17;
+    let end = 3 * UNIT_BYTES + 7;
+    volume
+        .punch_hole(&file, offset, (end - offset as usize) as u64)
+        .unwrap();
+    expected[offset as usize..end].fill(0);
+    let after = volume.handle_attributes(&file).unwrap();
+    assert_eq!(after.size, before.size);
+    assert_eq!(
+        before.allocated_bytes - after.allocated_bytes,
+        (2 * UNIT_BYTES) as u64
+    );
+    let mut actual = vec![0; expected.len()];
+    volume.read(&file, 0, &mut actual).unwrap();
+    assert_eq!(actual, expected);
+    volume
+        .punch_hole(&file, (3 * UNIT_BYTES) as u64, UNIT_BYTES as u64)
+        .unwrap();
+    expected[3 * UNIT_BYTES..].fill(0);
+    volume.punch_hole(&file, u64::from(1u32 << 30), 1).unwrap();
+    assert!(volume.punch_hole(&file, 0, 0).is_err());
+    assert!(volume.punch_hole(&file, u64::MAX, 2).is_err());
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+    let mut reader = Volume::open(FaultDevice::new(durable(&volume), MountMode::ReadOnly)).unwrap();
+    let file = reader
+        .open_file(ROOT, &name("punch"), Access::Read)
+        .unwrap();
+    reader.read(&file, 0, &mut actual).unwrap();
+    assert_eq!(actual, expected);
+    assert!(matches!(
+        reader.punch_hole(&file, 0, 1),
+        Err(Error::ReadOnly)
+    ));
+}
+
+#[test]
+fn preallocation_survives_remount_and_is_consumed_without_exposing_device_bytes() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume
+        .preallocate(&file, 0, (3 * UNIT_BYTES) as u64, true)
+        .unwrap();
+    assert_eq!(volume.handle_attributes(&file).unwrap().size, 0);
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (3 * UNIT_BYTES) as u64
+    );
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+    let mut volume =
+        Volume::open(FaultDevice::new(durable(&volume), MountMode::ReadWrite)).unwrap();
+    let file = volume
+        .open_file(ROOT, &name("reserved"), Access::ReadWrite)
+        .unwrap();
+    volume.write(&file, 17, b"hello").unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (3 * UNIT_BYTES) as u64
+    );
+    volume.truncate(&file, (3 * UNIT_BYTES) as u64).unwrap();
+    let mut bytes = vec![0; 3 * UNIT_BYTES];
+    volume.read(&file, 0, &mut bytes).unwrap();
+    let mut expected = bytes.clone();
+    expected.fill(0);
+    expected[17..22].copy_from_slice(b"hello");
+    assert_eq!(bytes, expected);
+    volume
+        .write(&file, (UNIT_BYTES + 3) as u64, b"second")
+        .unwrap();
+    volume
+        .punch_hole(&file, (2 * UNIT_BYTES) as u64, UNIT_BYTES as u64)
+        .unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (2 * UNIT_BYTES) as u64
+    );
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}
+
+#[test]
+fn preallocation_preserves_data_and_truncation_discards_unused_reservations() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume.write(&file, 0, b"keep me").unwrap();
+    volume
+        .preallocate(&file, 0, (3 * UNIT_BYTES) as u64, true)
+        .unwrap();
+    let mut bytes = [0; 7];
+    volume.read(&file, 0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"keep me");
+    volume
+        .punch_hole(&file, (2 * UNIT_BYTES) as u64, UNIT_BYTES as u64)
+        .unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        (2 * UNIT_BYTES) as u64
+    );
+    volume.truncate(&file, 7).unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().allocated_bytes,
+        BLOCK_BYTES as u64
+    );
+    volume
+        .preallocate(&file, UNIT_BYTES as u64, UNIT_BYTES as u64, false)
+        .unwrap();
+    assert_eq!(
+        volume.handle_attributes(&file).unwrap().size,
+        (2 * UNIT_BYTES) as u64
+    );
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}
+
+#[test]
+fn preallocated_writes_and_overwrites_work_after_other_files_fill_the_volume() {
+    let geometry = GEOMETRY;
+    let device = FaultDevice::with_geometry(BTreeMap::new(), MountMode::ReadWrite, geometry);
+    let media = device.media.clone();
+    Volume::format_at(device, UUID, 1, 0).unwrap();
+    let mut volume = Volume::open(FaultDevice::with_geometry(
+        media.borrow().durable.clone(),
+        MountMode::ReadWrite,
+        geometry,
+    ))
+    .unwrap();
+    let reserved = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume
+        .preallocate(&reserved, 0, (1 << 20) as u64, true)
+        .unwrap();
+    let filler = volume.create_file(ROOT, name("filler")).unwrap();
+    let bytes = vec![0x53; 1 << 20];
+    let mut size = 0;
+    loop {
+        match volume.write(&filler, size, &bytes) {
+            Ok(done) => size += done as u64,
+            Err(Error::NoSpace) => break,
+            Err(error) => panic!("fill failed: {error}"),
+        }
+    }
+    assert!(size > 0);
+    assert_eq!(volume.write(&reserved, 0, &bytes).unwrap(), bytes.len());
+    for byte in 0..8 {
+        assert_eq!(
+            volume.write(&reserved, 0, &vec![byte; UNIT_BYTES]).unwrap(),
+            UNIT_BYTES
+        );
+        volume.sync().unwrap();
+    }
+    let mut read = vec![0; UNIT_BYTES];
+    volume.read(&reserved, 0, &mut read).unwrap();
+    assert_eq!(read, vec![7; UNIT_BYTES]);
+    volume.close_handle(filler).unwrap();
+    volume.close_handle(reserved).unwrap();
+    volume.sync().unwrap();
+    checked(&volume);
+}
+
+#[test]
+fn interrupted_unwritten_conversion_recovers_zeros_or_complete_data() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("reserved")).unwrap();
+    volume
+        .preallocate(&file, 0, UNIT_BYTES as u64, false)
+        .unwrap();
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    let base = durable(&volume);
+    let mut complete = Volume::open(FaultDevice::new(base.clone(), MountMode::ReadWrite)).unwrap();
+    let file = complete
+        .open_file(ROOT, &name("reserved"), Access::ReadWrite)
+        .unwrap();
+    let media = complete.device.as_ref().unwrap().media.clone();
+    media.borrow_mut().events.clear();
+    complete.write(&file, 0, &vec![0x67; UNIT_BYTES]).unwrap();
+    let count = media.borrow().events.len();
+    for event in 0..count {
+        for whole_mask in [0, u64::MAX] {
+            let mut volume =
+                Volume::open(FaultDevice::new(base.clone(), MountMode::ReadWrite)).unwrap();
+            let file = volume
+                .open_file(ROOT, &name("reserved"), Access::ReadWrite)
+                .unwrap();
+            let media = volume.device.as_ref().unwrap().media.clone();
+            media.borrow_mut().events.clear();
+            media.borrow_mut().failure = Some(Failure {
+                event,
+                whole_mask,
+                tear: None,
+            });
+            let _ = volume.write(&file, 0, &vec![0x67; UNIT_BYTES]);
+            media.borrow_mut().crash();
+            let mut reader = Volume::open(FaultDevice::new(
+                media.borrow().durable.clone(),
+                MountMode::ReadOnly,
+            ))
+            .unwrap();
+            reader.check().unwrap();
+            let file = reader
+                .open_file(ROOT, &name("reserved"), Access::Read)
+                .unwrap();
+            let mut bytes = vec![0; UNIT_BYTES];
+            reader.read(&file, 0, &mut bytes).unwrap();
+            assert!(bytes.iter().all(|byte| *byte == 0) || bytes.iter().all(|byte| *byte == 0x67));
+            reader.close_handle(file).unwrap();
+        }
+    }
+    complete.close_handle(file).unwrap();
+}
+
+#[test]
+fn failed_preallocation_leaves_size_unchanged() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("too-big")).unwrap();
+    volume.write(&file, 0, b"keep").unwrap();
+    let length = (volume.space().unwrap().total_blocks + 1) * BLOCK_BYTES as u64;
+    let result = volume.preallocate(&file, 0, length, false);
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(volume.handle_attributes(&file).unwrap().size, 4);
+    volume.close_handle(file).unwrap();
+}
+
+#[test]
+fn punching_through_eof_keeps_reservations_past_the_hole() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("tail")).unwrap();
+    volume.write(&file, 0, &[7; 10_000]).unwrap();
+    volume
+        .preallocate(&file, 0, UNIT_BYTES as u64, true)
+        .unwrap();
+    volume.punch_hole(&file, 0, 20_480).unwrap();
+    assert_eq!(volume.allocation_end(&file).unwrap(), UNIT_BYTES as u64);
+    let mut read = vec![1; 10_000];
+    assert_eq!(volume.read(&file, 0, &mut read).unwrap(), 10_000);
+    assert_eq!(read, vec![0; 10_000]);
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}
+
+#[test]
+fn trimming_allocation_keeps_times() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("trim")).unwrap();
+    volume.write(&file, 0, b"keep").unwrap();
+    volume
+        .preallocate(&file, 0, (3 * UNIT_BYTES) as u64, true)
+        .unwrap();
+    let object = volume.lookup(ROOT, &name("trim")).unwrap();
+    let before = volume.attributes(object).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    volume.trim_allocation(object).unwrap();
+    assert_eq!(volume.allocation_end(&file).unwrap(), BLOCK_BYTES as u64);
+    let after = volume.attributes(object).unwrap();
+    assert_eq!(after.modification, before.modification);
+    assert_eq!(after.metadata_change, before.metadata_change);
+    assert_eq!(after.size, 4);
+    volume.close_handle(file).unwrap();
+    drain(&mut volume);
+    checked(&volume);
+}

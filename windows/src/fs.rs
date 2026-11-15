@@ -16,7 +16,7 @@
 //! file or directory never expires, so the adapter names what a request made
 //! stale there (`CarryFs::take_stale`).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -136,6 +136,9 @@ struct State<D: BlockDevice> {
     /// When a handle with write access last closed. Windows was then asked to
     /// write out the file's mapped pages, and does so a moment later.
     settling: Option<Instant>,
+    /// Files given an allocation size here, trimmed to EOF at last close.
+    /// Reservations made by other systems persist.
+    reserved: BTreeSet<ObjectId>,
 }
 
 /// Files Windows may keep the data of after their handles closed. Each keeps
@@ -298,6 +301,7 @@ impl<D: BlockDevice> CarryFs<D> {
                 touched: Vec::new(),
                 kept: VecDeque::new(),
                 settling: None,
+                reserved: BTreeSet::new(),
             }),
             read_only,
             waits: None,
@@ -436,8 +440,8 @@ impl<D: BlockDevice> CarryFs<D> {
             // Close every handle and report the first failure: returning at
             // it would drop the rest of the table with their handles open.
             let mut result = Ok(());
-            for (_, open) in s.open.drain() {
-                let closed = s.volume.close_handle(open.handle).map_err(|e| status(&e));
+            for context in s.open.keys().copied().collect::<Vec<_>>() {
+                let closed = s.close(context);
                 result = result.and(closed);
             }
             result
@@ -461,6 +465,7 @@ impl<D: BlockDevice> CarryFs<D> {
         directory: bool,
         write_through: bool,
         file_attributes: u32,
+        allocation: u64,
     ) -> Reply<(u64, FileInfo, Vec<u16>)> {
         self.change(|s| {
             let (parent, name, mut normalized) = s.parent(path)?;
@@ -495,6 +500,19 @@ impl<D: BlockDevice> CarryFs<D> {
                     }
                 }
             };
+            if !directory && allocation > 0 {
+                if let Err(error) = with_space(&mut s.volume, |v| {
+                    v.preallocate(&handle, 0, allocation, true)
+                }) {
+                    // A create that fails leaves no file, as on NTFS.
+                    s.volume.close_handle(handle).map_err(|e| status(&e))?;
+                    s.volume
+                        .remove(parent, &name, RemoveKind::File)
+                        .map_err(|e| status(&e))?;
+                    return Err(status(&error));
+                }
+                s.reserved.insert(object);
+            }
             let kind = if directory {
                 ObjectKind::Directory
             } else {
@@ -552,10 +570,25 @@ impl<D: BlockDevice> CarryFs<D> {
     /// Truncate for `CREATE_ALWAYS`, `TRUNCATE_EXISTING`, and supersede.
     /// Hidden and read-only come from `file_attributes`: replacing the old
     /// ones when `replace` is set, added to them otherwise.
-    pub fn overwrite(&self, context: u64, file_attributes: u32, replace: bool) -> Reply<FileInfo> {
+    pub fn overwrite(
+        &self,
+        context: u64,
+        file_attributes: u32,
+        replace: bool,
+        allocation: u64,
+    ) -> Reply<FileInfo> {
         self.change(|s| {
             let open = get(&s.open, context)?;
-            with_space(&mut s.volume, |v| v.truncate(&open.handle, 0)).map_err(|e| status(&e))?;
+            if allocation > 0 {
+                with_space(&mut s.volume, |v| {
+                    v.truncate_and_preallocate(&open.handle, 0, allocation)
+                })
+                .map_err(|e| status(&e))?;
+                s.reserved.insert(open.object);
+            } else {
+                with_space(&mut s.volume, |v| v.truncate(&open.handle, 0))
+                    .map_err(|e| status(&e))?;
+            }
             if s.volume.stores_attributes() {
                 let current = s
                     .volume
@@ -752,20 +785,40 @@ impl<D: BlockDevice> CarryFs<D> {
         })
     }
 
-    /// Allocation size is derived from extents, so setting it only truncates
-    /// when it drops below the file size.
+    /// Set EOF or reserve allocation independently of EOF. A smaller allocation truncates.
     pub fn set_file_size(&self, context: u64, size: u64, allocation: bool) -> Reply<FileInfo> {
         self.change(|s| {
-            let handle = &get(&s.open, context)?.handle;
+            let open = get(&s.open, context)?;
+            let (handle, object) = (&open.handle, open.object);
             let current = s
                 .volume
                 .handle_attributes(handle)
                 .map_err(|e| status(&e))?
                 .size;
-            if !allocation || size < current {
+            if !allocation {
                 with_space(&mut s.volume, |v| v.truncate(handle, size)).map_err(|e| status(&e))?;
-                s.publish_if_write_through(context)?;
+            } else {
+                // An allocation below EOF truncates, in the same commit as the reservation.
+                if size == 0 {
+                    with_space(&mut s.volume, |v| v.truncate(handle, 0)).map_err(|e| status(&e))?;
+                } else if size < current {
+                    with_space(&mut s.volume, |v| {
+                        v.truncate_and_preallocate(handle, size, size)
+                    })
+                    .map_err(|e| status(&e))?;
+                } else {
+                    with_space(&mut s.volume, |v| v.preallocate(handle, 0, size, true))
+                        .map_err(|e| status(&e))?;
+                }
+                s.reserved.insert(object);
+                let end = s.volume.allocation_end(handle).map_err(|e| status(&e))?;
+                let keep = size.div_ceil(65_536) * 65_536;
+                if end > keep {
+                    with_space(&mut s.volume, |v| v.punch_hole(handle, keep, end - keep))
+                        .map_err(|e| status(&e))?;
+                }
             }
+            s.publish_if_write_through(context)?;
             s.info(context)
         })
     }
@@ -1300,10 +1353,26 @@ impl<D: BlockDevice> State<D> {
     }
 
     fn close_handle(&mut self, open: Open) -> Reply<()> {
-        self.volume
-            .close_handle(open.handle)
-            .map_err(|e| status(&e))?;
         let pinned = self.open.values().any(|other| other.object == open.object);
+        // Like NTFS, the last close releases an allocation set here past EOF.
+        let trim = if !pinned && self.reserved.remove(&open.object) {
+            match with_space(&mut self.volume, |v| v.trim_allocation(open.object)) {
+                Ok(()) => {
+                    self.known.forget_attributes();
+                    self.quiet = None;
+                    Ok(())
+                }
+                Err(Error::ReadOnly | Error::NotFound) => Ok(()),
+                Err(error) => Err(status(&error)),
+            }
+        } else {
+            Ok(())
+        };
+        let closed = self
+            .volume
+            .close_handle(open.handle)
+            .map_err(|e| status(&e));
+        trim.and(closed)?;
         // Only an unpinned orphan is new cleanup work for `tick`. Closing
         // anything else cannot have created any.
         if !pinned
@@ -2022,7 +2091,7 @@ mod tests {
         let (_image, fs) = mount("name-timing");
         for index in 0..100 {
             let (context, _, _) = fs
-                .create(&w(&format!("\\file{index:03}")), false, false, 0)
+                .create(&w(&format!("\\file{index:03}")), false, false, 0, 0)
                 .unwrap();
             fs.close(context);
         }
@@ -2052,11 +2121,11 @@ mod tests {
     fn stat_and_listing_timing() {
         const FILES: usize = 10_000;
         let (_image, fs) = mount("stat-timing");
-        let (directory, _, _) = fs.create(&w("\\d"), true, false, 0).unwrap();
+        let (directory, _, _) = fs.create(&w("\\d"), true, false, 0, 0).unwrap();
         fs.close(directory);
         let paths: Vec<Vec<u16>> = (0..FILES).map(|i| w(&format!("\\d\\f{i:05}"))).collect();
         for path in &paths {
-            let (context, _, _) = fs.create(path, false, false, 0).unwrap();
+            let (context, _, _) = fs.create(path, false, false, 0, 0).unwrap();
             fs.write(context, 0, &[7; 4096], false, false).unwrap();
             fs.close(context);
         }
@@ -2154,9 +2223,11 @@ mod tests {
     #[test]
     fn paths_resolve_case_insensitively_and_report_the_missing_component() {
         let (_image, fs) = mount("paths");
-        let (dir, info, _) = fs.create(&w("\\Docs"), true, false, 0).unwrap();
+        let (dir, info, _) = fs.create(&w("\\Docs"), true, false, 0, 0).unwrap();
         assert_eq!(info.file_attributes, FILE_ATTRIBUTE_DIRECTORY);
-        let (file, _, _) = fs.create(&w("\\Docs\\Notes.txt"), false, false, 0).unwrap();
+        let (file, _, _) = fs
+            .create(&w("\\Docs\\Notes.txt"), false, false, 0, 0)
+            .unwrap();
         fs.close(file);
         fs.close(dir);
         let (again, info, _) = fs.open(&w("\\DOCS\\notes.TXT"), false, false).unwrap();
@@ -2177,16 +2248,17 @@ mod tests {
             Err(STATUS_OBJECT_NAME_INVALID)
         );
         assert_eq!(
-            fs.create(&w("\\docs\\NOTES.txt"), false, false, 0)
+            fs.create(&w("\\docs\\NOTES.txt"), false, false, 0, 0)
                 .map(|_| ()),
             Err(STATUS_OBJECT_NAME_COLLISION)
         );
         assert_eq!(
-            fs.create(&w("\\missing\\new"), false, false, 0).map(|_| ()),
+            fs.create(&w("\\missing\\new"), false, false, 0, 0)
+                .map(|_| ()),
             Err(STATUS_OBJECT_PATH_NOT_FOUND)
         );
         assert_eq!(
-            fs.create(&w("\\docs\\notes.txt\\new"), true, false, 0)
+            fs.create(&w("\\docs\\notes.txt\\new"), true, false, 0, 0)
                 .map(|_| ()),
             Err(STATUS_OBJECT_PATH_NOT_FOUND)
         );
@@ -2195,9 +2267,11 @@ mod tests {
     #[test]
     fn opening_through_an_alias_reports_the_stored_spelling() {
         let (_image, fs) = mount("normalized");
-        let (dir, _, created) = fs.create(&w("\\Docs"), true, false, 0).unwrap();
+        let (dir, _, created) = fs.create(&w("\\Docs"), true, false, 0, 0).unwrap();
         assert_eq!(String::from_utf16(&created).unwrap(), "\\Docs");
-        let (file, _, created) = fs.create(&w("\\docs\\Notes.TXT"), false, false, 0).unwrap();
+        let (file, _, created) = fs
+            .create(&w("\\docs\\Notes.TXT"), false, false, 0, 0)
+            .unwrap();
         // The parent keeps its stored spelling; a new entry keeps the requested one.
         assert_eq!(String::from_utf16(&created).unwrap(), "\\Docs\\Notes.TXT");
         fs.close(file);
@@ -2231,10 +2305,10 @@ mod tests {
     #[test]
     fn set_reparse_point_turns_new_objects_into_symlinks() {
         let (_image, fs) = mount("reparse");
-        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
+        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0, 0).unwrap();
         fs.close(dir);
         // mklink creates an empty file, then sets the reparse point on it.
-        let (link, _, _) = fs.create(&w("\\file-link"), false, false, 0).unwrap();
+        let (link, _, _) = fs.create(&w("\\file-link"), false, false, 0, 0).unwrap();
         fs.set_reparse(
             link,
             &w("\\file-link"),
@@ -2251,7 +2325,7 @@ mod tests {
         fs.close(link);
 
         // mklink /D creates an empty directory; a target that is one reports it.
-        let (link, _, _) = fs.create(&w("\\dir-link"), true, false, 0).unwrap();
+        let (link, _, _) = fs.create(&w("\\dir-link"), true, false, 0, 0).unwrap();
         fs.set_reparse(link, &w("\\dir-link"), &symlink_buffer("dir", 1), 0)
             .unwrap();
         assert_eq!(
@@ -2264,7 +2338,7 @@ mod tests {
             Err(STATUS_NOT_A_REPARSE_POINT)
         );
 
-        let (other, _, _) = fs.create(&w("\\absolute"), false, false, 0).unwrap();
+        let (other, _, _) = fs.create(&w("\\absolute"), false, false, 0, 0).unwrap();
         assert_eq!(
             fs.set_reparse(
                 other,
@@ -2308,7 +2382,7 @@ mod tests {
     #[test]
     fn links_made_elsewhere_take_their_kind_from_the_target() {
         let (_image, fs) = mount("inferred");
-        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
+        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0, 0).unwrap();
         fs.close(dir);
         fs.with(|s| {
             for (link, target) in [("up", "dir/../dir"), ("root", "/dir"), ("gone", "missing")] {
@@ -2333,13 +2407,13 @@ mod tests {
     #[test]
     fn listing_resumes_by_marker_while_entries_are_deleted() {
         let (_image, fs) = mount("listing");
-        let (dir, _, _) = fs.create(&w("\\d"), true, false, 0).unwrap();
+        let (dir, _, _) = fs.create(&w("\\d"), true, false, 0, 0).unwrap();
         fs.close(dir);
         let mut expected = vec![".".to_string(), "..".to_string()];
         for index in 0..150 {
             let name = format!("f{index:03}");
             let (file, _, _) = fs
-                .create(&w(&format!("\\d\\{name}")), false, false, 0)
+                .create(&w(&format!("\\d\\{name}")), false, false, 0, 0)
                 .unwrap();
             fs.close(file);
             expected.push(name);
@@ -2351,7 +2425,7 @@ mod tests {
     }
 
     fn make(fs: &CarryFs<ImageDevice>, path: &str, directory: bool) {
-        let (context, _, _) = fs.create(&w(path), directory, false, 0).unwrap();
+        let (context, _, _) = fs.create(&w(path), directory, false, 0, 0).unwrap();
         fs.close(context);
     }
 
@@ -2404,7 +2478,7 @@ mod tests {
         let (_image, fs) = mount("known-attributes");
         make(&fs, "\\d", true);
         let path = w("\\d\\file");
-        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0, 0).unwrap();
         let (reader, _, _) = fs.open(&path, false, false).unwrap();
         // The size by name, through another handle, and in a listing.
         let sizes = || {
@@ -2426,7 +2500,7 @@ mod tests {
         assert_eq!(sizes(), (5000, 5000));
         fs.set_file_size(writer, 100, false).unwrap();
         assert_eq!(sizes(), (100, 100));
-        fs.overwrite(writer, 0, false).unwrap();
+        fs.overwrite(writer, 0, false, 0).unwrap();
         assert_eq!(sizes(), (0, 0));
         let stamp = 133_000_000_000_000_000;
         assert_ne!(fs.file_info(reader).unwrap().last_write_time, stamp);
@@ -2447,7 +2521,7 @@ mod tests {
         make(&fs, "\\d", true);
         for name in ["keep", "shrink", "gone"] {
             let path = w(&format!("\\d\\{name}"));
-            let (file, _, _) = fs.create(&path, false, false, 0).unwrap();
+            let (file, _, _) = fs.create(&path, false, false, 0, 0).unwrap();
             fs.write(file, 0, &vec![7; 1 << 20], false, false).unwrap();
             fs.close(file);
         }
@@ -2515,7 +2589,7 @@ mod tests {
         assert_eq!(normalized, w("\\z\\b\\two"));
         fs.close(two);
         // An empty directory that becomes a link holds no paths any more.
-        let (link, _, _) = fs.create(&w("\\z\\link"), true, false, 0).unwrap();
+        let (link, _, _) = fs.create(&w("\\z\\link"), true, false, 0, 0).unwrap();
         assert_eq!(
             fs.attributes_by_name(&w("\\z\\link\\x")),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
@@ -2533,7 +2607,7 @@ mod tests {
     fn delete_pending_file_stays_readable_until_its_last_close() {
         let (_image, fs) = mount("delete");
         let path = w("\\victim");
-        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0, 0).unwrap();
         let (written, info) = fs.write(writer, 0, &[5; 100_000], false, false).unwrap();
         assert_eq!((written, info.file_size), (100_000, 100_000));
         let (reader, _, _) = fs.open(&path, false, false).unwrap();
@@ -2571,7 +2645,7 @@ mod tests {
     fn a_context_gives_up_its_handle_at_cleanup_and_still_reads() {
         let (_image, fs) = mount("cleaned");
         let path = w("\\cached");
-        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0, 0).unwrap();
         fs.write(writer, 0, &[9; 70_000], false, false).unwrap();
         fs.cleanup(writer, None, 0);
         fs.close(writer);
@@ -2610,7 +2684,7 @@ mod tests {
     fn paging_writes_arrive_through_read_and_cleaned_up_contexts() {
         let (image, fs) = mount("paging");
         let path = w("\\mapped");
-        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0, 0).unwrap();
         fs.write(writer, 0, &[0; 8192], false, false).unwrap();
         let (reader, _, _) = fs.open(&path, false, false).unwrap();
         assert_eq!(fs.write(reader, 0, b"one", false, true).unwrap().0, 3);
@@ -2649,7 +2723,7 @@ mod tests {
     #[test]
     fn closing_a_written_file_names_it_and_holds_removal() {
         let (_image, fs) = mount("writeout");
-        let (created, _, _) = fs.create(&w("\\New"), false, false, 0).unwrap();
+        let (created, _, _) = fs.create(&w("\\New"), false, false, 0, 0).unwrap();
         assert!(fs.take_stale().is_empty());
         fs.cleanup(created, None, 0);
         assert_eq!(fs.take_stale(), [w("\\New")]);
@@ -2676,7 +2750,7 @@ mod tests {
         fs.can_delete(writer).unwrap();
         fs.cleanup(writer, Some(&w("\\Moved")), CLEANUP_DELETE);
         fs.close(writer);
-        let (directory, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
+        let (directory, _, _) = fs.create(&w("\\dir"), true, false, 0, 0).unwrap();
         fs.cleanup(directory, None, 0);
         fs.close(directory);
         assert!(fs.take_stale().is_empty());
@@ -2698,7 +2772,7 @@ mod tests {
         let (_image, fs) = mount("kept");
         let read = |name: &str| {
             let path = w(name);
-            if let Ok((created, _, _)) = fs.create(&path, false, false, 0) {
+            if let Ok((created, _, _)) = fs.create(&path, false, false, 0, 0) {
                 fs.write(created, 0, b"data", false, false).unwrap();
                 fs.close(created);
             }
@@ -2733,13 +2807,13 @@ mod tests {
     #[test]
     fn a_change_in_an_open_directory_names_the_directory() {
         let (_image, fs) = mount("touched");
-        let (held, _, _) = fs.create(&w("\\Held"), true, false, 0).unwrap();
-        let (other, _, _) = fs.create(&w("\\other"), true, false, 0).unwrap();
+        let (held, _, _) = fs.create(&w("\\Held"), true, false, 0, 0).unwrap();
+        let (other, _, _) = fs.create(&w("\\other"), true, false, 0, 0).unwrap();
         fs.cleanup(other, None, 0);
         fs.close(other);
         assert!(fs.take_stale().is_empty());
 
-        let (file, _, _) = fs.create(&w("\\held\\a"), false, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\held\\a"), false, false, 0, 0).unwrap();
         assert_eq!(fs.take_stale(), [w("\\held")]);
         fs.rename(&w("\\held\\a"), &w("\\held\\b"), false).unwrap();
         assert_eq!(fs.take_stale(), [w("\\held")]);
@@ -2754,7 +2828,7 @@ mod tests {
 
         // The root is a directory like any other.
         let (root, _, _) = fs.open(&w("\\"), false, false).unwrap();
-        let (sub, _, _) = fs.create(&w("\\sub"), true, false, 0).unwrap();
+        let (sub, _, _) = fs.create(&w("\\sub"), true, false, 0, 0).unwrap();
         assert_eq!(fs.take_stale(), [w("\\")]);
         fs.rename(&w("\\sub"), &w("\\held\\sub"), false).unwrap();
         assert_eq!(fs.take_stale(), [w("\\"), w("\\held")]);
@@ -2762,7 +2836,7 @@ mod tests {
             fs.cleanup(context, None, 0);
             fs.close(context);
         }
-        let (unheld, _, _) = fs.create(&w("\\held\\d"), false, false, 0).unwrap();
+        let (unheld, _, _) = fs.create(&w("\\held\\d"), false, false, 0, 0).unwrap();
         assert!(fs.take_stale().is_empty());
         fs.close(unheld);
     }
@@ -2773,11 +2847,11 @@ mod tests {
     fn a_cleaned_up_context_reads_while_every_handle_is_taken() {
         let (_image, fs) = mount("saturated");
         let path = w("\\busy");
-        let (writer, _, _) = fs.create(&path, false, false, 0).unwrap();
+        let (writer, _, _) = fs.create(&path, false, false, 0, 0).unwrap();
         fs.write(writer, 0, b"data", false, false).unwrap();
         let (first, _, _) = fs.open(&path, false, false).unwrap();
         fs.cleanup(first, None, 0);
-        let (other, _, _) = fs.create(&w("\\other"), false, false, 0).unwrap();
+        let (other, _, _) = fs.create(&w("\\other"), false, false, 0, 0).unwrap();
         fs.cleanup(other, None, 0);
         let mut readers = Vec::new();
         loop {
@@ -2805,7 +2879,7 @@ mod tests {
     #[test]
     fn writes_append_and_constrained_writes_do_not_extend() {
         let (_image, fs) = mount("write");
-        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0, 0).unwrap();
         fs.write(file, 0, b"hello", false, false).unwrap();
         let (_, info) = fs.write(file, 0, b" world", true, false).unwrap();
         assert_eq!(info.file_size, 11);
@@ -2816,7 +2890,7 @@ mod tests {
         assert_eq!(&buffer, b"hello woXXX");
         assert_eq!(fs.set_file_size(file, 4096, true).unwrap().file_size, 11);
         assert_eq!(fs.set_file_size(file, 2, true).unwrap().file_size, 2);
-        assert_eq!(fs.overwrite(file, 0, false).unwrap().file_size, 0);
+        assert_eq!(fs.overwrite(file, 0, false, 0).unwrap().file_size, 0);
         fs.close(file);
     }
 
@@ -2824,7 +2898,7 @@ mod tests {
     fn rename_never_replaces_a_directory_and_reports_collisions() {
         let (_image, fs) = mount("rename");
         for (path, directory) in [("\\a", false), ("\\b", false), ("\\dir", true)] {
-            let (context, _, _) = fs.create(&w(path), directory, false, 0).unwrap();
+            let (context, _, _) = fs.create(&w(path), directory, false, 0, 0).unwrap();
             fs.close(context);
         }
         assert_eq!(
@@ -2844,7 +2918,7 @@ mod tests {
     fn a_read_only_mount_refuses_deletion() {
         let (image, volume) = {
             let (image, fs) = mount("readonly-setup");
-            let (file, _, _) = fs.create(&w("\\keep.txt"), false, false, 0).unwrap();
+            let (file, _, _) = fs.create(&w("\\keep.txt"), false, false, 0, 0).unwrap();
             fs.close(file);
             (image, fs.into_volume().unwrap())
         };
@@ -2858,8 +2932,8 @@ mod tests {
     #[test]
     fn non_empty_directories_cannot_be_deleted() {
         let (_image, fs) = mount("candelete");
-        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
-        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false, 0).unwrap();
+        let (dir, _, _) = fs.create(&w("\\dir"), true, false, 0, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false, 0, 0).unwrap();
         fs.close(file);
         assert_eq!(fs.can_delete(dir), Err(STATUS_DIRECTORY_NOT_EMPTY));
         fs.close(dir);
@@ -2876,7 +2950,7 @@ mod tests {
     #[test]
     fn changes_wait_for_a_pause_the_age_cap_or_a_flush() {
         let (_image, fs) = mount("pacing");
-        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0, 0).unwrap();
         fs.write(file, 0, b"hello", false, false).unwrap();
         assert!(unsynced(&fs));
 
@@ -2920,7 +2994,7 @@ mod tests {
             idle: Duration::from_secs(3600),
             max_age: PACING.max_age,
         };
-        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0, 0).unwrap();
         fs.write(file, 0, b"first", false, false).unwrap();
         let first = Instant::now();
         fs.tick(first, busy);
@@ -2940,7 +3014,7 @@ mod tests {
     #[test]
     fn write_through_handles_publish_before_replying() {
         let (_image, fs) = mount("writethrough");
-        let (file, _, _) = fs.create(&w("\\f"), false, true, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, true, 0, 0).unwrap();
         assert!(!unsynced(&fs));
         fs.write(file, 0, b"durable", false, false).unwrap();
         assert!(!unsynced(&fs));
@@ -2958,7 +3032,7 @@ mod tests {
     #[test]
     fn removal_is_vetoed_until_changes_are_published_and_requests_finish() {
         let (_image, fs) = mount("removal");
-        let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\f"), false, false, 0, 0).unwrap();
         fs.write(file, 0, b"pending", false, false).unwrap();
         fs.close(file);
 
@@ -3044,7 +3118,7 @@ mod tests {
                 writes,
             };
             let fs = CarryFs::new(Volume::format(device).unwrap(), false).unwrap();
-            let (file, _, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
+            let (file, _, _) = fs.create(&w("\\f"), false, false, 0, 0).unwrap();
             fs.write(file, 0, b"pending", false, false).unwrap();
             fs.close(file);
             assert!(unsynced(&fs));
@@ -3074,7 +3148,7 @@ mod tests {
         fs.flush(None).unwrap();
         let empty = free(&fs);
 
-        let (file, _, _) = fs.create(&w("\\big"), false, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\big"), false, false, 0, 0).unwrap();
         fs.write(file, 0, &vec![7; 1 << 20], false, false).unwrap();
         fs.close(file);
         fs.flush(None).unwrap();
@@ -3146,10 +3220,10 @@ mod tests {
         let (_image, fs) = mount("close-all");
         let (_other_image, other) = mount("close-all-other");
         for index in 0..32 {
-            fs.create(&w(&format!("\\f{index}")), false, false, 0)
+            fs.create(&w(&format!("\\f{index}")), false, false, 0, 0)
                 .unwrap();
         }
-        let (context, _, _) = other.create(&w("\\foreign"), false, false, 0).unwrap();
+        let (context, _, _) = other.create(&w("\\foreign"), false, false, 0, 0).unwrap();
         let foreign = other.state.lock().unwrap().open.remove(&context).unwrap();
         fs.state.lock().unwrap().open.insert(u64::MAX, foreign);
         assert_eq!(fs.close_all(), Err(STATUS_INVALID_HANDLE));
@@ -3198,9 +3272,9 @@ mod tests {
     fn a_failed_open_leaves_no_handle_registered() {
         use std::sync::atomic::Ordering::SeqCst;
         let (image, fs) = mount("failed-open");
-        let (file, _, _) = fs.create(&w("\\dir"), true, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\dir"), true, false, 0, 0).unwrap();
         fs.close(file);
-        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false, 0).unwrap();
+        let (file, _, _) = fs.create(&w("\\dir\\f"), false, false, 0, 0).unwrap();
         fs.write(file, 0, b"data", false, false).unwrap();
         fs.close(file);
         fs.into_volume().unwrap().eject().unwrap();
@@ -3276,7 +3350,7 @@ mod tests {
     #[test]
     fn read_only_and_hidden_follow_the_stored_mode_and_flag() {
         let (_image, fs) = mount_upgraded("attributes");
-        let (file, info, _) = fs.create(&w("\\f"), false, false, 0).unwrap();
+        let (file, info, _) = fs.create(&w("\\f"), false, false, 0, 0).unwrap();
         assert_eq!(info.file_attributes, FILE_ATTRIBUTE_NORMAL);
 
         fs.set_basic_info(file, FILE_ATTRIBUTE_READONLY, 0, 0)
@@ -3307,12 +3381,12 @@ mod tests {
 
         // Create carries both; a directory ignores read-only.
         let both = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN;
-        let (file, info, _) = fs.create(&w("\\g"), false, false, both).unwrap();
+        let (file, info, _) = fs.create(&w("\\g"), false, false, both, 0).unwrap();
         assert_eq!(info.file_attributes, both);
         assert_eq!(mode(&fs, file), 0o444);
         fs.cleanup(file, None, 0);
         fs.close(file);
-        let (dir, info, _) = fs.create(&w("\\d"), true, false, both).unwrap();
+        let (dir, info, _) = fs.create(&w("\\d"), true, false, both, 0).unwrap();
         assert_eq!(
             info.file_attributes,
             FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN
@@ -3330,13 +3404,14 @@ mod tests {
     fn overwrite_replaces_or_adds_hidden_and_read_only() {
         let (_image, fs) = mount_upgraded("overwrite");
         let (file, _, _) = fs
-            .create(&w("\\f"), false, false, FILE_ATTRIBUTE_HIDDEN)
+            .create(&w("\\f"), false, false, FILE_ATTRIBUTE_HIDDEN, 0)
             .unwrap();
-        fs.overwrite(file, FILE_ATTRIBUTE_NORMAL, false).unwrap();
+        fs.overwrite(file, FILE_ATTRIBUTE_NORMAL, false, 0).unwrap();
         assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_HIDDEN);
-        fs.overwrite(file, FILE_ATTRIBUTE_READONLY, true).unwrap();
+        fs.overwrite(file, FILE_ATTRIBUTE_READONLY, true, 0)
+            .unwrap();
         assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_READONLY);
-        fs.overwrite(file, FILE_ATTRIBUTE_NORMAL, true).unwrap();
+        fs.overwrite(file, FILE_ATTRIBUTE_NORMAL, true, 0).unwrap();
         assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
         fs.cleanup(file, None, 0);
         fs.close(file);
@@ -3346,11 +3421,11 @@ mod tests {
     fn a_volume_without_the_feature_accepts_attributes_and_stores_none() {
         let (_image, fs) = mount("no-attributes");
         let both = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN;
-        let (file, info, _) = fs.create(&w("\\f"), false, false, both).unwrap();
+        let (file, info, _) = fs.create(&w("\\f"), false, false, both, 0).unwrap();
         assert_eq!(info.file_attributes, FILE_ATTRIBUTE_NORMAL);
         fs.set_basic_info(file, both, 0, 0).unwrap();
         assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
-        fs.overwrite(file, both, true).unwrap();
+        fs.overwrite(file, both, true, 0).unwrap();
         assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
         fs.cleanup(file, None, 0);
         fs.close(file);
@@ -3372,7 +3447,7 @@ mod tests {
                 ("\\.fseventsd", true),
             ] {
                 let path = w(path);
-                let (context, info, _) = fs.create(&path, directory, false, 0).unwrap();
+                let (context, info, _) = fs.create(&path, directory, false, 0, 0).unwrap();
                 let kind = if directory {
                     FILE_ATTRIBUTE_DIRECTORY
                 } else {
@@ -3420,5 +3495,76 @@ mod tests {
                 FILE_ATTRIBUTE_NORMAL
             );
         }
+    }
+    #[test]
+    fn allocation_requests_reserve_without_extending_and_last_cleanup_releases_the_tail() {
+        let (_image, fs) = mount("allocation");
+        let path = w("\\reserved");
+        let (file, info, _) = fs.create(&path, false, false, 0, 3 * 65_536).unwrap();
+        assert_eq!(info.file_size, 0);
+        assert_eq!(info.allocation_size, 3 * 65_536);
+        fs.write(file, 0, b"keep", false, false).unwrap();
+        let info = fs.set_file_size(file, 65_536, true).unwrap();
+        assert_eq!(info.file_size, 4);
+        assert_eq!(info.allocation_size, 65_536);
+        let (reader, _, _) = fs.open(&path, false, false).unwrap();
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+        assert_eq!(fs.file_info(reader).unwrap().allocation_size, 65_536);
+        fs.cleanup(reader, None, 0);
+        fs.close(reader);
+        let (file, info, _) = fs.open(&path, true, false).unwrap();
+        assert_eq!(info.allocation_size, 4096);
+        let mut bytes = [0; 4];
+        assert_eq!(fs.read(file, 0, &mut bytes).unwrap(), 4);
+        assert_eq!(&bytes, b"keep");
+        let info = fs.overwrite(file, 0, false, 2 * 65_536).unwrap();
+        assert_eq!(info.file_size, 0);
+        assert_eq!(info.allocation_size, 2 * 65_536);
+        fs.set_file_size(file, 4 * 65_536, false).unwrap();
+        let info = fs.set_file_size(file, 4 * 65_536, true).unwrap();
+        assert_eq!(info.file_size, 4 * 65_536);
+        assert_eq!(info.allocation_size, 4 * 65_536);
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+    }
+
+    #[test]
+    fn failed_create_allocation_leaves_no_file() {
+        let (_image, fs) = mount("failed-create-allocation");
+        let path = w("\\too-big");
+        assert!(fs.create(&path, false, false, 0, 1 << 30).is_err());
+        assert!(fs.open(&path, false, false).is_err());
+    }
+
+    #[test]
+    fn failed_overwrite_allocation_keeps_contents() {
+        let (_image, fs) = mount("failed-overwrite-allocation");
+        let (file, _, _) = fs.create(&w("\\kept"), false, false, 0, 0).unwrap();
+        fs.write(file, 0, b"keep", false, false).unwrap();
+        assert!(fs.overwrite(file, 0, false, 1 << 30).is_err());
+        let mut bytes = [0; 4];
+        assert_eq!(fs.read(file, 0, &mut bytes).unwrap(), 4);
+        assert_eq!(&bytes, b"keep");
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+    }
+
+    #[test]
+    fn last_read_only_close_keeps_last_write_time() {
+        let (_image, fs) = mount("trim-write-time");
+        let path = w("\\reserved");
+        let (file, _, _) = fs.create(&path, false, false, 0, 3 * 65_536).unwrap();
+        fs.write(file, 0, b"keep", false, false).unwrap();
+        let (reader, _, _) = fs.open(&path, false, false).unwrap();
+        fs.cleanup(file, None, 0);
+        fs.close(file);
+        let before = fs.file_info(reader).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs.cleanup(reader, None, 0);
+        fs.close(reader);
+        let (reader, after, _) = fs.open(&path, false, false).unwrap();
+        assert_eq!(after.last_write_time, before.last_write_time);
+        fs.close(reader);
     }
 }

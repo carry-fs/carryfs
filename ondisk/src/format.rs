@@ -34,7 +34,7 @@ pub const CHECKSUM_GROUP_BYTES: usize = 1_056;
 const PAGE_PAYLOAD_OFFSET: usize = 80;
 const PAGE_PAYLOAD_BYTES: usize = BLOCK_BYTES - PAGE_PAYLOAD_OFFSET;
 const MAX_RECORD_BYTES: usize = 3_072;
-/// Free blocks only cleanup and space-reducing mutations may spend.
+/// Headroom for cleanup, space-reducing mutations, and bounded replacing writes.
 pub const MAINTENANCE_RESERVE: u64 = 16_384;
 /// Longest symlink target, macOS `MAXPATHLEN` less its NUL, so a link made on
 /// any adapter reads on all of them.
@@ -42,9 +42,12 @@ pub const MAX_SYMLINK_TARGET: usize = 1_023;
 
 /// Root feature bit 0: inodes may record a mode and attributes.
 pub const FEATURE_ATTRIBUTES: u64 = 1;
-/// The root feature bits this crate understands. A root with any other bit
-/// is refused as an unsupported format.
-pub const KNOWN_FEATURES: u64 = FEATURE_ATTRIBUTES;
+/// Root feature bit 1: extent flags may record storage that reads as zeros until first written.
+pub const FEATURE_PREALLOCATION: u64 = 2;
+/// This extent owns blocks whose device contents are not file data.
+pub const EXTENT_UNWRITTEN: u32 = 1;
+/// Feature bits understood by this implementation.
+pub const KNOWN_FEATURES: u64 = FEATURE_ATTRIBUTES | FEATURE_PREALLOCATION;
 
 /// Inode offset of the mode: zero, or `MODE_RECORDED` with the nine
 /// permission bits.
@@ -898,7 +901,7 @@ pub fn validate_extent(key: &[u8], value: &[u8], blocks: u64, mode: Validation) 
         .checked_add(count)
         .ok_or_else(|| violation(mode, "extent logical range"))?;
     if count == 0
-        || reserved != 0
+        || reserved & !EXTENT_UNWRITTEN != 0
         || logical_end > MAX_LOGICAL_BLOCK
         || !is_nonreserved_block(physical_start, blocks)
         || physical_end > blocks - RESERVED_BLOCKS
@@ -1116,15 +1119,20 @@ pub fn leaf_record_blocks(
     Ok(data)
 }
 
-/// The rule that depends on the root: without `FEATURE_ATTRIBUTES` an inode
-/// has zeros where the mode and attributes go, so a reader that predates
-/// them still accepts it. `key` and `value` are a checked catalog record.
+/// Check fields gated by root features: inode attributes and unwritten extent
+/// flags. `key` and `value` are an otherwise validated catalog record.
 pub fn validate_inode_features(
     key: &[u8],
     value: &[u8],
     features: u64,
     mode: Validation,
 ) -> Result<()> {
+    if key.get(8) == Some(&3)
+        && features & FEATURE_PREALLOCATION == 0
+        && value.get(12..16).is_some_and(|flags| !all_zero(flags))
+    {
+        return Err(violation(mode, "unwritten extent without the root feature"));
+    }
     if key.get(8) == Some(&1)
         && features & FEATURE_ATTRIBUTES == 0
         && !all_zero(&value[INODE_MODE..INODE_ATTRIBUTES + 1])

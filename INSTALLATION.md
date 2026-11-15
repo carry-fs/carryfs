@@ -345,6 +345,13 @@ every computer that uses the volume before running software that preallocates
 files, such as download managers, torrent clients, databases, and virtual
 machine images.
 
+Regular files can have hard links: `ln` on Linux, macOS, and FreeBSD, up to
+65,535 names per file. Directories and symlinks cannot be hard linked.
+Windows opens, renames, and deletes the names but cannot create new ones.
+`carryfs put` and `carryfs get` copy each name as a separate file. The first
+hard link upgrades a volume automatically, like preallocation, and versions
+of CarryFS without hard links cannot mount it afterwards.
+
 CarryFS does not store owners, setuid, setgid or sticky bits, ACLs, extended
 attributes, resource forks, or alternate data streams, and it is not a
 security boundary: anyone holding the drive can mount it as themselves.
@@ -358,6 +365,6 @@ space or period. Windows presents these through compatible aliases; macOS and
 Linux show the stored names.
 
 Boot volumes and server workloads are outside CarryFS's scope. Encryption,
-compression, snapshots, deduplication, RAID, and hard links are not supported.
+compression, snapshots, deduplication, and RAID are not supported.
 Disk format revision 1 is not frozen; a future format change may require
 copying files elsewhere and reformatting the partition.

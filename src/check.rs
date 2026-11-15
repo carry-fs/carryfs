@@ -45,17 +45,20 @@ impl Links {
         }
     }
 
-    fn entry(&mut self, target: u64) {
+    /// Count an entry naming `target`; true when it repeats an earlier one.
+    fn entry(&mut self, target: u64) -> bool {
         if !self.window.contains(&target) {
-            return;
+            return false;
         }
         let bit = target - self.window.start;
         let byte = &mut self.targets[(bit / 8) as usize];
         if *byte & (1 << (bit % 8)) == 0 {
             *byte |= 1 << (bit % 8);
             self.distinct += 1;
+            false
         } else {
             self.repeated = self.repeated.wrapping_add(link_hash(target));
+            true
         }
     }
 
@@ -434,12 +437,13 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
             return Ok(());
         }
         let parent = u64_le(&inode[8..16])?;
-        // A file's parent is only a hint; its entries prove it is reachable.
-        if inode[0] == 1 {
+        // A non-directory's parent is only a hint; its entries prove it is
+        // reachable.
+        if inode[0] != 2 {
             return if parent < self.root.next_object {
                 Ok(())
             } else {
-                Err(Error::Corrupt("file parent exceeds allocated IDs"))
+                Err(Error::Corrupt("parent hint exceeds allocated IDs"))
             };
         }
         self.ancestry(parent)
@@ -488,7 +492,7 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
     }
 
     // Error path only: report the page of the first inode without an entry,
-    // when there is one; a miscount among several entries has no one page.
+    // or else of the first inode whose repeated entries miss its extra links.
     fn report_links(&mut self, links: &Links) -> Result<Option<u64>> {
         self.walk(
             self.position(self.root.catalog, TreeKind::Catalog),
@@ -504,6 +508,46 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                     {
                         return Err(Error::Corrupt(LINK_REASON).at_block(page));
                     }
+                }
+                Ok(())
+            },
+        )?;
+        // ponytail: one slot per object with extra links or a repeated entry,
+        // held only on this error path.
+        let mut seen = Links::new(links.window.clone());
+        let mut miscount = std::collections::BTreeMap::<u64, i64>::new();
+        self.walk(
+            self.position(self.root.catalog, TreeKind::Catalog),
+            &mut 0,
+            &mut |_, _, level, records| {
+                for (key, value) in records.iter().filter(|_| level == 0) {
+                    let owner = u64_be(&key[..8])?;
+                    if key[8] == 1 && owner != 1 && value[1] & 1 == 0 && extra_links(value) != 0 {
+                        *miscount.entry(owner).or_default() -= i64::from(extra_links(value));
+                    } else if key[8] == 2 {
+                        let target = u64_le(&value[..8])?;
+                        if seen.entry(target) {
+                            *miscount.entry(target).or_default() += 1;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        let Some(culprit) = miscount
+            .into_iter()
+            .find(|(owner, count)| *count != 0 && links.window.contains(owner))
+            .map(|(owner, _)| owner)
+        else {
+            return Err(Error::Corrupt(LINK_REASON));
+        };
+        let key = catalog_key(culprit, 1, None);
+        self.walk(
+            self.position(self.root.catalog, TreeKind::Catalog),
+            &mut 0,
+            &mut |_, page, level, records| {
+                if level == 0 && records.iter().any(|(record, _)| *record == key) {
+                    return Err(Error::Corrupt(LINK_REASON).at_block(page));
                 }
                 Ok(())
             },
@@ -677,10 +721,10 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                                 );
                             }
                             let target_inode = reader.inode(target)?;
-                            // A file's parent is a hint; other objects have one entry.
+                            // Only a directory has one entry, matching its parent.
                             if target_inode[0] != value[8]
                                 || target_inode[1] & 1 != 0
-                                || (target_inode[0] != 1 && u64_le(&target_inode[8..16])? != owner)
+                                || (target_inode[0] == 2 && u64_le(&target_inode[8..16])? != owner)
                             {
                                 return Err(Error::Corrupt(
                                     "directory target type or parent mismatch",

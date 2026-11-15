@@ -44,16 +44,16 @@ pub const MAX_SYMLINK_TARGET: usize = 1_023;
 pub const FEATURE_ATTRIBUTES: u64 = 1;
 /// Root feature bit 1: extent flags may record storage that reads as zeros until first written.
 pub const FEATURE_PREALLOCATION: u64 = 2;
-/// Root feature bit 2: a regular file may have more than one directory entry.
+/// Root feature bit 2: a regular file or symlink may have more than one directory entry.
 pub const FEATURE_LINKS: u64 = 4;
 /// This extent owns blocks whose device contents are not file data.
 pub const EXTENT_UNWRITTEN: u32 = 1;
 /// Feature bits understood by this implementation.
 pub const KNOWN_FEATURES: u64 = FEATURE_ATTRIBUTES | FEATURE_PREALLOCATION | FEATURE_LINKS;
 
-/// Inode offset of a file's extra links: its directory entries beyond the first.
+/// Inode offset of extra links: a file's or symlink's entries beyond the first.
 pub const INODE_EXTRA_LINKS: usize = 88;
-/// Most extra links a file may have, for 65,535 entries in all.
+/// Most extra links an object may have, for 65,535 entries in all.
 pub const MAX_EXTRA_LINKS: u32 = 65_534;
 
 /// A record's extra links, which `validate_inode` has bounded.
@@ -816,9 +816,9 @@ pub fn validate_inode(value: &[u8], blocks: u64, mode: Validation) -> Result<()>
     {
         return Err(violation(mode, "invalid inode flags or reserved bytes"));
     }
-    // Only a linked regular file has extra links.
+    // Only a linked file or symlink has extra links.
     let links = extra_links(value);
-    if links > MAX_EXTRA_LINKS || (links != 0 && (object_type != 1 || value[1] & 1 != 0)) {
+    if links > MAX_EXTRA_LINKS || (links != 0 && (object_type == 2 || value[1] & 1 != 0)) {
         return Err(violation(mode, "invalid inode extra links"));
     }
     // A mode is zero (the type's default) or bit 15 and nine permission

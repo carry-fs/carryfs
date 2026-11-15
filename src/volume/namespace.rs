@@ -60,12 +60,12 @@ pub(super) struct Inode {
     pub(super) orphan: bool,
     /// Flag bits 1 and 2: whether a symlink Windows made is a directory link.
     pub(super) directory_link: Option<bool>,
-    /// A file's parent is a hint: the directory of its newest entry.
+    /// A non-directory's parent is a hint: the directory of its newest entry.
     pub(super) parent: u64,
     pub(super) size: u64,
     pub(super) allocated_blocks: u64,
     pub(super) child_count: u64,
-    /// A file's directory entries beyond the first.
+    /// A file's or symlink's directory entries beyond the first.
     pub(super) extra_links: u32,
     pub(super) creation: Timestamp,
     pub(super) modification: Timestamp,
@@ -677,9 +677,9 @@ impl<D: BlockDevice> Volume<D> {
         Ok((object, handle))
     }
 
-    /// Give regular file `object` another directory entry. An orphan, such as
-    /// an unnamed temporary file, becomes linked again; a named file gains an
-    /// extra link, and the first one opts the volume into hard links.
+    /// Give file or symlink `object` another directory entry. An orphan, such
+    /// as an unnamed temporary file, becomes linked again; a named object
+    /// gains an extra link, and the first one opts the volume into hard links.
     pub fn link(&mut self, object: ObjectId, parent: ObjectId, name: Name) -> Result<()> {
         let now = Timestamp::now()?;
         self.edit(|transaction| link_entry(transaction, object.0, parent.0, &name, now))?;
@@ -1058,7 +1058,7 @@ fn link_entry<D: BlockDevice>(
         .forest
         .lookup_with(&catalog, TreeKind::Catalog, &key, Inode::decode)?
         .ok_or(Error::NotFound)?;
-    if inode.kind != ObjectKind::File {
+    if inode.kind == ObjectKind::Directory {
         return Err(Error::WrongType);
     }
     let parent_key = inode_key(parent);
@@ -1099,7 +1099,7 @@ fn link_entry<D: BlockDevice>(
     inode.metadata_change = now;
     let entry = DirentValue {
         target: object,
-        kind: ObjectKind::File,
+        kind: inode.kind,
         stored_name: &name.stored,
     }
     .encode()?;

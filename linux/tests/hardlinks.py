@@ -39,10 +39,16 @@ def check(mount):
         os.rename(a, b)
         assert a.exists() and b.exists() and os.stat(a).st_nlink == 2
 
-        # Only regular files link; names collide case-insensitively.
+        # Directories never link; symlinks link themselves, not their target.
         expect_errno(errno.EPERM, lambda: os.link(sub, root / "dir-link"))
         os.symlink("a", root / "s")
-        expect_errno(errno.EPERM, lambda: os.link(root / "s", root / "s2", follow_symlinks=False))
+        os.link(root / "s", sub / "s2", follow_symlinks=False)
+        assert os.readlink(sub / "s2") == "a"
+        assert os.lstat(root / "s").st_ino == os.lstat(sub / "s2").st_ino
+        assert os.lstat(root / "s").st_nlink == 2 and os.stat(a).st_nlink == 2
+        os.unlink(sub / "s2")
+        assert os.lstat(root / "s").st_nlink == 1
+        # Names collide case-insensitively.
         expect_errno(errno.EEXIST, lambda: os.link(a, root / "A"))
 
         # Replacing one name keeps the other.

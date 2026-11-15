@@ -377,7 +377,7 @@ unsafe extern "C" fn link(
         let sb = dir_ref.super_block().as_ptr();
         let nlink = mutate(sb, |state, disk| {
             let mut record = read_record(sb, state, inode.object())?;
-            if record[0] != FILE {
+            if record[0] == DIRECTORY {
                 return Err(EPERM);
             }
             if read_entry(sb, state, &key)?.is_some() {
@@ -398,7 +398,7 @@ unsafe extern "C" fn link(
             record[1] &= !ORPHAN;
             set_u64(&mut record, PARENT, dir_ref.object());
             set_time(&mut record, CHANGED, time);
-            let value = entry_value(inode.object(), FILE, &stored)?;
+            let value = entry_value(inode.object(), record[0], &stored)?;
             write_record(state, disk, inode.object(), &record)?;
             txn(state).put(disk, TreeKind::Catalog, &key, &value)?;
             if relinked {

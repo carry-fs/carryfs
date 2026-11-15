@@ -217,9 +217,6 @@ pub(super) fn fuzz(data: &[u8]) {
                     match volume.link(object, ROOT, target) {
                         Ok(()) => assert!(names.insert(to, object).is_none()),
                         Err(Error::NameCollision) => assert!(names.contains_key(&to)),
-                        Err(Error::WrongType) => {
-                            assert!(matches!(objects[&object], State::Link(_)));
-                        }
                         Err(error) => panic!("link: {error:?}"),
                     }
                 }

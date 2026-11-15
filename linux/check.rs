@@ -5,7 +5,7 @@
 use crate::ondisk::format::{
     self, checksum_slot, extra_links, link_hash, TreeKind, TreeRef, FEATURE_PREALLOCATION,
 };
-use crate::namei::FILE;
+use crate::namei::DIRECTORY;
 use crate::tree::{self, be_u64, le_u64, Link, Tree};
 use crate::volume::State;
 use kernel::bindings::super_block;
@@ -324,10 +324,11 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                 if inode[0] != 2 || marker || le_u64(&inode, 8) != 1 {
                     return Err(bad("invalid root directory"));
                 }
-            } else if !marker && inode[0] == FILE {
-                // A file's parent is only a hint; its entries prove it is reachable.
+            } else if !marker && inode[0] != DIRECTORY {
+                // A non-directory's parent is only a hint; its entries prove it
+                // is reachable.
                 if le_u64(&inode, 8) >= state.root.next_object {
-                    return Err(bad("file parent exceeds allocated IDs"));
+                    return Err(bad("parent hint exceeds allocated IDs"));
                 }
             } else if !marker {
                 let mut seen = KVec::new();
@@ -374,7 +375,7 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                 let inode = record(sb, state, target)?;
                 if inode[0] != value[8]
                     || inode[1] & 1 != 0
-                    || (inode[0] != FILE && le_u64(&inode, 8) != owner)
+                    || (inode[0] == DIRECTORY && le_u64(&inode, 8) != owner)
                 {
                     return Err(bad("directory target type or parent mismatch"));
                 }

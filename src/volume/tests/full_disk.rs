@@ -62,14 +62,13 @@ fn namespace_links_reject_missing_and_duplicate_entries() {
             .unwrap();
         let root = volume.root.clone().unwrap();
         crate::check::validate_ownership(volume.device.as_mut().unwrap(), &root).unwrap();
-        // A missing entry is reported at its inode's page; a surplus one only
-        // unbalances the link sums, which name no page.
-        let reason = "linked inode's directory entries do not match its links";
-        match crate::check::validate(volume.device.as_mut().unwrap(), &root) {
-            Err(Error::Corruption { reason: found, .. }) if !duplicate => assert_eq!(found, reason),
-            Err(Error::Corrupt(found)) if duplicate => assert_eq!(found, reason),
-            other => panic!("duplicate={duplicate}: {other:?}"),
-        }
+        assert!(matches!(
+            crate::check::validate(volume.device.as_mut().unwrap(), &root),
+            Err(Error::Corruption {
+                reason: "linked inode's directory entries do not match its links",
+                ..
+            })
+        ));
     }
 }
 

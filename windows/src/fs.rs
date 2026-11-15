@@ -1788,7 +1788,8 @@ fn file_info<D: BlockDevice>(
 /// Windows keeps file and directory links apart; a link Windows made records
 /// which in `directory_link`, whatever its target, and for the rest the target
 /// decides, as in WinFsp's FUSE layer. A target that leaves the volume, passes through
-/// another link, or does not exist is a file link.
+/// another link, or does not exist is a file link. A symlink with several
+/// names resolves from its parent hint, the directory of its newest name.
 fn targets_directory<D: BlockDevice>(
     volume: &mut Volume<D>,
     link: ObjectId,

@@ -345,8 +345,8 @@ every computer that uses the volume before running software that preallocates
 files, such as download managers, torrent clients, databases, and virtual
 machine images.
 
-Regular files can have hard links: `ln` on Linux, macOS, and FreeBSD, up to
-65,535 names per file. Directories and symlinks cannot be hard linked.
+Files and symlinks can have hard links: `ln` on Linux, macOS, and FreeBSD, up
+to 65,535 names each. Directories cannot be hard linked.
 Windows opens, renames, and deletes the names but cannot create new ones.
 `carryfs put` and `carryfs get` copy each name as a separate file. The first
 hard link upgrades a volume automatically, like preallocation, and versions

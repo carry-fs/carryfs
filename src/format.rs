@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn extra_links_are_bounded_gated_and_only_on_linked_files() {
+    fn extra_links_are_bounded_gated_and_only_on_linked_non_directories() {
         let key = [0, 0, 0, 0, 0, 0, 0, 2, 1];
         let with = |kind: u8, flags: u8, links: u32| {
             let mut value = inode(0).to_vec();
@@ -905,13 +905,14 @@ mod tests {
         };
         assert!(valid(&with(1, 0, 1), FEATURE_LINKS));
         assert!(valid(&with(1, 0, MAX_EXTRA_LINKS), FEATURE_LINKS));
+        assert!(valid(&with(3, 0, 1), FEATURE_LINKS));
         assert!(valid(&with(1, 0, 0), 0));
         for (value, why) in [
             (with(1, 0, MAX_EXTRA_LINKS + 1), "beyond the cap"),
             (with(1, 0, u32::MAX), "wrapping count"),
             (with(1, 1, 1), "orphan"),
             (with(2, 0, 1), "directory"),
-            (with(3, 0, 1), "symlink"),
+            (with(3, 1, 1), "orphan symlink"),
         ] {
             assert!(!valid(&value, FEATURE_LINKS), "{why}");
         }

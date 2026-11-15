@@ -68,8 +68,8 @@ older adapters reject a volume once this feature is published.
 publish it under one name, unless it was opened with `O_EXCL`. Last close
 reclaims an unnamed file.
 
-`link(2)` gives a regular file up to 65,535 names; directories and symlinks
-fail with `EPERM`. The first link of a named file sets root feature bit 2 in
+`link(2)` gives a file or symlink up to 65,535 names; directories fail with
+`EPERM`. The first link of a named file sets root feature bit 2 in
 its own transaction. `tests/hardlinks.py` checks link counts, renames between
 names of one file, and removal under an open descriptor, on this driver or a
 Linux FUSE mount.
@@ -378,7 +378,6 @@ volumes. These remaining differences produce images the userspace checker accept
   owner fail with `EPERM`, as do mode changes on a volume without
   `carryfs upgrade`. Setuid, setgid and sticky bits are dropped. The volume
   label is not exposed.
-- **Hard links to symlinks.** `link(2)` on a symlink fails with `EPERM`.
 - **Cgroup I/O accounting.** Writeback does not preserve cgroup ownership
   across writers. fstests generic/563 exposes this limit.
 

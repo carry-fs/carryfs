@@ -125,22 +125,19 @@ fn rename_and_swap_between_names_of_one_file_change_nothing() {
 }
 
 #[test]
-fn only_files_link_and_failed_links_leave_the_volume_unchanged() {
+fn directories_never_link_and_failed_links_leave_the_volume_unchanged() {
     let mut volume = opened();
     let dir = volume.create_directory(ROOT, name("dir")).unwrap();
-    let symlink = volume.create_symlink(ROOT, name("s"), b"dir").unwrap();
     let file = volume.create_file(ROOT, name("f")).unwrap();
     volume.close_handle(file).unwrap();
     let file = volume.lookup(ROOT, &name("f")).unwrap();
     volume.sync().unwrap();
     let before = durable(&volume);
 
-    for object in [dir, symlink] {
-        assert!(matches!(
-            volume.link(object, ROOT, name("x")),
-            Err(Error::WrongType)
-        ));
-    }
+    assert!(matches!(
+        volume.link(dir, ROOT, name("x")),
+        Err(Error::WrongType)
+    ));
     assert!(matches!(
         volume.link(file, ROOT, name("DIR")),
         Err(Error::NameCollision)
@@ -159,6 +156,34 @@ fn only_files_link_and_failed_links_leave_the_volume_unchanged() {
         volume.make_symlink(ROOT, &name("f"), b"dir"),
         Err(Error::WrongType)
     ));
+    volume.sync().unwrap();
+    checked(&volume);
+}
+
+#[test]
+fn symlinks_link_like_files() {
+    let mut volume = opened();
+    let dir = volume.create_directory(ROOT, name("dir")).unwrap();
+    let symlink = volume.create_symlink(ROOT, name("s"), b"../t").unwrap();
+    volume.link(symlink, dir, name("s2")).unwrap();
+    assert!(volume.supports_links());
+    let entry = volume.lookup_entry(dir, &name("s2")).unwrap();
+    assert_eq!((entry.object, entry.kind), (symlink, ObjectKind::Symlink));
+    assert_eq!(links(&mut volume, symlink), 2);
+    assert_eq!(volume.read_symlink(symlink).unwrap(), b"../t");
+    volume.sync().unwrap();
+    checked(&volume);
+
+    // The directory its parent hint names can go once its name there does.
+    volume.remove(dir, &name("s2"), RemoveKind::File).unwrap();
+    volume
+        .remove(ROOT, &name("dir"), RemoveKind::Directory)
+        .unwrap();
+    assert_eq!(links(&mut volume, symlink), 1);
+    volume.sync().unwrap();
+    checked(&volume);
+    volume.remove(ROOT, &name("s"), RemoveKind::File).unwrap();
+    assert!(matches!(volume.attributes(symlink), Err(Error::NotFound)));
     volume.sync().unwrap();
     checked(&volume);
 }
@@ -213,12 +238,10 @@ fn set_links(records: &mut [(Vec<u8>, Vec<u8>)], object: ObjectId, extra: u32) {
     inode[88..92].copy_from_slice(&extra.to_le_bytes());
 }
 
+/// Whether the checker rejects `image` and names the page at fault.
 fn rejected(image: BTreeMap<u64, Page>) -> bool {
     let mut volume = Volume::open(FaultDevice::new(image, MountMode::ReadOnly)).unwrap();
-    matches!(
-        volume.check(),
-        Err(Error::Corrupt(_) | Error::Corruption { .. })
-    )
+    matches!(volume.check(), Err(Error::Corruption { .. }))
 }
 
 #[test]
@@ -356,3 +379,4 @@ fn link_and_unlink_output_cuts_recover_old_or_new() {
         }
     }
 }
+

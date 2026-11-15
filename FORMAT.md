@@ -130,8 +130,9 @@ kernel engine publishes it with the first reservation. The feature remains
 set after all reservations are consumed or released. A request that fails after
 the userspace engine enables the feature does not clear it.
 
-Feature bit 2 permits a regular file to have more than one directory entry.
-The first link that gives an already named file another entry opts the volume
+Feature bit 2 permits a regular file or symlink to have more than one
+directory entry. The first link that gives an already named object another
+entry opts the volume
 into this feature; linking an unnamed temporary file does not. Both engines
 publish the feature in the link's own transaction, so a failed link leaves it
 unchanged. The feature remains set after the extra entries are removed.
@@ -321,7 +322,7 @@ one object a detachable interval. Only the specified suffixes are valid.
 | 40 | 16 | Creation timestamp |
 | 56 | 16 | Modification timestamp |
 | 72 | 16 | Metadata-change timestamp |
-| 88 | 4 | Extra links `u32`: directory entries beyond the first; regular files only |
+| 88 | 4 | Extra links `u32`: directory entries beyond the first; files and symlinks only |
 | 92 | 36 | Reserved zero |
 | 128 | size | Symlink target; present only for type 3 |
 
@@ -358,17 +359,17 @@ Each timestamp is signed Unix seconds `i64`, nanoseconds `u32`, reserved zero
 instants, not local times. Windows conversion may truncate nanoseconds to its
 100 ns resolution. An adapter must not change stored timestamps merely on read.
 
-Root is a linked directory and never orphaned. Each other linked directory or
-symlink has exactly one directory entry, matching its parent. A linked regular
-file has exactly `extra_links + 1` directory entries, so extra links are at
+Root is a linked directory and never orphaned. Each other linked directory
+has exactly one directory entry, matching its parent. A linked regular file or
+symlink has exactly `extra_links + 1` directory entries, so extra links are at
 most 65,534. Its parent is the directory of the entry most recently created or
 moved to it: a hint, nonzero and below the next object ID, that may name a
-directory holding none of its entries or one since removed. Only directory and
-symlink parents form the rooted chain. Every directory entry lives in a linked
-directory. Extra links are zero for directories, symlinks and orphans, and
-require root feature bit 2 when nonzero. Adapters report a file's link count
-as `extra_links + 1`, or 0 for an orphan. Bytes written before the feature read as zero, so a
-file with one entry needs no rewrite. Files have no directory-entry children,
+directory holding none of its entries or one since removed. Only directory
+parents form the rooted chain. Every directory entry lives in a linked
+directory. Extra links are zero for directories and orphans, and require root
+feature bit 2 when nonzero. Adapters report the link count as
+`extra_links + 1`, or 0 for an orphan. Bytes written before the feature read
+as zero, so an object with one entry needs no rewrite. Files have no directory-entry children,
 directories and symlinks have no extents/checksum groups, and the linked directory
 graph is rooted and acyclic. Orphans have no directory entries and exactly one
 orphan marker in the cleanup tree. Their last parent is retained for attributes
@@ -384,18 +385,19 @@ spelling in this same key.
 
 Create, link, rename, replacement, exchange, and removal publish all affected
 entries, inodes, parent child counts, and timestamps atomically in one
-transaction. Link adds an entry for an existing regular file, increments its
-extra links and sets its parent to the new entry's directory. Linking an orphan
-instead clears its orphan flag and marker. Directories and symlinks cannot be
-linked, and a link beyond 65,535 entries fails without change. Removing or replacing an entry of a file with extra links decrements
-them and leaves the file linked; only its last entry makes it an orphan.
+transaction. Link adds an entry for an existing regular file or symlink,
+increments its extra links and sets its parent to the new entry's directory.
+Linking an orphan instead clears its orphan flag and marker. Directories
+cannot be linked, and a link beyond 65,535 entries fails without change.
+Removing or replacing an entry of an object with extra links decrements them
+and leaves the object linked; only its last entry makes it an orphan.
 Exchange swaps two existing entries' target and type, each keeping its stored
 spelling, and sets each moved inode's parent; any types may swap. Rename
 replacement accepts non-directory-for-non-directory or directory-for-empty-directory. It rejects
 nonempty destination directories and moving a directory into itself or a
 descendant. Renaming an object to its own key is either a spelling update or a
 no-op, not unlink/recreate. Renaming an entry onto another entry for the same
-file, or exchanging two such entries, changes nothing; without permission to
+object, or exchanging two such entries, changes nothing; without permission to
 replace, the existing destination is a collision. A failure before
 transaction output changes neither namespace nor visible in-memory state.
 
@@ -403,7 +405,7 @@ A symlink replaces or is replaced by a regular file like another file: rename
 replacement accepts any non-directory for a non-directory. Unlink removes a
 symlink, never its target. An empty regular file or empty directory may be
 converted in place into a symlink in one transaction that rewrites its inode and
-entry type, provided a file has no extra links; the Windows adapter needs this because Windows creates a link as a
+entry type, provided the file has no extra links; the Windows adapter needs this because Windows creates a link as a
 new object and then sets its reparse point.
 
 ### Extent

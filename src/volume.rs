@@ -259,8 +259,8 @@ pub struct Attributes {
     pub size: u64,
     /// Allocated data bytes backing the object's current extents.
     pub allocated_bytes: u64,
-    /// The containing directory. The root is its own parent. For a file with
-    /// several names it is only a hint: the directory of its newest entry.
+    /// The containing directory. The root is its own parent. For a file or
+    /// symlink it is only a hint: the directory of its newest entry.
     pub parent: ObjectId,
     /// Directory entries naming this object; 0 for an unlinked one.
     pub links: u32,

@@ -241,6 +241,11 @@ impl Pending {
         self.allocated.len()
     }
 
+    /// Root feature bits the batch will publish, including any its operations enabled.
+    pub(crate) fn features(&self) -> u64 {
+        self.forest.features()
+    }
+
     /// Run a read-only operation against the batch's catalog, so it sees edits
     /// no published root holds yet. It gets a read budget of its own, and the
     /// batch is checked before anything moves, so a read cannot lose it.

@@ -756,6 +756,11 @@ impl Drafts {
     pub fn follows(&self, base: &Root) -> bool {
         Some(self.generation) == base.generation.checked_add(1)
     }
+
+    /// Root feature bits the batch will publish, including enabled ones.
+    pub fn features(&self) -> u64 {
+        self.features
+    }
 }
 
 /// Where a forest stood before one operation, so that a failed or refused

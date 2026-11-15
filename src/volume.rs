@@ -722,10 +722,11 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Whether a file on this volume has ever had a second directory entry.
+    /// An accepted link still in the open batch counts.
     pub fn supports_links(&self) -> bool {
-        self.root
-            .as_ref()
-            .is_some_and(|root| root.features & crate::format::FEATURE_LINKS != 0)
+        let batch = self.batch.as_ref().map_or(0, |batch| batch.features());
+        let root = self.root.as_ref().map_or(0, |root| root.features);
+        (root | batch) & crate::format::FEATURE_LINKS != 0
     }
 
     /// Whether unwritten allocations are enabled on this volume.

@@ -75,6 +75,12 @@ fn deferred_link_is_visible_in_the_feature_query() {
     let mut volume = opened();
     let file = write_file(&mut volume, ROOT, "a", b"shared");
     volume.set_deferred_checkpoints(true).unwrap();
+    // A refused link in the batch is rewound with the bit it would set.
+    assert!(matches!(
+        volume.link(file, ROOT, name("A")),
+        Err(Error::NameCollision)
+    ));
+    assert!(!volume.supports_links());
     volume.link(file, ROOT, name("b")).unwrap();
     assert_eq!(volume.attributes(file).unwrap().links, 2);
     assert!(volume.supports_links());

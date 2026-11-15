@@ -392,9 +392,7 @@ impl<'a> Writer<'a> {
             else if state.reclaimable() { commit::commit(sb, &mut state)?; }
             else { return Err(ENOSPC); }
         }
-        if state.txn.as_ref().is_some_and(|txn| txn.drafts.len() >= commit::COMMIT_DRAFTS) {
-            commit::commit(sb, &mut state)?;
-        }
+        commit::make_room(sb, &mut state)?;
         if state.txn.is_none() { state.txn = Some(Txn::new(&state.root, state.hint)?); }
         // Keep the lock from the space check through allocation so another
         // writer cannot consume the copy-on-write headroom between them.

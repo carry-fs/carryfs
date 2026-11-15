@@ -1556,7 +1556,16 @@ fn punch_hole(inode: &Inode, offset: u64, length: u64) -> Result {
         }
         index += 1;
     }
-    Ok(())
+    // A punch updates the times even where it found only holes, and the
+    // partial-unit writer keeps the inode's existing ones.
+    mutate(sb, |state, disk| {
+        let mut record = read_record(sb, state, object)?;
+        let time = now();
+        set_time(&mut record, 56, time);
+        set_time(&mut record, 72, time);
+        write_record(state, disk, object, &record)?;
+        crate::inode::refresh_times(inode, state)
+    })
 }
 
 pub(crate) unsafe extern "C" fn fsync(

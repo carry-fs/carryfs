@@ -29,6 +29,10 @@ name = "core"
 harness = false
 
 [[bench]]
+name = "recovery"
+harness = false
+
+[[bench]]
 name = "ondisk"
 harness = false
 

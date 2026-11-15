@@ -607,6 +607,9 @@ impl<D: BlockDevice> Repair<D> {
             device: &mut self.device,
             pages: &self.pages,
         })?;
+        // Rebuilt metadata lives entirely in the immutable overlay. Reuse its
+        // bounded cache; physical source metadata still gets fresh reads.
+        source.inspection_metadata_cache = !self.pages.is_empty();
         let mut target = match self.original.label.clone() {
             Some(label) => Volume::format_with_label(destination, label)?,
             None => Volume::format(destination)?,
@@ -663,6 +666,9 @@ impl<D: BlockDevice> Repair<D> {
             &manifest.json("in_progress", &summary),
         )?;
         target.sync_publication()?;
+        // The durable marker survives interrupted copying. Batch the remaining
+        // writes through the normal bounded checkpoint path until publication.
+        target.set_deferred_checkpoints(true)?;
         let mut directories: Vec<ImageDirectory> = Vec::new();
         let mut path = Vec::new();
         let mut pending = Some((ROOT, ROOT));
@@ -765,21 +771,24 @@ impl<D: BlockDevice> Repair<D> {
         } else {
             "partial"
         };
-        write_manifest(
-            &mut target,
-            &manifest_name,
-            &working_name,
-            &manifest.json(if verify_data { "unverified" } else { state }, &summary),
-        )?;
-        target.sync()?;
         let mut verification_failed = false;
         if verify_data {
+            write_manifest(
+                &mut target,
+                &manifest_name,
+                &working_name,
+                &manifest.json("unverified", &summary),
+            )?;
+            target.sync()?;
             let pages = BTreeMap::new();
             let mut verified = Volume::open(Overlay {
                 device: target.device.as_mut().ok_or(Error::Ejected)?,
                 pages: &pages,
             })?;
             verified.check()?;
+            // As in scrub, verify physical metadata once before the data pass,
+            // then reuse its bounded cache on this exclusively held device.
+            verified.inspection_metadata_cache = true;
             for file in &mut manifest.files {
                 let (bytes, unreadable) = verified.copy_verified_file(
                     file.destination,
@@ -1270,10 +1279,15 @@ fn normalize_catalog(
                 } else {
                     format!("{id}.{suffix}")
                 })?;
-                if !links
-                    .values()
-                    .any(|(parent, candidate)| *parent == lost && candidate.folded == name.folded)
-                {
+                // Generated names for different object IDs cannot collide.
+                // Check only retained source entries using the catalog index.
+                let occupied = match records.get(&dirent_key(lost, &name.folded)) {
+                    Some(value) => links.get(&DirentValue::decode(value)?.target).is_some_and(
+                        |(parent, candidate)| *parent == lost && candidate.folded == name.folded,
+                    ),
+                    None => false,
+                };
+                if !occupied {
                     break name;
                 }
                 suffix += 1;

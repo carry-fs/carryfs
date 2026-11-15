@@ -439,7 +439,7 @@ impl<D: BlockDevice> Volume<D> {
             // retain the same bounded, checksummed nodes as writable calls.
             let mut local;
             let cache = if device.mode() == MountMode::ReadWrite
-                || self.scrubbing
+                || self.inspection_metadata_cache
                 || (reuse_readonly_cache && self.readonly_metadata_cache)
             {
                 &mut self.cache

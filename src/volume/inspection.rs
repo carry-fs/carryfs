@@ -165,9 +165,9 @@ impl<D: BlockDevice> Volume<D> {
     pub fn scrub(&mut self, report: &mut dyn FnMut(Finding<'_>)) -> Result<CheckSummary> {
         self.cache = crate::tree::Cache::default();
         let summary = self.check_with_report(report)?;
-        self.scrubbing = true;
+        self.inspection_metadata_cache = true;
         let result = self.scrub_data(summary, report);
-        self.scrubbing = false;
+        self.inspection_metadata_cache = false;
         self.cache = crate::tree::Cache::default();
         result
     }

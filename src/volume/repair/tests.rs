@@ -168,6 +168,55 @@ fn reconnects_orphans_and_missing_entries_without_changing_data() {
 }
 
 #[test]
+fn orphan_names_skip_retained_collisions_and_reuse_discarded_entries() {
+    let mut volume = formatted_volume();
+    let lost = volume
+        .create_directory(ROOT, Name::parse("lost+found").unwrap())
+        .unwrap();
+    let file = volume
+        .create_file(ROOT, Name::parse("disconnected").unwrap())
+        .unwrap();
+    let id = volume
+        .lookup(ROOT, &Name::parse("disconnected").unwrap())
+        .unwrap()
+        .get();
+    volume.write(&file, 0, b"recovered").unwrap();
+    volume.close_handle(file).unwrap();
+    for suffix in ["", ".1", ".2"] {
+        let file = volume
+            .create_file(lost, Name::parse(&format!("{id}{suffix}")).unwrap())
+            .unwrap();
+        volume.write(&file, 0, b"existing").unwrap();
+        volume.close_handle(file).unwrap();
+    }
+    volume.sync().unwrap();
+    let mut image = volume.into_model_image();
+    let discarded = dirent_key(lost.get(), format!("{id}.2").as_bytes());
+    edit_catalog(&mut image, |records| {
+        records.retain(|(key, value)| !(key[8] == 2 && u64_le(&value[..8]).unwrap() == id));
+        for (key, value) in records {
+            if key == &discarded {
+                value[..8].copy_from_slice(&999_999u64.to_le_bytes());
+            }
+        }
+    });
+    let device = FaultDevice::new(image, MountMode::ReadWrite);
+    let media = device.media.clone();
+    Repair::diagnose(device).unwrap().apply(true).unwrap();
+    for (suffix, expected) in [
+        ("", b"existing".as_slice()),
+        (".1", b"existing"),
+        (".2", b"recovered"),
+    ] {
+        assert_file(
+            FaultDevice::new(media.borrow().durable.clone(), MountMode::ReadOnly),
+            &["lost+found", &format!("{id}{suffix}")],
+            expected,
+        );
+    }
+}
+
+#[test]
 fn missing_checksums_require_explicit_loss_acceptance() {
     let (mut image, id, _) = fixture();
     edit_catalog(&mut image, |records| {
@@ -915,6 +964,56 @@ fn manifest_identifies_missing_mappings_even_when_rebuilt_data_scrubs_clean() {
         embedded_manifest(&mut volume, &result.manifest_name),
         result.manifest_json
     );
+}
+
+#[test]
+fn cached_recovery_metadata_still_checks_source_data_and_records_missing_bytes() {
+    let (mut image, id, bytes) = fixture();
+    image
+        .values_mut()
+        .find(|page| page.0[..] == bytes[..BLOCK_BYTES])
+        .unwrap()
+        .0[0] ^= 1;
+    edit_catalog(&mut image, |records| {
+        records.retain(|(key, value)| !(key[8] == 2 && u64_le(&value[..8]).unwrap() == id));
+    });
+    let source = FaultDevice::new(image.clone(), MountMode::ReadOnly);
+    let media = source.media.clone();
+    let mut repair = Repair::diagnose(source).unwrap();
+    assert!(!repair.pages.is_empty());
+    let destination = FaultDevice::new(BTreeMap::new(), MountMode::ReadWrite);
+    let output = destination.media.clone();
+    let mut findings = 0;
+    let recovery = repair
+        .recover_image_with_verification(destination, true, &mut |finding| {
+            findings += 1;
+            assert_eq!(finding.object, Some(ObjectId(id)));
+            assert_eq!(finding.offset, Some(0));
+        })
+        .unwrap();
+    assert_eq!(findings, 1);
+    assert_eq!(recovery.summary.unreadable_ranges, 1);
+    assert_eq!(
+        recovery.summary.verified_bytes,
+        (bytes.len() - UNIT_BYTES) as u64
+    );
+    assert!(!recovery.verification_failed);
+    assert!(recovery.manifest_json.contains("\"state\":\"partial\""));
+    assert!(recovery.manifest_json.contains("\"status\":\"partial\""));
+    assert!(
+        recovery
+            .manifest_json
+            .contains("\"verification\":\"passed\"")
+    );
+    let mut expected = bytes;
+    expected[..UNIT_BYTES].fill(0);
+    assert_file(
+        FaultDevice::new(output.borrow().durable.clone(), MountMode::ReadOnly),
+        &["lost+found", &id.to_string()],
+        &expected,
+    );
+    assert_eq!(media.borrow().durable, image);
+    assert!(media.borrow().events.is_empty());
 }
 
 #[test]

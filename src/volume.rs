@@ -363,8 +363,9 @@ pub struct Volume<D: BlockDevice> {
     cache: crate::tree::Cache,
     // Opt-in for a read-only mounted volume. Inspection bypasses this cache.
     readonly_metadata_cache: bool,
-    // Set for the length of a scrub, which lends its catalog reads the cache.
-    scrubbing: bool,
+    // Lend inspection reads the cache during scrub, immutable recovery, or
+    // destination data verification after a fresh structural check.
+    inspection_metadata_cache: bool,
     chain: Option<Chain>,
     // Operations accepted since the last plan, not yet sealed. Only a volume
     // with deferred checkpoints batches; `Transaction::fits_batch` holds while
@@ -537,7 +538,7 @@ impl<D: BlockDevice> Volume<D> {
             orphan_cursor: 0,
             cache: crate::tree::Cache::default(),
             readonly_metadata_cache: false,
-            scrubbing: false,
+            inspection_metadata_cache: false,
             chain: None,
             batch: None,
         };
@@ -584,7 +585,7 @@ impl<D: BlockDevice> Volume<D> {
             orphan_cursor: 0,
             cache,
             readonly_metadata_cache: false,
-            scrubbing: false,
+            inspection_metadata_cache: false,
             chain: None,
             batch: None,
         })

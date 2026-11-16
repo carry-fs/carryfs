@@ -301,7 +301,8 @@ fn send(stream: &UnixStream, line: &str, file: Option<&File>) -> Result<()> {
     Ok(())
 }
 
-/// Read one reply line and any descriptor that came with it.
+/// Read one reply line and any descriptor that came with it. The helper sends
+/// one reply per request, so nothing follows the newline.
 fn receive(stream: &UnixStream) -> Result<(String, Option<OwnedFd>)> {
     let mut line = Vec::new();
     let mut descriptor = None;
@@ -354,9 +355,6 @@ mod tests {
         fs::write(&path, b"device bytes").unwrap();
         let file = File::open(&path).unwrap();
         send(&left, "{\"ok\":true}\n", Some(&file)).unwrap();
-        let long = format!("{}\n", json!({"output": "x".repeat(200_000)}));
-        let mut writer = left.try_clone().unwrap();
-        let sender = std::thread::spawn(move || writer.write_all(long.as_bytes()).unwrap());
         let (line, fd) = receive(&right).unwrap();
         assert_eq!(line, "{\"ok\":true}\n");
         let mut received = File::from(fd.unwrap());
@@ -364,6 +362,10 @@ mod tests {
         let mut text = String::new();
         received.read_to_string(&mut text).unwrap();
         assert_eq!(text, "device bytes");
+        // A reply larger than the socket buffer arrives in several reads.
+        let long = format!("{}\n", json!({"output": "x".repeat(200_000)}));
+        let mut writer = left.try_clone().unwrap();
+        let sender = std::thread::spawn(move || writer.write_all(long.as_bytes()).unwrap());
         let (line, fd) = receive(&right).unwrap();
         sender.join().unwrap();
         assert!(fd.is_none());

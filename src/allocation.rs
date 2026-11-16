@@ -8,7 +8,7 @@ use crate::{BlockDevice, Error, Result, workspace};
 
 pub(crate) const GROUP: u64 = 16_384;
 const BITMAP: usize = 2048;
-const MAX_PAGES: usize = 4096;
+pub(crate) const MAX_PAGES: usize = 4096;
 // A new allocation record can split each of the eight permitted tree levels
 // and add one root. Charge that complete net-growth bound before selecting raw
 // blocks from an implicit bitmap; a short final group cannot fund itself.

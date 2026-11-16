@@ -11,6 +11,7 @@ use carryfs_core::{Finding, ImageDevice, MountMode, Volume};
 
 #[cfg(target_os = "macos")]
 mod authopen;
+pub(super) mod fsck;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 mod host;
 #[cfg(target_os = "linux")]
@@ -72,7 +73,10 @@ pub(super) fn open_read_only(path: &Path, device_bytes: Option<u64>) -> Result<I
         #[cfg(not(target_os = "linux"))]
         return Ok(ImageDevice::open(path, MountMode::ReadOnly)?);
     };
-    Ok(ImageDevice::from_device_file(open_exclusive(path)?, bytes)?)
+    Ok(ImageDevice::from_device_file(
+        open_exclusive(path, MountMode::ReadOnly)?,
+        bytes,
+    )?)
 }
 
 /// The message when a mount or another program already holds the device.
@@ -83,7 +87,7 @@ const IN_USE: &str = "the device is in use: unmount or eject it first";
 /// symlinks, and read `/dev/diskN` through `/dev/rdiskN`, since each node has
 /// a lock of its own.
 #[cfg(target_os = "macos")]
-fn open_exclusive(path: &Path) -> Result<fs::File> {
+fn open_exclusive(path: &Path, mode: MountMode) -> Result<fs::File> {
     let path = fs::canonicalize(path)?;
     let path = match (path.parent(), path.file_name().and_then(OsStr::to_str)) {
         (Some(dev), Some(name)) if dev == Path::new("/dev") && name.starts_with("disk") => {
@@ -91,8 +95,15 @@ fn open_exclusive(path: &Path) -> Result<fs::File> {
         }
         _ => path,
     };
-    let file = match fs::File::open(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .write(mode == MountMode::ReadWrite)
+        .open(&path)
+    {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                && mode == MountMode::ReadOnly =>
+        {
             authopen::open_read_only(&path)?
         }
         result => result?,
@@ -107,12 +118,13 @@ fn open_exclusive(path: &Path) -> Result<fs::File> {
 /// Open the device with the kernel's exclusive claim, which a mounted
 /// filesystem holds and a mount takes: it fails while either is in place.
 #[cfg(target_os = "linux")]
-fn open_exclusive(path: &Path) -> Result<fs::File> {
+fn open_exclusive(path: &Path, mode: MountMode) -> Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     // O_EXCL in asm-generic, which x86, Arm, and RISC-V use.
     const O_EXCL: i32 = 0o200;
     match fs::OpenOptions::new()
         .read(true)
+        .write(mode == MountMode::ReadWrite)
         .custom_flags(O_EXCL)
         .open(path)
     {
@@ -125,11 +137,12 @@ fn open_exclusive(path: &Path) -> Result<fs::File> {
 /// a mounted one: the open fails while any other handle has the volume, and
 /// every later open, the service's included, fails until this one closes.
 #[cfg(windows)]
-fn open_exclusive(path: &Path) -> Result<std::fs::File> {
+fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     const ERROR_SHARING_VIOLATION: i32 = 32;
     match std::fs::OpenOptions::new()
         .read(true)
+        .write(mode == MountMode::ReadWrite)
         .share_mode(0)
         .open(path)
     {
@@ -139,11 +152,8 @@ fn open_exclusive(path: &Path) -> Result<std::fs::File> {
 }
 
 #[cfg(target_os = "freebsd")]
-fn open_exclusive(path: &Path) -> Result<std::fs::File> {
-    Ok(carryfs_core::freebsd::open_device(
-        path,
-        MountMode::ReadOnly,
-    )?)
+fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
+    Ok(carryfs_core::freebsd::open_device(path, mode)?)
 }
 
 /// Other platforms open the device without excluding a mount.
@@ -153,7 +163,10 @@ fn open_exclusive(path: &Path) -> Result<std::fs::File> {
     target_os = "freebsd",
     windows
 )))]
-fn open_exclusive(path: &Path) -> Result<std::fs::File> {
+fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
+    if mode == MountMode::ReadWrite {
+        return Err("offline repair is unsupported on this platform".into());
+    }
     Ok(std::fs::File::open(path)?)
 }
 

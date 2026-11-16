@@ -245,6 +245,13 @@ impl ImageDevice {
     /// with the same rules as [`ImageDevice::open_device`]. Only reads are
     /// issued through it.
     pub fn from_device_file(file: File, byte_len: u64) -> Result<Self> {
+        Self::from_exclusive_device_file(file, byte_len, MountMode::ReadOnly)
+    }
+
+    /// Wrap an exclusively held offline device for diagnosis or repair.
+    /// The caller must exclude mounts and other opens for the descriptor's lifetime.
+    /// Writable handles do not use the inspection read cache.
+    pub fn from_exclusive_device_file(file: File, byte_len: u64, mode: MountMode) -> Result<Self> {
         if !is_device_file(&file)? {
             return Err(Error::InvalidInput(
                 "path is not a block or character device",
@@ -259,8 +266,8 @@ impl ImageDevice {
         Ok(Self {
             file,
             geometry,
-            mode: MountMode::ReadOnly,
-            chunks: Some(Chunks::new()),
+            mode,
+            chunks: (mode == MountMode::ReadOnly).then(Chunks::new),
         })
     }
 

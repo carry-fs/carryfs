@@ -151,14 +151,14 @@ impl Inode {
     }
 }
 
-struct DirentValue<'a> {
-    target: u64,
-    kind: ObjectKind,
-    stored_name: &'a [u8],
+pub(super) struct DirentValue<'a> {
+    pub(super) target: u64,
+    pub(super) kind: ObjectKind,
+    pub(super) stored_name: &'a [u8],
 }
 
 impl<'a> DirentValue<'a> {
-    fn decode(value: &'a [u8]) -> Result<Self> {
+    pub(super) fn decode(value: &'a [u8]) -> Result<Self> {
         if value.len() < 12 {
             return Err(Error::Corrupt("invalid directory entry length"));
         }
@@ -180,7 +180,7 @@ impl<'a> DirentValue<'a> {
         })
     }
 
-    fn encode(&self) -> Result<Vec<u8>> {
+    pub(super) fn encode(&self) -> Result<Vec<u8>> {
         let name_len = u16::try_from(self.stored_name.len())
             .map_err(|_| Error::InvalidInput("name is too long"))?;
         let mut value = vec![0; 12 + self.stored_name.len()];
@@ -446,7 +446,7 @@ impl<D: BlockDevice> Volume<D> {
             // retain the same bounded, checksummed nodes as writable calls.
             let mut local;
             let cache = if device.mode() == MountMode::ReadWrite
-                || self.scrubbing
+                || self.inspection_metadata_cache
                 || (reuse_readonly_cache && self.readonly_metadata_cache)
             {
                 &mut self.cache

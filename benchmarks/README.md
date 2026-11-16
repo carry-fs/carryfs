@@ -5,6 +5,10 @@ each filesystem, and compares saved results. It runs on Linux, macOS and
 Windows with the same workload and metric names, so you can compare CarryFS
 with exFAT, ext4, Btrfs, APFS or NTFS on your own drive.
 
+Offline repair and new-image recovery have a separate
+[benchmark and results](recovery.md), including embedded manifests and
+destination verification.
+
 FreeBSD has separate adapter benchmarks; see
 [FreeBSD adapter benchmarks](#freebsd-adapter-benchmarks).
 

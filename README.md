@@ -63,7 +63,8 @@ links, with case-insensitive names that preserve their capitalization.
 Copy-on-write keeps the previous committed state intact while changes are
 written, provided the device honors flushes. Checksums detect corruption in
 file data and metadata; the scrub tool verifies stored files. Damaged data
-must be restored from an independent backup.
+must be restored from an independent backup. For metadata damage, see
+[offline diagnosis, repair, and recovery](RECOVERY.md).
 
 CarryFS runs in user space through FUSE on Linux and FreeBSD, macFUSE on macOS, and WinFsp
 on Windows. See the [limits and data safety notes](INSTALLATION.md#limits-and-data-safety)

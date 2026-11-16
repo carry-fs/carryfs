@@ -45,6 +45,9 @@ class FreeBSDInstallTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(marker.read_text(), "0.1.0\n")
                 self.assertEqual((self.host / "usr/local/bin/carryfs").read_text(), "cli")
+                helper = self.host / "usr/local/bin/fsck.carryfs"
+                self.assertTrue(helper.is_symlink())
+                self.assertEqual(helper.read_text(), "cli")
                 for name in ("mount_carryfs", "newfs_carryfs"):
                     helper = self.host / "usr/local/sbin" / name
                     self.assertTrue(helper.is_symlink())
@@ -67,3 +70,12 @@ class FreeBSDInstallTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("changed during download", result.stderr)
         self.assertEqual((self.host / "usr/local/bin/carryfs").read_text(), "cli")
+
+    def test_refuses_to_replace_an_unrelated_fsck(self):
+        foreign = self.host / "usr/local/bin/fsck.carryfs"
+        foreign.parent.mkdir(parents=True, exist_ok=True)
+        foreign.write_text("another checker")
+        result = self.install("freebsd15-arm64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("another installation", result.stderr)
+        self.assertEqual(foreign.read_text(), "another checker")

@@ -44,10 +44,37 @@ pub const MAX_SYMLINK_TARGET: usize = 1_023;
 pub const FEATURE_ATTRIBUTES: u64 = 1;
 /// Root feature bit 1: extent flags may record storage that reads as zeros until first written.
 pub const FEATURE_PREALLOCATION: u64 = 2;
+/// Root feature bit 2: a regular file or symlink may have more than one directory entry.
+pub const FEATURE_LINKS: u64 = 4;
 /// This extent owns blocks whose device contents are not file data.
 pub const EXTENT_UNWRITTEN: u32 = 1;
 /// Feature bits understood by this implementation.
-pub const KNOWN_FEATURES: u64 = FEATURE_ATTRIBUTES | FEATURE_PREALLOCATION;
+pub const KNOWN_FEATURES: u64 = FEATURE_ATTRIBUTES | FEATURE_PREALLOCATION | FEATURE_LINKS;
+
+/// Inode offset of extra links: a file's or symlink's entries beyond the first.
+pub const INODE_EXTRA_LINKS: usize = 88;
+/// Most extra links an object may have, for 65,535 entries in all.
+pub const MAX_EXTRA_LINKS: u32 = 65_534;
+
+/// A record's extra links, which `validate_inode` has bounded.
+pub fn extra_links(inode: &[u8]) -> u32 {
+    u32::from_le_bytes([
+        inode[INODE_EXTRA_LINKS],
+        inode[INODE_EXTRA_LINKS + 1],
+        inode[INODE_EXTRA_LINKS + 2],
+        inode[INODE_EXTRA_LINKS + 3],
+    ])
+}
+
+/// Weight of `object` in a checker's wrapping link sums: a bijective mix,
+/// doubled and made odd. Distinct objects weigh differently, and no miscount
+/// of one object below 2^127 sums to zero.
+pub fn link_hash(object: u64) -> u128 {
+    let mut x = object;
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (u128::from(x ^ (x >> 31)) << 1) | 1
+}
 
 /// Inode offset of the mode: zero, or `MODE_RECORDED` with the nine
 /// permission bits.
@@ -785,9 +812,14 @@ pub fn validate_inode(value: &[u8], blocks: u64, mode: Validation) -> Result<()>
         || (value[1] & 6 != 0 && object_type != 3)
         || value[1] & 6 == 4
         || !all_zero(&value[5..8])
-        || !all_zero(&value[88..128])
+        || !all_zero(&value[INODE_EXTRA_LINKS + 4..128])
     {
         return Err(violation(mode, "invalid inode flags or reserved bytes"));
+    }
+    // Only a linked file or symlink has extra links.
+    let links = extra_links(value);
+    if links > MAX_EXTRA_LINKS || (links != 0 && (object_type == 2 || value[1] & 1 != 0)) {
+        return Err(violation(mode, "invalid inode extra links"));
     }
     // A mode is zero (the type's default) or bit 15 and nine permission
     // bits. A symlink has none.
@@ -1119,8 +1151,9 @@ pub fn leaf_record_blocks(
     Ok(data)
 }
 
-/// Check fields gated by root features: inode attributes and unwritten extent
-/// flags. `key` and `value` are an otherwise validated catalog record.
+/// Check fields gated by root features: inode attributes, extra links and
+/// unwritten extent flags. `key` and `value` are an otherwise validated
+/// catalog record.
 pub fn validate_inode_features(
     key: &[u8],
     value: &[u8],
@@ -1141,6 +1174,9 @@ pub fn validate_inode_features(
             mode,
             "inode records a mode or attributes without the root feature",
         ));
+    }
+    if key.get(8) == Some(&1) && features & FEATURE_LINKS == 0 && extra_links(value) != 0 {
+        return Err(violation(mode, "extra links without the root feature"));
     }
     Ok(())
 }

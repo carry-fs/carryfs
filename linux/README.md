@@ -65,8 +65,14 @@ The driver implements `fallocate` allocation, `FALLOC_FL_KEEP_SIZE`, and
 older adapters reject a volume once this feature is published.
 
 `O_TMPFILE` creates a pinned orphan without a directory entry. `linkat` may
-publish it under one name, unless it was opened with `O_EXCL`. Additional
-hard links remain unsupported. Last close reclaims an unnamed file.
+publish it under one name, unless it was opened with `O_EXCL`. Last close
+reclaims an unnamed file.
+
+`link(2)` gives a file or symlink up to 65,535 names; directories fail with
+`EPERM`. The first link of a named file sets root feature bit 2 in
+its own transaction. `tests/hardlinks.py` checks link counts, renames between
+names of one file, and removal under an open descriptor, on this driver or a
+Linux FUSE mount.
 
 ## Check
 
@@ -374,7 +380,6 @@ volumes. These remaining differences produce images the userspace checker accept
   owner fail with `EPERM`, as do mode changes on a volume without
   `carryfs upgrade`. Setuid, setgid and sticky bits are dropped. The volume
   label is not exposed.
-- **Hard links.** The format has none; `link(2)` fails with `EPERM`.
 - **Cgroup I/O accounting.** Writeback does not preserve cgroup ownership
   across writers. fstests generic/563 exposes this limit.
 

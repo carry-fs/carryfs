@@ -16,10 +16,12 @@ mod file;
 mod handles;
 mod inspection;
 mod namespace;
+mod repair;
 
 pub use handles::Handle;
 pub use inspection::{ExtractionSink, ExtractionSummary, Finding};
 pub use namespace::{DirectoryCursor, DirectoryEntry, DirectoryPage};
+pub use repair::{ImageRecovery, Repair, RepairPlan};
 
 const ROOT_A: u64 = 256;
 const MAX_PUBLICATION_PAGES: usize = 4096 + crate::workspace::MAX_BANK_PAGES;
@@ -259,8 +261,11 @@ pub struct Attributes {
     pub size: u64,
     /// Allocated data bytes backing the object's current extents.
     pub allocated_bytes: u64,
-    /// The containing directory. The root is its own parent.
+    /// The containing directory. The root is its own parent. For a file or
+    /// symlink it is only a hint: the directory of its newest entry.
     pub parent: ObjectId,
+    /// Directory entries naming this object; 0 for an unlinked one.
+    pub links: u32,
     /// Creation timestamp.
     pub creation: Timestamp,
     /// Modification timestamp.
@@ -361,8 +366,9 @@ pub struct Volume<D: BlockDevice> {
     cache: crate::tree::Cache,
     // Opt-in for a read-only mounted volume. Inspection bypasses this cache.
     readonly_metadata_cache: bool,
-    // Set for the length of a scrub, which lends its catalog reads the cache.
-    scrubbing: bool,
+    // Lend inspection reads the cache during scrub, immutable recovery, or
+    // destination data verification after a fresh structural check.
+    inspection_metadata_cache: bool,
     chain: Option<Chain>,
     // Operations accepted since the last plan, not yet sealed. Only a volume
     // with deferred checkpoints batches; `Transaction::fits_batch` holds while
@@ -535,7 +541,7 @@ impl<D: BlockDevice> Volume<D> {
             orphan_cursor: 0,
             cache: crate::tree::Cache::default(),
             readonly_metadata_cache: false,
-            scrubbing: false,
+            inspection_metadata_cache: false,
             chain: None,
             batch: None,
         };
@@ -582,7 +588,7 @@ impl<D: BlockDevice> Volume<D> {
             orphan_cursor: 0,
             cache,
             readonly_metadata_cache: false,
-            scrubbing: false,
+            inspection_metadata_cache: false,
             chain: None,
             batch: None,
         })
@@ -716,6 +722,14 @@ impl<D: BlockDevice> Volume<D> {
         self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
         self.sync_publication()?;
         Ok(true)
+    }
+
+    /// Whether a file on this volume has ever had a second directory entry.
+    /// An accepted link still in the open batch counts.
+    pub fn supports_links(&self) -> bool {
+        let batch = self.batch.as_ref().map_or(0, |batch| batch.features());
+        let root = self.root.as_ref().map_or(0, |root| root.features);
+        (root | batch) & crate::format::FEATURE_LINKS != 0
     }
 
     /// Whether unwritten allocations are enabled on this volume.

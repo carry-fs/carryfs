@@ -8,7 +8,7 @@ use crate::{BlockDevice, Error, Result, workspace};
 
 pub(crate) const GROUP: u64 = 16_384;
 const BITMAP: usize = 2048;
-const MAX_PAGES: usize = 4096;
+pub(crate) const MAX_PAGES: usize = 4096;
 // A new allocation record can split each of the eight permitted tree levels
 // and add one root. Charge that complete net-growth bound before selecting raw
 // blocks from an implicit bitmap; a short final group cannot fund itself.
@@ -239,6 +239,11 @@ impl Pending {
     /// Data blocks the batch has allocated, which `space` reports as used.
     pub(crate) fn allocated_blocks(&self) -> usize {
         self.allocated.len()
+    }
+
+    /// Root feature bits the batch will publish, including any its operations enabled.
+    pub(crate) fn features(&self) -> u64 {
+        self.forest.features()
     }
 
     /// Run a read-only operation against the batch's catalog, so it sees edits
@@ -1143,6 +1148,7 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         }
         let mut root = self.forest.base.clone();
         root.generation = self.forest.generation;
+        root.features = self.forest.features;
         root.catalog = self.forest.resolve(&self.catalog, &assignments)?;
         root.allocation = self.forest.resolve(&allocation, &assignments)?;
         root.cleanup = self.forest.resolve(&cleanup, &assignments)?;

@@ -10,6 +10,7 @@ mod faults;
 mod file_state;
 mod full_disk;
 mod labels;
+mod links;
 mod salvage;
 mod symlinks;
 
@@ -451,7 +452,7 @@ fn conflicting_roots_and_unsupported_format_never_fall_back() {
             0 => a.0[120..128].copy_from_slice(&60000_u64.to_le_bytes()),
             1 => a.0[24] ^= 1,
             2 => a.0[8..12].copy_from_slice(&5_u32.to_le_bytes()),
-            _ => a.0[128] = 4,
+            _ => a.0[128] = 8,
         }
         a.0[4092..].fill(0);
         let crc = crate::format::crc32c(&a.0[..]);
@@ -2417,6 +2418,10 @@ impl ExtractionSink for RecoveryOutput {
         let made = std::os::windows::fs::symlink_file(target, self.path(path));
         made.map_err(|e| Error::io("test symlink", e))
     }
+    fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()> {
+        std::fs::hard_link(self.path(existing), self.path(path))
+            .map_err(|e| Error::io("test link", e))
+    }
 }
 
 #[test]
@@ -2628,6 +2633,9 @@ fn inspection_reports_incomplete_traversal_after_a_later_metadata_read_failure()
         }
         fn create_symlink(&mut self, _: &[Name], _: &[u8], _: &Attributes) -> Result<()> {
             panic!("enumeration must stop before symlinks");
+        }
+        fn create_link(&mut self, _: &[Name], _: &[Name]) -> Result<()> {
+            panic!("enumeration must stop before links");
         }
     }
     let volume = opened();

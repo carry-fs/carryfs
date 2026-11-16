@@ -8,15 +8,15 @@ payload=$1 platform=$2 expected=$3
 case $platform in
     linux-x86_64)
         marker=/usr/libexec/carryfs/VERSION
-        paths='/usr/local/bin/carryfs /usr/libexec/carryfs /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs /etc/udev/rules.d/61-carryfs.rules /etc/udisks2/mount_options.conf'
+        paths='/usr/local/bin/carryfs /usr/local/bin/fsck.carryfs /usr/libexec/carryfs /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs /etc/udev/rules.d/61-carryfs.rules /etc/udisks2/mount_options.conf'
         ;;
     macos-arm64)
         marker=/Library/Filesystems/carryfs.fs/Contents/VERSION
-        paths='/usr/local/bin/carryfs /Library/Filesystems/carryfs.fs'
+        paths='/usr/local/bin/carryfs /usr/local/bin/fsck.carryfs /Library/Filesystems/carryfs.fs'
         ;;
     freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64)
         marker=/usr/local/libexec/carryfs/VERSION
-        paths='/usr/local/bin/carryfs /usr/local/libexec/carryfs /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs'
+        paths='/usr/local/bin/carryfs /usr/local/bin/fsck.carryfs /usr/local/libexec/carryfs /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs'
         ;;
     *) die 'Unsupported package platform.' ;;
 esac
@@ -123,6 +123,9 @@ for path in $paths; do
 done
 changed=1
 mkdir -p /usr/local/bin
+if [ -e /usr/local/bin/fsck.carryfs ] || [ -L /usr/local/bin/fsck.carryfs ]; then
+    [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ] || die '/usr/local/bin/fsck.carryfs already belongs to another installation.'
+fi
 install -m 755 "$payload/carryfs" "$backup/carryfs"
 case $platform in
     linux-x86_64)
@@ -203,6 +206,7 @@ cli_stage=$(mktemp /usr/local/bin/.carryfs.XXXXXXXX)
 install -m 755 "$backup/carryfs" "$cli_stage"
 mv -f "$cli_stage" /usr/local/bin/carryfs
 cli_stage=
+[ -L /usr/local/bin/fsck.carryfs ] || ln -s carryfs /usr/local/bin/fsck.carryfs
 committed=1
 printf 'System files installed. Reconnect an ejected CarryFS disk to mount it.\n'
 if [ -n "$native_kernel" ]; then

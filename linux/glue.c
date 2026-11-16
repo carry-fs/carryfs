@@ -1137,9 +1137,9 @@ int carryfs_finish_tmpfile(struct file *file, struct inode *inode)
 	return finish_open_simple(file, 0);
 }
 
-void carryfs_link_tmpfile(struct dentry *dentry, struct inode *inode)
+void carryfs_link(struct dentry *dentry, struct inode *inode, unsigned int nlink)
 {
-	set_nlink(inode, 1);
+	set_nlink(inode, nlink);
 	ihold(inode);
 	d_instantiate(dentry, inode);
 }

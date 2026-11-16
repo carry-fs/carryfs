@@ -826,6 +826,16 @@ impl<D: BlockDevice> CarryFs<D> {
     /// WinFsp asks before it sets a delete disposition. A read-only mount must
     /// refuse here: `Cleanup` cannot report an error, so a delete accepted
     /// here would look successful and do nothing.
+    /// Whether the open file has other names. WinFsp caches pages per name,
+    /// so such a file stays out of Windows' cache, where one name's pages
+    /// would miss a write through another.
+    pub fn has_other_names(&self, context: u64) -> Reply<bool> {
+        self.with(|s| {
+            let object = get(&s.open, context)?.object;
+            Ok(s.volume.attributes(object).map_err(|e| status(&e))?.links > 1)
+        })
+    }
+
     pub fn can_delete(&self, context: u64) -> Reply<()> {
         if self.read_only {
             return Err(STATUS_MEDIA_WRITE_PROTECTED);
@@ -853,40 +863,67 @@ impl<D: BlockDevice> CarryFs<D> {
                 .volume
                 .lookup(source_parent, &source)
                 .map_err(|e| status(&e))?;
+            // With one name, every open of the object is through this path.
+            let single = s.volume.attributes(moved).map_err(|e| status(&e))?.links == 1;
+            let mut sibling = false;
             let replace = if replace {
-                // Windows never replaces a directory by rename.
                 if let Ok(existing) = s.volume.lookup(destination_parent, &destination) {
                     let kind = s.volume.attributes(existing).map_err(|e| status(&e))?.kind;
+                    // Windows never replaces a directory by rename.
                     if kind == ObjectKind::Directory && existing != moved {
                         return Err(STATUS_ACCESS_DENIED);
                     }
+                    sibling = existing == moved
+                        && (source_parent != destination_parent
+                            || !source.collides_with(&destination));
                 }
                 Replace::Allowed
             } else {
                 Replace::Forbidden
             };
-            with_space(&mut s.volume, |v| {
-                v.rename(
-                    source_parent,
-                    &source,
-                    destination_parent,
-                    destination.clone(),
-                    replace,
-                )
-            })
-            .map_err(|e| status(&e))?;
+            if sibling {
+                // Both names link one file. The engine leaves both, as POSIX
+                // does; NTFS and WinFsp expect the source name gone.
+                with_space(&mut s.volume, |v| {
+                    v.remove(source_parent, &source, RemoveKind::File)
+                })
+                .map_err(|e| status(&e))?;
+            } else {
+                with_space(&mut s.volume, |v| {
+                    v.rename(
+                        source_parent,
+                        &source,
+                        destination_parent,
+                        destination.clone(),
+                        replace,
+                    )
+                })
+                .map_err(|e| status(&e))?;
+            }
             // A replaced destination becomes an orphan awaiting cleanup by `tick`.
             s.quiet = None;
             // WinFsp knows the file by its new name from here on. A renamed
-            // directory has no open file below it: Windows refuses that.
-            for open in s.open.values_mut().filter(|open| open.object == moved) {
-                if let Some(known) = &mut open.path {
-                    *known = new_path.to_vec();
+            // directory has no open file below it: Windows refuses that. Opens
+            // through the file's other names keep their paths.
+            let opens: Vec<(u64, Vec<u16>)> = s
+                .open
+                .iter()
+                .filter(|(_, open)| open.object == moved)
+                .filter_map(|(context, open)| Some((*context, open.path.clone()?)))
+                .collect();
+            for (context, known) in opens {
+                if (single || s.names_entry(&known, source_parent, &source))
+                    && let Some(open) = s.open.get_mut(&context)
+                {
+                    open.path = Some(new_path.to_vec());
                 }
             }
-            for (context, known) in &mut s.kept {
-                if s.cleaned.get(context) == Some(&moved) {
-                    *known = new_path.to_vec();
+            for index in 0..s.kept.len() {
+                let (context, known) = s.kept[index].clone();
+                if s.cleaned.get(&context) == Some(&moved)
+                    && (single || s.names_entry(&known, source_parent, &source))
+                {
+                    s.kept[index].1 = new_path.to_vec();
                 }
             }
             s.touched(source_parent, path);
@@ -1179,6 +1216,13 @@ impl<D: BlockDevice> State<D> {
 
     /// The parent directory, the final name, and the parent's stored spelling,
     /// for a path that is not the root.
+    /// Whether `path` spells the entry `name` in `parent`, by the volume's
+    /// name rules rather than its UTF-16 bytes.
+    fn names_entry(&mut self, path: &[u16], parent: ObjectId, name: &Name) -> bool {
+        self.parent(path)
+            .is_ok_and(|(found, last, _)| found == parent && last.collides_with(name))
+    }
+
     fn parent(&mut self, path: &[u16]) -> Reply<(ObjectId, Name, Vec<u16>)> {
         let (prefix, last) = split(path).ok_or(STATUS_ACCESS_DENIED)?;
         let name = component(last)?;
@@ -1761,7 +1805,8 @@ fn file_info<D: BlockDevice>(
 /// Windows keeps file and directory links apart; a link Windows made records
 /// which in `directory_link`, whatever its target, and for the rest the target
 /// decides, as in WinFsp's FUSE layer. A target that leaves the volume, passes through
-/// another link, or does not exist is a file link.
+/// another link, or does not exist is a file link. A symlink with several
+/// names resolves from its parent hint, the directory of its newest name.
 fn targets_directory<D: BlockDevice>(
     volume: &mut Volume<D>,
     link: ObjectId,
@@ -2912,6 +2957,57 @@ mod tests {
         fs.rename(&w("\\a"), &w("\\b"), true).unwrap();
         fs.rename(&w("\\dir"), &w("\\DIR"), false).unwrap();
         assert_eq!(list(&fs, "\\", 10, false), ["b", "DIR"]);
+    }
+
+    #[test]
+    fn renaming_one_name_of_a_linked_file_keeps_its_other_opens() {
+        let (_image, fs) = mount("links");
+        let (context, _, _) = fs.create(&w("\\a"), false, false, 0, 0).unwrap();
+        fs.close(context);
+        {
+            let mut s = fs.state.lock().unwrap();
+            let object = s.volume.lookup(ROOT, &Name::parse("a").unwrap()).unwrap();
+            s.volume
+                .link(object, ROOT, Name::parse("b").unwrap())
+                .unwrap();
+        }
+        let (via_a, _, _) = fs.open(&w("\\a"), false, false).unwrap();
+        let (via_b, _, _) = fs.open(&w("\\b"), false, false).unwrap();
+        assert_eq!(fs.has_other_names(via_a), Ok(true));
+        fs.rename(&w("\\a"), &w("\\c"), false).unwrap();
+        {
+            let s = fs.state.lock().unwrap();
+            assert_eq!(s.open[&via_a].path.as_deref(), Some(&w("\\c")[..]));
+            assert_eq!(s.open[&via_b].path.as_deref(), Some(&w("\\b")[..]));
+        }
+        // As on NTFS, renaming onto another name of the same file drops the source.
+        fs.rename(&w("\\c"), &w("\\b"), true).unwrap();
+        assert_eq!(list(&fs, "\\", 10, false), ["b"]);
+        assert_eq!(fs.has_other_names(via_b), Ok(false));
+        fs.close(via_a);
+        fs.close(via_b);
+        let mut s = fs.state.lock().unwrap();
+        let object = s.volume.lookup(ROOT, &Name::parse("b").unwrap()).unwrap();
+        assert_eq!(s.volume.attributes(object).unwrap().links, 1);
+    }
+
+    #[test]
+    fn linked_file_rename_updates_opens_with_different_case() {
+        let (_image, fs) = mount("links-rename-case");
+        make(&fs, "\\._A", false);
+        {
+            let mut s = fs.state.lock().unwrap();
+            let object = s.volume.lookup(ROOT, &Name::parse("._A").unwrap()).unwrap();
+            s.volume
+                .link(object, ROOT, Name::parse("b").unwrap())
+                .unwrap();
+        }
+        let (context, info, _) = fs.open(&w("\\._a"), false, false).unwrap();
+        assert_ne!(info.file_attributes & FILE_ATTRIBUTE_HIDDEN, 0);
+        fs.rename(&w("\\._A"), &w("\\visible"), false).unwrap();
+        let info = fs.file_info(context).unwrap();
+        fs.close(context);
+        assert_eq!(info.file_attributes & FILE_ATTRIBUTE_HIDDEN, 0);
     }
 
     #[test]

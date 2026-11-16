@@ -113,6 +113,19 @@ class MountedVolume(unittest.TestCase):
         self.assertEqual(os.readlink(recovered / "link"), "Folder/Renamed")
         self.assertFalse((recovered / "temporary").exists())
 
+    def test_hard_links_survive_remount_and_extraction(self):
+        script = REPO / "linux/tests/hardlinks.py"
+        self.mount()
+        run(sys.executable, script, self.point, "--keep")
+        self.unmount()
+        self.mount()
+        run(sys.executable, script, self.point, "--verify-kept")
+        self.unmount()
+        kept = self.recover() / "hardlinks-kept"
+        first, second = os.stat(kept / "a"), os.stat(kept / "sub/b")
+        self.assertEqual(first.st_ino, second.st_ino)
+        self.assertEqual(first.st_nlink, 2)
+
     def test_case_aliases_do_not_leave_stale_names(self):
         self.mount()
         path = self.point / "Stored"

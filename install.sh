@@ -294,7 +294,7 @@ backup=
 changed=0
 committed=0
 kernels=
-paths='/usr/local/bin/carryfs /usr/libexec/carryfs /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs /etc/udev/rules.d/61-carryfs.rules /etc/udisks2/mount_options.conf'
+paths='/usr/local/bin/carryfs /usr/local/bin/fsck.carryfs /usr/libexec/carryfs /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs /etc/udev/rules.d/61-carryfs.rules /etc/udisks2/mount_options.conf'
 finish() {
     status=$?
     trap - EXIT
@@ -358,6 +358,9 @@ if [ -f "$options" ]; then
         { print }' "$options" > "$backup/mount_options.conf"
 fi
 changed=1
+if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then
+    rm -f /usr/local/bin/fsck.carryfs
+fi
 rm -f /usr/local/bin/carryfs /etc/udev/rules.d/61-carryfs.rules
 rm -rf /usr/libexec/carryfs
 for link in /usr/sbin/mount.carryfs /usr/sbin/mkfs.carryfs; do
@@ -447,13 +450,16 @@ main() {
         elif [ "$system" = FreeBSD ]; then
             sudo=
             [ "$(id -u)" = 0 ] || sudo=sudo
+            if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then $sudo rm -f /usr/local/bin/fsck.carryfs; fi
             $sudo rm -f /usr/local/bin/carryfs /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs
             $sudo rm -rf /usr/local/libexec/carryfs
         elif [ "$(id -u)" = 0 ]; then
+            if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then rm -f /usr/local/bin/fsck.carryfs; fi
             rm -f /usr/local/bin/carryfs
             rm -rf /Library/Filesystems/carryfs.fs
             launchctl kickstart -k system/com.apple.diskarbitrationd
         else
+            if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then sudo rm -f /usr/local/bin/fsck.carryfs; fi
             sudo rm -f /usr/local/bin/carryfs
             sudo rm -rf /Library/Filesystems/carryfs.fs
             sudo launchctl kickstart -k system/com.apple.diskarbitrationd

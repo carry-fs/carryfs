@@ -20,8 +20,16 @@ libc = "0.2"
 name = "carryfs"
 path = "src/main.rs"
 
+[[bin]]
+name = "fsck-carryfs"
+path = "src/fsck_main.rs"
+
 [[bench]]
 name = "core"
+harness = false
+
+[[bench]]
+name = "recovery"
 harness = false
 
 [[bench]]

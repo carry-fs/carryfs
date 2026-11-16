@@ -65,7 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli::get(Path::new(image), device_bytes, source, Path::new(destination))?;
         }
         _ => return Err(
-            "usage: carryfs mkfs [--attributes] NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no] | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
+            "usage: carryfs fsck [OPTIONS] IMAGE | carryfs mkfs [--attributes] NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no] | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
                 .into(),
         ),
     }
@@ -98,6 +98,25 @@ fn mkfs(
 }
 
 fn main() -> ExitCode {
+    let mut args = env::args_os();
+    let executable = args.next().unwrap_or_default();
+    let mut args: Vec<_> = args.collect();
+    if Path::new(&executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "fsck.carryfs" | "fsck-carryfs" | "fsck.carryfs.exe" | "fsck-carryfs.exe"
+            )
+        })
+    {
+        return cli::fsck::main(args);
+    }
+    if args.first().is_some_and(|arg| arg == "fsck") {
+        args.remove(0);
+        return cli::fsck::main(args);
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

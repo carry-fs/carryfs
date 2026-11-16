@@ -320,6 +320,7 @@ Copy-on-write preserves the previous committed state during updates, provided
 the device honors flushes. Changes that have not been synchronized can be lost
 after an interruption. Checksums detect damage but do not repair files;
 CarryFS has no self-healing. Restore damaged files from an independent backup.
+For metadata damage, use [offline diagnosis, repair, and recovery](RECOVERY.md).
 
 A volume upgraded with `carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE`
 on Linux, macOS, and FreeBSD, or `carryfs-windows upgrade VOLUME` on Windows, stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden
@@ -345,6 +346,14 @@ every computer that uses the volume before running software that preallocates
 files, such as download managers, torrent clients, databases, and virtual
 machine images.
 
+Files and symlinks can have hard links: `ln` on Linux, macOS, and FreeBSD, up
+to 65,535 names each. Directories cannot be hard linked.
+Windows opens, renames, and deletes the names but cannot create new ones.
+`carryfs put` and `carryfs get` keep the hard links inside the copied tree;
+if the destination cannot link, `get` writes a separate copy. The first
+hard link upgrades a volume automatically, like preallocation, and versions
+of CarryFS without hard links cannot mount it afterwards.
+
 CarryFS does not store owners, setuid, setgid or sticky bits, ACLs, extended
 attributes, resource forks, or alternate data streams, and it is not a
 security boundary: anyone holding the drive can mount it as themselves.
@@ -358,6 +367,6 @@ space or period. Windows presents these through compatible aliases; macOS and
 Linux show the stored names.
 
 Boot volumes and server workloads are outside CarryFS's scope. Encryption,
-compression, snapshots, deduplication, RAID, and hard links are not supported.
+compression, snapshots, deduplication, and RAID are not supported.
 Disk format revision 1 is not frozen; a future format change may require
 copying files elsewhere and reformatting the partition.

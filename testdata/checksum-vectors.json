@@ -69,6 +69,13 @@
       "sha256": "4e86bd0e948db9a1d77092892f73e124fac6d7a6fbd5f1fd1d744385b2d6cafb"
     },
     {
+      "name": "link-catalog-leaf",
+      "file": "vectors/link-catalog-leaf.bin",
+      "crc_offset": 64,
+      "crc32c": "0200ca24",
+      "sha256": "a8f75abb508f01addbcfa2fac4a96617a8fd49c27d177b21d19745a77d92627a"
+    },
+    {
       "name": "workspace-leaf",
       "file": "vectors/workspace-leaf.bin",
       "crc_offset": 64,

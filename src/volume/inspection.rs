@@ -62,6 +62,9 @@ pub trait ExtractionSink {
         target: &[u8],
         attributes: &Attributes,
     ) -> Result<()>;
+    /// Give the file or symlink already created at `existing` another name at
+    /// `path`. On failure extraction writes `path` as a separate copy.
+    fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -73,11 +76,13 @@ struct UnitCounts {
 
 struct FileScan<'a> {
     path: &'a [Name],
-    output: Option<&'a mut File>,
+    output: Option<&'a mut UnitWriter<'a>>,
     report: &'a mut dyn FnMut(Finding<'_>),
     counts: &'a mut UnitCounts,
     reuse_cache: bool,
 }
+
+type UnitWriter<'a> = dyn FnMut(u64, &[u8]) -> Result<()> + 'a;
 
 // Only source failures become incomplete recovery. Destination failures abort.
 enum ExtractionError {
@@ -163,9 +168,9 @@ impl<D: BlockDevice> Volume<D> {
     pub fn scrub(&mut self, report: &mut dyn FnMut(Finding<'_>)) -> Result<CheckSummary> {
         self.cache = crate::tree::Cache::default();
         let summary = self.check_with_report(report)?;
-        self.scrubbing = true;
+        self.inspection_metadata_cache = true;
         let result = self.scrub_data(summary, report);
-        self.scrubbing = false;
+        self.inspection_metadata_cache = false;
         self.cache = crate::tree::Cache::default();
         result
     }
@@ -264,16 +269,9 @@ impl<D: BlockDevice> Volume<D> {
                         Some((&mut held, u64::MAX)),
                     ) {
                         Ok(Some(bytes)) => {
-                            if let Some(file) = scan.output.as_mut() {
-                                destination = file
-                                    .seek(SeekFrom::Start(offset))
-                                    .and_then(|_| file.write_all(&bytes))
-                                    .map_err(|e| {
-                                        ExtractionError::Destination(Error::io(
-                                            "write extraction output",
-                                            e,
-                                        ))
-                                    });
+                            if let Some(write) = scan.output.as_mut() {
+                                destination =
+                                    write(offset, &bytes).map_err(ExtractionError::Destination);
                                 if destination.is_err() {
                                     break;
                                 }
@@ -314,6 +312,31 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+    /// Copy verified backed units, skipping and reporting unreadable data.
+    pub(super) fn copy_verified_file(
+        &mut self,
+        object: ObjectId,
+        size: u64,
+        path: &[Name],
+        write: &mut UnitWriter<'_>,
+        report: &mut dyn FnMut(Finding<'_>),
+    ) -> Result<(u64, u64)> {
+        let mut counts = UnitCounts::default();
+        self.inspect_file(
+            object,
+            size,
+            FileScan {
+                path,
+                output: Some(write),
+                report,
+                counts: &mut counts,
+                reuse_cache: false,
+            },
+        )
+        .map_err(ExtractionError::into_error)?;
+        Ok((counts.bytes, counts.unreadable))
+    }
+
     /// Extract a file, symlink, or directory subtree to a source-preserving
     /// destination.
     ///
@@ -339,63 +362,90 @@ impl<D: BlockDevice> Volume<D> {
         let mut path = Vec::new();
         let mut pending = Some(object);
         let mut active = object;
+        // The first path of each object with other names, which later names
+        // link to. ponytail: one path per such object in the subtree.
+        let mut first_names = std::collections::BTreeMap::<ObjectId, Vec<Name>>::new();
         let result = (|| -> std::result::Result<(), ExtractionError> {
             loop {
                 if let Some(object) = pending.take() {
                     active = object;
                     let attributes = self.attributes_fresh(object)?;
-                    match attributes.kind {
-                        ObjectKind::File => {
-                            let mut file = destination
-                                .create_file(&path, &attributes)
-                                .map_err(ExtractionError::Destination)?;
-                            summary.objects += 1;
-                            file.set_len(attributes.size).map_err(|e| {
-                                ExtractionError::Destination(Error::io("size extraction output", e))
-                            })?;
-                            let mut counts = UnitCounts::default();
-                            let result = self.inspect_file(
-                                object,
-                                attributes.size,
-                                FileScan {
-                                    path: &path,
-                                    output: Some(&mut file),
-                                    report,
-                                    counts: &mut counts,
-                                    reuse_cache: false,
-                                },
-                            );
-                            summary.verified_bytes += counts.bytes;
-                            summary.unreadable_ranges += counts.unreadable;
-                            result?;
-                            summary.files += 1;
-                            path.pop();
-                        }
-                        ObjectKind::Symlink => {
-                            let target = self.read_symlink_fresh(object)?;
-                            destination
-                                .create_symlink(&path, &target, &attributes)
-                                .map_err(ExtractionError::Destination)?;
-                            summary.objects += 1;
-                            path.pop();
-                        }
-                        ObjectKind::Directory => {
-                            let handle = self.retain_object_fresh(object)?;
-                            // Register the handle before fallible work so every exit closes it.
-                            directories.push(Directory {
-                                object,
-                                handle,
-                                cursor: None,
-                                entries: Vec::new().into_iter(),
-                            });
-                            destination
-                                .create_directory(&path, &attributes)
-                                .map_err(ExtractionError::Destination)?;
-                            summary.objects += 1;
-                            let dir = directories.last_mut().ok_or(Error::LimitExceeded)?;
-                            let page = self.read_directory_fresh(&dir.handle, None)?;
-                            dir.entries = page.entries.into_iter();
-                            dir.cursor = page.cursor;
+                    let linked = attributes.kind != ObjectKind::Directory
+                        && attributes.links > 1
+                        && match first_names.get(&object) {
+                            Some(existing) => destination.create_link(&path, existing).is_ok(),
+                            None => {
+                                first_names.insert(object, path.clone());
+                                false
+                            }
+                        };
+                    if linked {
+                        summary.objects += 1;
+                        path.pop();
+                    } else {
+                        match attributes.kind {
+                            ObjectKind::File => {
+                                let mut file = destination
+                                    .create_file(&path, &attributes)
+                                    .map_err(ExtractionError::Destination)?;
+                                summary.objects += 1;
+                                file.set_len(attributes.size).map_err(|e| {
+                                    ExtractionError::Destination(Error::io(
+                                        "size extraction output",
+                                        e,
+                                    ))
+                                })?;
+                                let mut counts = UnitCounts::default();
+                                let mut write = |offset, bytes: &[u8]| {
+                                    file.seek(SeekFrom::Start(offset))
+                                        .and_then(|_| file.write_all(bytes))
+                                        .map_err(|error| {
+                                            Error::io("write extraction output", error)
+                                        })
+                                };
+                                let result = self.inspect_file(
+                                    object,
+                                    attributes.size,
+                                    FileScan {
+                                        path: &path,
+                                        output: Some(&mut write),
+                                        report,
+                                        counts: &mut counts,
+                                        reuse_cache: false,
+                                    },
+                                );
+                                summary.verified_bytes += counts.bytes;
+                                summary.unreadable_ranges += counts.unreadable;
+                                result?;
+                                summary.files += 1;
+                                path.pop();
+                            }
+                            ObjectKind::Symlink => {
+                                let target = self.read_symlink_fresh(object)?;
+                                destination
+                                    .create_symlink(&path, &target, &attributes)
+                                    .map_err(ExtractionError::Destination)?;
+                                summary.objects += 1;
+                                path.pop();
+                            }
+                            ObjectKind::Directory => {
+                                let handle = self.retain_object_fresh(object)?;
+                                // Register the handle before fallible work so every exit closes it.
+                                directories.push(Directory {
+                                    object,
+                                    handle,
+                                    cursor: None,
+                                    entries: Vec::new().into_iter(),
+                                });
+                                destination
+                                    .create_directory(&path, &attributes)
+                                    .map_err(ExtractionError::Destination)?;
+                                summary.objects += 1;
+                                let dir = directories.last_mut().ok_or(Error::LimitExceeded)?;
+                                let page = self.read_directory_fresh(&dir.handle, None)?;
+                                dir.entries = page.entries.into_iter();
+                                dir.cursor = page.cursor;
+                            }
                         }
                     }
                 }

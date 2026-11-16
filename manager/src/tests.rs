@@ -1,5 +1,8 @@
 use super::*;
+use carryfs_core::ObjectKind;
 use carryfs_core::{ImageDevice, MountMode, Name, ROOT, Volume};
+use model::bytes;
+use platform::DeviceKind;
 use rune::{Env, FileDialogKind, Runtime};
 use std::{
     fs,
@@ -8,6 +11,7 @@ use std::{
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
+use view::{device_rows, view};
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -112,6 +116,27 @@ fn finish(rt: &mut Runtime<State>) {
     assert!(!rt.state.error, "{}", rt.state.status);
 }
 
+/// Run First Aid from the toolbar and wait for its report.
+fn first_aid(rt: &mut Runtime<State>) {
+    click(rt, "first-aid");
+    click(rt, "confirm-first-aid");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while rt.state.pending.is_some() {
+        assert!(std::time::Instant::now() < deadline, "First Aid timed out");
+        rt.frame(1.0 / 60.0);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(
+        rt.state.sheet.as_ref().map(|s| s.phase),
+        Some(Phase::Done),
+        "{}",
+        rt.state.status
+    );
+}
+
 #[test]
 fn ui_opens_browses_checks_exports_and_closes_a_real_image() {
     let fixture = Fixture::new();
@@ -148,9 +173,10 @@ fn ui_opens_browses_checks_exports_and_closes_a_real_image() {
     click(&mut rt, "crumb-0");
     finish(&mut rt);
     click(&mut rt, "tab-overview");
-    click(&mut rt, "check");
-    finish(&mut rt);
-    assert!(rt.state.status.starts_with("Structural check passed"));
+    first_aid(&mut rt);
+    assert_eq!(rt.state.status, "First Aid found no problems.");
+    click(&mut rt, "close-sheet");
+    assert!(rt.state.sheet.is_none());
     click(&mut rt, "tab-files");
     let file = rt.state.browser.as_ref().unwrap().entries[1].item.object;
     click(&mut rt, &format!("entry-{}", file.get()));
@@ -248,13 +274,19 @@ fn ui_scrubs_recovers_folders_and_records_results_with_the_source() {
         ))))
     });
     rt.frame(0.01);
-    click(&mut rt, "scrub");
-    finish(&mut rt);
+    first_aid(&mut rt);
+    let key = {
+        let b = rt.state.browser.as_ref().unwrap();
+        (b.info.uuid, b.info.generation)
+    };
+    let scrub = rt.state.integrity[&key].scrub.as_ref().unwrap();
     assert!(
-        rt.state.status.contains("0 unreadable ranges"),
+        scrub.summary.contains("0 unreadable ranges"),
         "{}",
-        rt.state.status
+        scrub.summary
     );
+    click(&mut rt, "close-sheet");
+    click(&mut rt, "recover-tool");
     click(&mut rt, "recover");
     let destination = fixture.0.join("recovered");
     rt.resolve_file_dialog(Some(destination.clone())).unwrap();
@@ -310,7 +342,7 @@ fn reopening_the_image_is_required_after_its_generation_changes() {
 }
 
 #[test]
-fn formatting_requires_an_exact_identifier_and_internal_devices_are_protected() {
+fn erasing_needs_a_valid_name_and_internal_disks_are_protected() {
     let mut rt = runtime();
     let device = platform::Device {
         id: "disk8s1".into(),
@@ -326,29 +358,30 @@ fn formatting_requires_an_exact_identifier_and_internal_devices_are_protected() 
     };
     rt.update(|s, _| s.device = Some(device));
     rt.frame(0.01);
-    click(&mut rt, "format");
-    assert!(rt.state.format.is_some());
-    click(&mut rt, "confirm-format");
+    click(&mut rt, "erase");
+    assert!(
+        rt.state
+            .sheet
+            .as_ref()
+            .is_some_and(|s| s.kind == SheetKind::Erase)
+    );
+    assert_eq!(rt.state.erase_name.text, "Disposable fixture");
+    // Never confirm a valid name here: that would erase a real disk8s1.
+    rt.update(|s, _| s.erase_name.text = "".into());
+    rt.frame(0.01);
+    click(&mut rt, "confirm-erase");
     assert!(
         rt.state.pending.is_none(),
-        "An empty confirmation cannot start formatting"
+        "An empty name cannot start erasing"
     );
-    rt.update(|s, _| s.confirmation.text = "disk8s2".into());
+    click(&mut rt, "cancel-sheet");
+    assert!(rt.state.sheet.is_none());
+    rt.update(|s, _| s.device.as_mut().unwrap().internal = true);
     rt.frame(0.01);
-    click(&mut rt, "confirm-format");
-    assert!(
-        rt.state.pending.is_none(),
-        "A different partition cannot authorize formatting"
-    );
-    rt.update(|s, _| {
-        s.format = None;
-        s.device.as_mut().unwrap().internal = true;
-    });
-    rt.frame(0.01);
-    click(&mut rt, "format");
-    assert!(rt.state.format.is_none());
+    click(&mut rt, "erase");
+    assert!(rt.state.sheet.is_none());
     click(&mut rt, "eject");
-    assert!(rt.state.eject.is_none());
+    assert!(rt.state.sheet.is_none());
 }
 
 #[test]
@@ -414,15 +447,14 @@ fn integrity_results_survive_unrelated_status_changes_and_are_bound_to_the_gener
         ))))
     });
     rt.frame(0.01);
-    click(&mut rt, "check");
-    finish(&mut rt);
+    first_aid(&mut rt);
     let browser = rt.state.browser.as_ref().unwrap();
     let key = (browser.info.uuid, browser.info.generation);
-    assert!(rt.state.integrity[&key].structure.as_ref().unwrap().passed);
+    assert!(rt.state.integrity[&key].plan.as_ref().unwrap().passed);
+    assert!(rt.state.integrity[&key].scrub.as_ref().unwrap().passed);
     rt.update(|s, _| s.apply(Ok(Update::Report("Another operation finished".into()))));
     rt.frame(0.01);
-    assert!(rt.state.integrity[&key].structure.as_ref().unwrap().passed);
-    assert!(rt.state.integrity[&key].scrub.is_none());
+    assert!(rt.state.integrity[&key].plan.as_ref().unwrap().passed);
     assert!(!rt.state.integrity.contains_key(&(key.0, key.1 + 1)));
 }
 
@@ -517,6 +549,8 @@ fn accessible_navigation_exposes_the_selected_tab_and_source() {
             .is_selected()
     }
     let mut rt = runtime();
+    rt.update(|s, _| s.device = Some(system_disk(0)));
+    rt.frame(0.01);
     assert_eq!(selected(&rt, "tab-overview"), Some(true));
     assert_eq!(selected(&rt, "tab-files"), Some(false));
     click(&mut rt, "tab-files");
@@ -592,16 +626,14 @@ fn ui_upgrades_an_image_in_place_and_shows_stored_permissions() {
     let before = rt.state.browser.as_ref().unwrap().info.clone();
     assert!(!rt.state.browser.as_ref().unwrap().attributes);
     // The format section sits below the fold of the Overview.
-    rt.wheel(700.0, 400.0, -10000.0);
-    for _ in 0..60 {
-        rt.frame(1.0 / 60.0);
-    }
+    reveal(&mut rt);
     click(&mut rt, "upgrade");
-    click(&mut rt, "cancel-upgrade");
-    assert!(!rt.state.upgrade);
+    click(&mut rt, "cancel-sheet");
+    assert!(rt.state.sheet.is_none());
     click(&mut rt, "upgrade");
     click(&mut rt, "confirm-upgrade");
     finish(&mut rt);
+    click(&mut rt, "close-sheet");
     let browser = rt.state.browser.as_ref().unwrap();
     assert!(browser.attributes, "{}", rt.state.status);
     assert!(!browser.preallocation);
@@ -612,7 +644,7 @@ fn ui_upgrades_an_image_in_place_and_shows_stored_permissions() {
         rt.find("upgrade").is_none(),
         "An upgraded volume offers no upgrade"
     );
-    assert_eq!(rt.state.history.last().unwrap().task, "Upgrade volume");
+    assert_eq!(rt.state.history.last().unwrap().task, "Upgrade format");
 
     let mut volume =
         Volume::open(ImageDevice::open(fixture.image(), MountMode::ReadWrite).unwrap()).unwrap();
@@ -700,18 +732,21 @@ fn damaged_images_can_be_diagnosed_and_repaired_in_place() {
     }
     assert!(rt.state.browser.is_none());
     assert!(rt.state.damaged.is_some(), "{}", rt.state.status);
-    assert!(rt.state.status.contains("Diagnose damage"));
+    assert!(rt.state.status.contains("Run First Aid"));
     assert!(rt.find("repair").is_none(), "Repair waits for a diagnosis");
 
     click(&mut rt, "diagnose");
+    click(&mut rt, "confirm-first-aid");
     while rt.state.pending.is_some() {
+        rt.frame(1.0 / 60.0);
+    }
+    for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
     let plan = rt.state.damaged.as_ref().unwrap().plan.as_ref().unwrap();
     assert!(!plan.passed && plan.repairable(), "{}", plan.summary);
     assert!(plan.summary.contains("Inaccessible Allocation page"));
 
-    reveal(&mut rt);
     click(&mut rt, "repair");
     click(&mut rt, "confirm-repair");
     finish(&mut rt);
@@ -730,9 +765,9 @@ fn damaged_images_can_be_diagnosed_and_repaired_in_place() {
         })
         .count();
     assert_eq!(reports, 1, "The repair report sits beside the image");
-    click(&mut rt, "check");
-    finish(&mut rt);
-    assert!(rt.state.status.starts_with("Structural check passed"));
+    click(&mut rt, "close-sheet");
+    first_aid(&mut rt);
+    assert_eq!(rt.state.status, "First Aid found no problems.");
 }
 
 #[test]
@@ -764,15 +799,15 @@ fn a_clean_volume_with_hard_links_rebuilds_into_a_new_verified_image() {
     rt.update(|s, _| s.apply(Ok(Update::Browser(Box::new(browser)))));
     rt.frame(0.01);
 
-    click(&mut rt, "diagnose");
-    finish(&mut rt);
+    first_aid(&mut rt);
+    click(&mut rt, "close-sheet");
     let key = {
         let b = rt.state.browser.as_ref().unwrap();
         (b.info.uuid, b.info.generation)
     };
     assert!(rt.state.integrity[&key].plan.as_ref().unwrap().passed);
 
-    reveal(&mut rt);
+    click(&mut rt, "recover-tool");
     click(&mut rt, "rebuild");
     assert_eq!(rt.file_dialog().unwrap().0, FileDialogKind::Save);
     let output = fixture.0.join("rebuilt.cfs");

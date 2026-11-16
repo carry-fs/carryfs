@@ -13,8 +13,22 @@ use std::{
     time::Duration,
 };
 
-fn companion() -> Result<PathBuf> {
-    companion_for(&std::env::current_exe()?)
+/// The bundled CLI, with no input unless a device is attached.
+fn cli() -> Result<Command> {
+    let mut command = Command::new(companion_for(&std::env::current_exe()?)?);
+    command.stdin(Stdio::null());
+    Ok(command)
+}
+
+/// Read `device` through a descriptor the administrator helper opened: the
+/// CLI receives it as standard input and reads `/dev/fd/0`.
+fn device_source(command: &mut Command, device: &crate::platform::Device) -> Result<()> {
+    command.stdin(crate::platform::device_file(device)?).args([
+        "--bytes",
+        &device.bytes.to_string(),
+        "/dev/fd/0",
+    ]);
+    Ok(())
 }
 
 fn companion_for(exe: &Path) -> Result<PathBuf> {
@@ -111,10 +125,7 @@ pub fn run(command: Command, control: Arc<Control>) -> Result<String> {
 
 /// Run `command` and return its exit status with its combined output.
 fn run_status(mut command: Command, control: Arc<Control>) -> Result<(ExitStatus, String)> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -177,12 +188,12 @@ fn run_status(mut command: Command, control: Arc<Control>) -> Result<(ExitStatus
 pub fn inspect(browser: Browser, scrub: bool, cancel: Arc<Control>) -> Result<String> {
     // Validate the selected snapshot, then release its lease before the CLI opens it.
     drop(browser.volume()?);
-    let mut command = Command::new(companion()?);
+    let mut command = cli()?;
     command.arg(if scrub { "scrub" } else { "check" });
-    if let Some(device) = &browser.device {
-        command.args(["--bytes", &device.bytes.to_string()]);
+    match &browser.device {
+        Some(device) => device_source(&mut command, device)?,
+        None => drop(command.arg(&browser.path)),
     }
-    command.arg(&browser.path);
     run(command, cancel)
 }
 
@@ -192,7 +203,7 @@ pub fn upgrade(browser: Browser, cancel: Arc<Control>) -> Result<(Browser, Strin
         return Err("Upgrade a device through its Terminal review.".into());
     }
     drop(browser.volume()?);
-    let mut command = Command::new(companion()?);
+    let mut command = cli()?;
     command.arg("upgrade").arg(&browser.path);
     let report = run(command, cancel)?;
     Ok((Browser::open(browser.path)?, report))
@@ -219,7 +230,7 @@ pub fn fsck(source: Source, mode: Fsck, cancel: Arc<Control>) -> Result<String> 
     {
         return Err("Unmount the volume before diagnosis or recovery.".into());
     }
-    let mut command = Command::new(companion()?);
+    let mut command = cli()?;
     command.arg("fsck");
     let success = match &mode {
         Fsck::Plan => {
@@ -248,10 +259,10 @@ pub fn fsck(source: Source, mode: Fsck, cancel: Arc<Control>) -> Result<String> 
         }
         Fsck::Repair => return Err("Repair a device by rebuilding it into a new image.".into()),
     };
-    if let Some(device) = &source.device {
-        command.args(["--bytes", &device.bytes.to_string()]);
+    match &source.device {
+        Some(device) => device_source(&mut command, device)?,
+        None => drop(command.arg("--").arg(&source.path)),
     }
-    command.arg("--").arg(&source.path);
     let (status, report) = run_status(command, cancel)?;
     // Lead with the outcome: the tool prints the source path first.
     let report = report
@@ -303,16 +314,14 @@ pub fn recover(browser: Browser, destination: &Path, cancel: Arc<Control>) -> Re
                 .join("/")
         )
     };
-    let mut command = Command::new(companion()?);
+    let mut command = cli()?;
     command.arg("get");
-    if let Some(device) = &browser.device {
-        command.args(["--bytes", &device.bytes.to_string()]);
+    match &browser.device {
+        Some(device) => device_source(&mut command, device)?,
+        None => drop(command.arg(&browser.path)),
     }
     // The CLI then opens every component without following links.
-    command
-        .arg(&browser.path)
-        .arg(source)
-        .arg(new_path(destination)?);
+    command.arg(source).arg(new_path(destination)?);
     run(command, cancel)
 }
 

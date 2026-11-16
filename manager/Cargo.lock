@@ -514,6 +514,7 @@ name = "carryfs-manager"
 version = "0.1.0"
 dependencies = [
  "carryfs-core",
+ "libc",
  "rune",
  "rune-kit",
  "serde_json",

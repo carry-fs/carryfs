@@ -8,10 +8,6 @@ use std::{
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-#[cfg(target_os = "macos")]
-#[path = "../../src/cli/authopen.rs"]
-mod authopen;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceKind {
     Physical,
@@ -136,7 +132,7 @@ fn string(v: &Value, key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
-fn valid_id(id: &str) -> bool {
+pub fn valid_id(id: &str) -> bool {
     let Some(rest) = id.strip_prefix("disk") else {
         return false;
     };
@@ -255,6 +251,20 @@ pub fn details(device: &Device) -> Result<Device> {
     }
 }
 
+/// The raw node of an unmounted device, read-only, opened by the
+/// administrator helper; it asks for approval once per session.
+pub fn device_file(device: &Device) -> Result<fs::File> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::privileged::open_device(&device.id, false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = device;
+        Err("Device reads are currently available on macOS.".into())
+    }
+}
+
 pub fn open_device(device: &Device) -> Result<carryfs_core::ImageDevice> {
     let fresh = details(device)?;
     if fresh.mount.is_some() {
@@ -262,13 +272,7 @@ pub fn open_device(device: &Device) -> Result<carryfs_core::ImageDevice> {
     }
     #[cfg(target_os = "macos")]
     {
-        let path = PathBuf::from(format!("/dev/r{}", fresh.id));
-        let file = match fs::File::open(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                authopen::open_read_only(&path)?
-            }
-            result => result?,
-        };
+        let file = device_file(&fresh)?;
         file.try_lock()
             .map_err(|e| format!("The device is in use: {e}"))?;
         // Recheck after authorization: the user may have mounted or reattached it meanwhile.
@@ -377,110 +381,68 @@ pub fn check_updates() -> Result<Versions> {
     Ok(v)
 }
 
-fn terminal(script: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("carryfs-manager-{}-{stamp}", std::process::id()));
-        fs::DirBuilder::new().mode(0o700).create(&directory)?;
-        let path = directory.join("operation.command");
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o700)
-            .open(&path)?;
-        file.write_all(script.as_bytes())?;
-        file.set_permissions(fs::Permissions::from_mode(0o700))?;
-        output(
-            Command::new("/usr/bin/open")
-                .args(["-a", "Terminal"])
-                .arg(path),
-        )?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = script;
-        Err("The interactive installer is currently available through the manager on macOS.".into())
-    }
+/// Open `path` in Finder.
+pub fn show(path: &Path) -> Result<()> {
+    output(Command::new("/usr/bin/open").arg(path))?;
+    Ok(())
+}
+
+/// Select `path` in a Finder window.
+pub fn reveal(path: &Path) -> Result<()> {
+    output(Command::new("/usr/bin/open").arg("-R").arg(path))?;
+    Ok(())
 }
 
 pub fn install(version_name: &str) -> Result<String> {
     if version(version_name).is_none() {
         return Err("Invalid release version".into());
     }
-    terminal(&format!(
-        "#!/bin/bash\nset -eu\nprintf '%s\\n' 'CarryFS software update to {version_name}. This does not migrate disk formats.'\ninstaller=$(mktemp -t carryfs-install)\ntrap 'rm -f \"$installer\"' EXIT\n/usr/bin/curl --fail --show-error --location https://carryfs.com/install.sh -o \"$installer\"\n/bin/bash \"$installer\" --version {version_name}\nprintf '%s\\n' 'Return to CarryFS Manager and refresh Versions.'\n"
-    ))?;
-    Ok("Installer opened in Terminal. It verifies the release package, requires unmounted volumes, and asks for installation and administrator approval. Refresh versions when it finishes.".into())
-}
-
-/// Installed macOS adapter; it runs `carryfs-fuse` subcommands under that argv0.
-const ADAPTER: &str = "/Library/Filesystems/carryfs.fs/Contents/Resources/mount_carryfs";
-
-/// Open a Terminal script that asks for `fresh.id` again and checks the
-/// partition UUID before running `command`.
-fn confirm_in_terminal(fresh: &Device, banner: &str, verb: &str, command: &str) -> Result<()> {
-    // The Terminal flow re-identifies the partition immediately before `command`.
-    let uuid = fresh.uuid.as_deref().ok_or("Missing partition UUID")?;
-    if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        return Err("Invalid partition UUID".into());
+    #[cfg(target_os = "macos")]
+    {
+        crate::privileged::install(version_name)?;
+        Ok(format!(
+            "Installed CarryFS {version_name}. Volumes were not changed."
+        ))
     }
-    terminal(&format!(
-        "#!/bin/bash\nset -eu\nprintf '%s\\n' '{banner}'\n/usr/sbin/diskutil info {id}\nprintf '%s' 'Type {id} again to {verb}: '\nread -r target\n[ \"$target\" = '{id}' ] || exit 1\nactual=$(/usr/sbin/diskutil info -plist {id} | /usr/bin/plutil -extract DiskUUID raw -o - -)\n[ \"$actual\" = '{uuid}' ] || {{ printf '%s\\n' 'Device identity changed; refusing to {verb}.'; exit 1; }}\n{command}\n",
-        id = fresh.id,
-    ))
+    #[cfg(not(target_os = "macos"))]
+    Err("Installing from the manager is currently available on macOS.".into())
 }
 
-pub fn format_in_terminal(device: &Device, confirmation: &str) -> Result<String> {
+/// Erase an unmounted external partition as CarryFS named `name`. Disk
+/// Arbitration runs the installed formatter; no administrator approval needed.
+pub fn erase(device: &Device, name: &str) -> Result<String> {
     let fresh = details(device)?;
-    if !fresh.external_partition() || fresh.mount.is_some() || confirmation != fresh.id {
-        return Err("Formatting requires an unmounted external physical partition and its exact device identifier.".into());
+    if !fresh.external_partition() || fresh.mount.is_some() {
+        return Err("Erasing requires an unmounted external physical partition.".into());
     }
+    carryfs_core::VolumeLabel::parse(name).map_err(|e| format!("Invalid name: {e}"))?;
     if !Path::new("/Library/Filesystems/carryfs.fs/Contents/Resources/newfs_carryfs").is_file() {
-        return Err("Install the CarryFS system tools before formatting.".into());
+        return Err("Install CarryFS from Software before erasing a partition.".into());
     }
-    confirm_in_terminal(
-        &fresh,
-        &format!(
-            "ERASE {}: {} bytes. All files on this partition will be lost.",
-            fresh.id, fresh.bytes
-        ),
-        "format",
-        &format!(
-            "/usr/sbin/diskutil eraseVolume CarryFS CarryFS {}",
-            fresh.id
-        ),
-    )?;
-    Ok("Formatting confirmation opened in Terminal. No format has been reported as complete. Refresh devices after the system tool finishes.".into())
+    Ok(
+        String::from_utf8_lossy(&output(Command::new("/usr/sbin/diskutil").args([
+            "eraseVolume",
+            "CarryFS",
+            name,
+            &fresh.id,
+        ]))?)
+        .trim()
+        .to_owned(),
+    )
 }
 
-pub fn upgrade_in_terminal(device: &Device) -> Result<String> {
+/// Let an unmounted CarryFS partition store permissions and the hidden flag.
+pub fn upgrade(device: &Device) -> Result<String> {
     let fresh = details(device)?;
     if fresh.protected() || fresh.whole || !fresh.carryfs() || fresh.mount.is_some() {
         return Err("Upgrading requires an unmounted external CarryFS partition.".into());
     }
-    if !Path::new(ADAPTER).is_file() {
-        return Err("Install CarryFS before upgrading a volume.".into());
+    #[cfg(target_os = "macos")]
+    {
+        crate::privileged::upgrade(&fresh.id)
     }
-    confirm_in_terminal(
-        &fresh,
-        &format!(
-            "UPGRADE {}: store permissions and the hidden attribute. Files are kept. CarryFS 0.1.0 cannot mount it afterwards, and the upgrade cannot be undone.",
-            fresh.id
-        ),
-        "upgrade",
-        &format!(
-            "/usr/bin/sudo /bin/bash -c 'exec -a carryfs-fuse \"$0\" upgrade \"$1\"' {ADAPTER} /dev/{}\nprintf '%s\\n' 'Return to CarryFS Manager and open the volume again.'",
-            fresh.id
-        ),
-    )?;
-    Ok("Upgrade confirmation opened in Terminal. Open the volume again after it finishes.".into())
+    #[cfg(not(target_os = "macos"))]
+    Err("Upgrading a device is currently available on macOS.".into())
 }
 
 #[cfg(test)]

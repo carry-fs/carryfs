@@ -420,6 +420,23 @@ pub fn install(version_name: &str) -> Result<String> {
     Ok("Installer opened in Terminal. It verifies the release package, requires unmounted volumes, and asks for installation and administrator approval. Refresh versions when it finishes.".into())
 }
 
+/// Installed macOS adapter; it runs `carryfs-fuse` subcommands under that argv0.
+const ADAPTER: &str = "/Library/Filesystems/carryfs.fs/Contents/Resources/mount_carryfs";
+
+/// Open a Terminal script that asks for `fresh.id` again and checks the
+/// partition UUID before running `command`.
+fn confirm_in_terminal(fresh: &Device, banner: &str, verb: &str, command: &str) -> Result<()> {
+    // The Terminal flow re-identifies the partition immediately before `command`.
+    let uuid = fresh.uuid.as_deref().ok_or("Missing partition UUID")?;
+    if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return Err("Invalid partition UUID".into());
+    }
+    terminal(&format!(
+        "#!/bin/bash\nset -eu\nprintf '%s\\n' '{banner}'\n/usr/sbin/diskutil info {id}\nprintf '%s' 'Type {id} again to {verb}: '\nread -r target\n[ \"$target\" = '{id}' ] || exit 1\nactual=$(/usr/sbin/diskutil info -plist {id} | /usr/bin/plutil -extract DiskUUID raw -o - -)\n[ \"$actual\" = '{uuid}' ] || {{ printf '%s\\n' 'Device identity changed; refusing to {verb}.'; exit 1; }}\n{command}\n",
+        id = fresh.id,
+    ))
+}
+
 pub fn format_in_terminal(device: &Device, confirmation: &str) -> Result<String> {
     let fresh = details(device)?;
     if !fresh.external_partition() || fresh.mount.is_some() || confirmation != fresh.id {
@@ -428,17 +445,42 @@ pub fn format_in_terminal(device: &Device, confirmation: &str) -> Result<String>
     if !Path::new("/Library/Filesystems/carryfs.fs/Contents/Resources/newfs_carryfs").is_file() {
         return Err("Install the CarryFS system tools before formatting.".into());
     }
-    // The Terminal flow re-identifies the partition immediately before eraseVolume.
-    let uuid = fresh.uuid.as_deref().ok_or("Missing partition UUID")?;
-    if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        return Err("Invalid partition UUID".into());
-    }
-    terminal(&format!(
-        "#!/bin/bash\nset -eu\nprintf '%s\\n' 'ERASE {id}: {size} bytes. All files on this partition will be lost.'\n/usr/sbin/diskutil info {id}\nprintf '%s' 'Type {id} again to format: '\nread -r target\n[ \"$target\" = '{id}' ] || exit 1\nactual=$(/usr/sbin/diskutil info -plist {id} | /usr/bin/plutil -extract DiskUUID raw -o - -)\n[ \"$actual\" = '{uuid}' ] || {{ printf '%s\\n' 'Device identity changed; refusing format.'; exit 1; }}\n/usr/sbin/diskutil eraseVolume CarryFS CarryFS {id}\n",
-        id = fresh.id,
-        size = fresh.bytes
-    ))?;
+    confirm_in_terminal(
+        &fresh,
+        &format!(
+            "ERASE {}: {} bytes. All files on this partition will be lost.",
+            fresh.id, fresh.bytes
+        ),
+        "format",
+        &format!(
+            "/usr/sbin/diskutil eraseVolume CarryFS CarryFS {}",
+            fresh.id
+        ),
+    )?;
     Ok("Formatting confirmation opened in Terminal. No format has been reported as complete. Refresh devices after the system tool finishes.".into())
+}
+
+pub fn upgrade_in_terminal(device: &Device) -> Result<String> {
+    let fresh = details(device)?;
+    if fresh.protected() || fresh.whole || !fresh.carryfs() || fresh.mount.is_some() {
+        return Err("Upgrading requires an unmounted external CarryFS partition.".into());
+    }
+    if !Path::new(ADAPTER).is_file() {
+        return Err("Install CarryFS before upgrading a volume.".into());
+    }
+    confirm_in_terminal(
+        &fresh,
+        &format!(
+            "UPGRADE {}: store permissions and the hidden attribute. Files are kept. CarryFS 0.1.0 cannot mount it afterwards, and the upgrade cannot be undone.",
+            fresh.id
+        ),
+        "upgrade",
+        &format!(
+            "/usr/bin/sudo /bin/bash -c 'exec -a carryfs-fuse \"$0\" upgrade \"$1\"' {ADAPTER} /dev/{}\nprintf '%s\\n' 'Return to CarryFS Manager and open the volume again.'",
+            fresh.id
+        ),
+    )?;
+    Ok("Upgrade confirmation opened in Terminal. Open the volume again after it finishes.".into())
 }
 
 #[cfg(test)]

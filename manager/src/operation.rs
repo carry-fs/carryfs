@@ -1,8 +1,11 @@
-use crate::{model::Browser, platform::Result};
+use crate::{
+    model::{Browser, Source},
+    platform::Result,
+};
 use std::{
     io::Read,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -93,7 +96,21 @@ impl Drop for Control {
     }
 }
 
-pub fn run(mut command: Command, control: Arc<Control>) -> Result<String> {
+pub fn run(command: Command, control: Arc<Control>) -> Result<String> {
+    let (status, report) = run_status(command, control)?;
+    if !status.success() {
+        return Err(if report.is_empty() {
+            format!("Operation exited with {status}")
+        } else {
+            report
+        }
+        .into());
+    }
+    Ok(report)
+}
+
+/// Run `command` and return its exit status with its combined output.
+fn run_status(mut command: Command, control: Arc<Control>) -> Result<(ExitStatus, String)> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -154,16 +171,7 @@ pub fn run(mut command: Command, control: Arc<Control>) -> Result<String> {
     if control.cancelled.load(Ordering::Relaxed) && !status.success() {
         return Err("Cancelled. The source was not modified. Recovery may have left incomplete files at the destination.".into());
     }
-    let report = format!("{stdout}\n{stderr}").trim().to_owned();
-    if !status.success() {
-        return Err(if report.is_empty() {
-            format!("Operation exited with {status}")
-        } else {
-            report
-        }
-        .into());
-    }
-    Ok(report)
+    Ok((status, format!("{stdout}\n{stderr}").trim().to_owned()))
 }
 
 pub fn inspect(browser: Browser, scrub: bool, cancel: Arc<Control>) -> Result<String> {
@@ -176,6 +184,109 @@ pub fn inspect(browser: Browser, scrub: bool, cancel: Arc<Control>) -> Result<St
     }
     command.arg(&browser.path);
     run(command, cancel)
+}
+
+/// Let an image store permissions and the hidden attribute, then reopen it.
+pub fn upgrade(browser: Browser, cancel: Arc<Control>) -> Result<(Browser, String)> {
+    if browser.device.is_some() {
+        return Err("Upgrade a device through its Terminal review.".into());
+    }
+    drop(browser.volume()?);
+    let mut command = Command::new(companion()?);
+    command.arg("upgrade").arg(&browser.path);
+    let report = run(command, cancel)?;
+    Ok((Browser::open(browser.path)?, report))
+}
+
+/// What `carryfs fsck` does with the selected source.
+pub enum Fsck {
+    /// Diagnose and print the repair plan; read-only.
+    Plan,
+    /// Export accessible files to a new directory; read-only.
+    Recover(PathBuf),
+    /// Rebuild accessible files into a new verified image; read-only.
+    Rebuild(PathBuf),
+    /// Repair an image in place. The tool refuses blocked or lossy plans.
+    Repair,
+}
+
+/// Run `carryfs fsck`. Its exit status separates clean (0), changed or
+/// rebuilt (1), damaged or partial (4), and failed (8) results.
+pub fn fsck(source: Source, mode: Fsck, cancel: Arc<Control>) -> Result<String> {
+    // Damaged volumes may not open, so recheck only the device's identity.
+    if let Some(device) = &source.device
+        && crate::platform::details(device)?.mount.is_some()
+    {
+        return Err("Unmount the volume before diagnosis or recovery.".into());
+    }
+    let mut command = Command::new(companion()?);
+    command.arg("fsck");
+    let success = match &mode {
+        Fsck::Plan => {
+            command.arg("--plan");
+            0
+        }
+        Fsck::Recover(destination) => {
+            command.arg("--recover").arg(new_path(destination)?);
+            0
+        }
+        Fsck::Rebuild(destination) => {
+            command
+                .args(["--repair", "--verify-data", "--output"])
+                .arg(new_path(destination)?);
+            1
+        }
+        Fsck::Repair if source.device.is_none() => {
+            // The tool refuses an existing report; a later repair needs a new name.
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            let mut report = source.path.clone().into_os_string();
+            report.push(format!(".repair-{stamp}.txt"));
+            command.arg("--repair").arg("--report").arg(report);
+            1
+        }
+        Fsck::Repair => return Err("Repair a device by rebuilding it into a new image.".into()),
+    };
+    if let Some(device) = &source.device {
+        command.args(["--bytes", &device.bytes.to_string()]);
+    }
+    command.arg("--").arg(&source.path);
+    let (status, report) = run_status(command, cancel)?;
+    // Lead with the outcome: the tool prints the source path first.
+    let report = report
+        .lines()
+        .filter(|line| !line.starts_with("Source: "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let report = match &mode {
+        Fsck::Plan => report,
+        _ => {
+            let outcome = report.lines().next_back().unwrap_or("").to_owned();
+            format!("{outcome}\n{report}")
+        }
+    };
+    if status.code() == Some(success) {
+        Ok(report)
+    } else {
+        Err(report.into())
+    }
+}
+
+/// `destination` with its parent resolved once, so the tool opens a new name
+/// in the folder the user chose.
+fn new_path(destination: &Path) -> Result<PathBuf> {
+    let parent = std::fs::canonicalize(
+        destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
+    Ok(parent.join(
+        destination
+            .file_name()
+            .ok_or("Choose a new destination name")?,
+    ))
 }
 
 pub fn recover(browser: Browser, destination: &Path, cancel: Arc<Control>) -> Result<String> {
@@ -197,19 +308,11 @@ pub fn recover(browser: Browser, destination: &Path, cancel: Arc<Control>) -> Re
     if let Some(device) = &browser.device {
         command.args(["--bytes", &device.bytes.to_string()]);
     }
-    // Resolve the user's chosen parent once; the CLI then opens every component without following links.
-    let parent = std::fs::canonicalize(
-        destination
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?;
-    let destination = parent.join(
-        destination
-            .file_name()
-            .ok_or("Choose a new destination name")?,
-    );
-    command.arg(&browser.path).arg(source).arg(destination);
+    // The CLI then opens every component without following links.
+    command
+        .arg(&browser.path)
+        .arg(source)
+        .arg(new_path(destination)?);
     run(command, cancel)
 }
 

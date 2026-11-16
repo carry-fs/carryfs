@@ -4,7 +4,8 @@ mod operation;
 mod platform;
 
 use carryfs_core::ObjectKind;
-use model::{Browser, bytes, kind};
+use model::{Browser, Source, bytes, kind, permissions};
+use operation::Fsck;
 use platform::{Device, DeviceAction, DeviceKind, Versions};
 use rune::tok::{self, TextStyle, type_};
 use rune::{
@@ -32,6 +33,9 @@ enum Tab {
 }
 enum Update {
     Browser(Box<Browser>),
+    /// A browser reopened after a change, with the change's report.
+    Reopened(Box<Browser>, String),
+    Damaged(Box<Damaged>),
     Device(Box<Device>),
     Devices(Vec<Device>),
     Report(String),
@@ -54,10 +58,35 @@ struct ScanResult {
 struct Integrity {
     structure: Option<ScanResult>,
     scrub: Option<ScanResult>,
+    plan: Option<ScanResult>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    Structure,
+    Data,
+    Plan,
+}
+impl ScanResult {
+    /// A diagnosed plan the tool would apply in place: damaged, but neither
+    /// blocked nor losing data. The tool itself refuses any other plan.
+    fn repairable(&self) -> bool {
+        !self.passed
+            && self.summary.starts_with("Repair plan:")
+            && self.summary.contains("possible data loss: false")
+            && !self.summary.contains("In-place repair blocked")
+    }
+}
+
+/// A source whose metadata is too damaged to open.
+struct Damaged {
+    source: Source,
+    error: String,
+    plan: Option<ScanResult>,
 }
 
 struct State {
     browser: Option<Browser>,
+    damaged: Option<Damaged>,
     device: Option<Device>,
     devices: Vec<Device>,
     show_system: bool,
@@ -66,7 +95,8 @@ struct State {
     startup_image: Option<PathBuf>,
     elapsed_seconds: u64,
     integrity: BTreeMap<VolumeKey, Integrity>,
-    inspection: Option<(VolumeKey, bool)>,
+    /// The running scan and its volume; `None` is the damaged source.
+    inspection: Option<(Option<VolumeKey>, Scan)>,
     images: Vec<PathBuf>,
     tab: Tab,
     selected: Option<usize>,
@@ -83,11 +113,14 @@ struct State {
     format: Option<Device>,
     confirmation: TextEdit,
     eject: Option<Device>,
+    upgrade: bool,
+    repair: bool,
 }
 impl State {
     fn empty() -> Self {
         Self {
             browser: None,
+            damaged: None,
             device: None,
             devices: Vec::new(),
             show_system: false,
@@ -113,6 +146,8 @@ impl State {
             format: None,
             confirmation: TextEdit::new(""),
             eject: None,
+            upgrade: false,
+            repair: false,
         }
     }
     fn target_name(&self) -> String {
@@ -124,44 +159,59 @@ impl State {
     }
     fn apply(&mut self, result: Result<Update, String>) {
         self.error = result.is_err();
-        if let Some((key, scrub)) = self.inspection.take() {
+        if let Some((key, scan)) = self.inspection.take() {
             let message = match &result {
                 Ok(Update::Report(message)) => message.as_str(),
                 Err(message) => message.as_str(),
                 _ => "No result reported",
             };
-            let scan = ScanResult {
-                summary: message
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .chars()
-                    .take(180)
-                    .collect(),
+            let result_scan = ScanResult {
+                summary: message.chars().take(8 * 1024).collect(),
                 passed: !self.error,
                 at: SystemTime::now(),
             };
-            let state = self.integrity.entry(key).or_default();
-            if scrub {
-                state.scrub = Some(scan);
-            } else {
-                state.structure = Some(scan);
+            match key {
+                Some(key) => {
+                    let state = self.integrity.entry(key).or_default();
+                    *match scan {
+                        Scan::Structure => &mut state.structure,
+                        Scan::Data => &mut state.scrub,
+                        Scan::Plan => &mut state.plan,
+                    } = Some(result_scan);
+                }
+                None => {
+                    if let Some(damaged) = &mut self.damaged {
+                        damaged.plan = Some(result_scan);
+                    }
+                }
             }
         }
 
         match result {
-            Ok(Update::Browser(browser)) => {
-                self.status = format!("{} items · Read-only access", browser.entries.len());
-                self.device = browser.device.clone();
-                if browser.device.is_none() && !self.images.contains(&browser.path) {
-                    self.images.push(browser.path.clone());
+            Ok(Update::Browser(browser)) => self.apply_browser(*browser),
+            Ok(Update::Reopened(browser, report)) => {
+                self.apply_browser(*browser);
+                self.status = report;
+            }
+            Ok(Update::Damaged(damaged)) => {
+                self.status = format!(
+                    "Cannot open {}: {}. Diagnose damage or recover files from Overview.",
+                    damaged.source.name(),
+                    damaged.error
+                );
+                self.error = true;
+                self.device = damaged.source.device.clone();
+                if damaged.source.device.is_none() && !self.images.contains(&damaged.source.path) {
+                    self.images.push(damaged.source.path.clone());
                 }
-                self.browser = Some(*browser);
+                self.browser = None;
                 self.selected = None;
+                self.damaged = Some(*damaged);
             }
             Ok(Update::Device(device)) => {
                 self.status = format!("Selected {}", device.id);
                 self.device = Some(*device);
+                self.damaged = None;
                 self.browser = None;
                 self.selected = None;
             }
@@ -173,6 +223,7 @@ impl State {
                     {
                         self.device = None;
                         self.browser = None;
+                        self.damaged = None;
                         self.selected = None;
                         self.status="The selected device disconnected. Its operations were not redirected to another device.".into();
                     } else {
@@ -204,6 +255,16 @@ impl State {
             }
             self.task.clear();
         }
+    }
+    fn apply_browser(&mut self, browser: Browser) {
+        self.status = format!("{} items · Read-only access", browser.entries.len());
+        self.device = browser.device.clone();
+        if browser.device.is_none() && !self.images.contains(&browser.path) {
+            self.images.push(browser.path.clone());
+        }
+        self.browser = Some(browser);
+        self.damaged = None;
+        self.selected = None;
     }
     fn start(
         &mut self,
@@ -245,8 +306,10 @@ impl State {
         self.show_details = false;
         self.format = None;
         self.eject = None;
+        self.upgrade = false;
+        self.repair = false;
         self.start("Open image", false, tx, move |_| {
-            Browser::open(path).map(|b| Update::Browser(Box::new(b)))
+            opened(Browser::open(path.clone()), Source { path, device: None })
         });
         self.target = requested_target;
     }
@@ -259,6 +322,8 @@ impl State {
         self.show_details = false;
         self.format = None;
         self.eject = None;
+        self.upgrade = false;
+        self.repair = false;
         self.start("Read device information", false, tx, move |_| {
             platform::details(&device).map(|d| Update::Device(Box::new(d)))
         });
@@ -291,12 +356,32 @@ impl State {
             self.navigate(trail, tx);
         }
     }
-    fn inspect(&mut self, scrub: bool, tx: &mut Tx) {
+    /// The selected volume's location, whether it opened or is damaged.
+    fn source(&self) -> Option<Source> {
+        self.browser
+            .as_ref()
+            .map(Browser::source)
+            .or_else(|| self.damaged.as_ref().map(|d| d.source.clone()))
+    }
+    fn inspect(&mut self, scan: Scan, tx: &mut Tx) {
         if self.pending.is_some() {
             return;
         }
-        if let Some(browser) = self.browser.clone() {
-            self.inspection = Some(((browser.info.uuid, browser.info.generation), scrub));
+        let key = self
+            .browser
+            .as_ref()
+            .map(|b| (b.info.uuid, b.info.generation));
+        if scan == Scan::Plan {
+            let Some(source) = self.source() else {
+                return;
+            };
+            self.inspection = Some((key, scan));
+            self.start("Diagnose damage", true, tx, move |cancel| {
+                operation::fsck(source, Fsck::Plan, cancel).map(Update::Report)
+            });
+        } else if let Some(browser) = self.browser.clone() {
+            self.inspection = Some((key, scan));
+            let scrub = scan == Scan::Data;
             self.start(
                 if scrub {
                     "Scrub file data"
@@ -307,6 +392,32 @@ impl State {
                 tx,
                 move |cancel| operation::inspect(browser, scrub, cancel).map(Update::Report),
             );
+        }
+    }
+    fn repair(&mut self, tx: &mut Tx) {
+        let Some(source) = self.source() else {
+            return;
+        };
+        self.repair = false;
+        self.start("Repair volume", true, tx, move |cancel| {
+            let path = source.path.clone();
+            let report = operation::fsck(source, Fsck::Repair, cancel)?;
+            Ok(Update::Reopened(Box::new(Browser::open(path)?), report))
+        });
+    }
+    fn upgrade(&mut self, tx: &mut Tx) {
+        let Some(browser) = self.browser.clone() else {
+            return;
+        };
+        self.upgrade = false;
+        match browser.device.clone() {
+            Some(device) => self.start("Prepare volume upgrade", false, tx, move |_| {
+                platform::upgrade_in_terminal(&device).map(Update::Report)
+            }),
+            None => self.start("Upgrade volume", true, tx, move |cancel| {
+                operation::upgrade(browser, cancel)
+                    .map(|(b, report)| Update::Reopened(Box::new(b), report))
+            }),
         }
     }
     fn device_action(&mut self, action: DeviceAction, tx: &mut Tx) {
@@ -387,6 +498,18 @@ fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
             ));
             true
         }
+    }
+}
+/// A browser, or the damaged source when its metadata is corrupt.
+fn opened(result: platform::Result<Browser>, source: Source) -> platform::Result<Update> {
+    match result {
+        Ok(browser) => Ok(Update::Browser(Box::new(browser))),
+        Err(error) if model::corrupt(&*error) => Ok(Update::Damaged(Box::new(Damaged {
+            source,
+            error: error.to_string(),
+            plan: None,
+        }))),
+        Err(error) => Err(error),
     }
 }
 fn label(value: impl Into<String>, k: &Kit) -> El {
@@ -573,7 +696,10 @@ fn sidebar(s: &State, k: &Kit) -> El {
         let chosen = s
             .browser
             .as_ref()
-            .is_some_and(|b| b.device.is_none() && b.path == *path);
+            .is_some_and(|b| b.device.is_none() && b.path == *path)
+            || s.damaged
+                .as_ref()
+                .is_some_and(|d| d.source.device.is_none() && d.source.path == *path);
         let image = path.clone();
         let title = path
             .file_name()
@@ -701,7 +827,8 @@ fn sidebar(s: &State, k: &Kit) -> El {
         .child(muted(format!("Manager {}", env!("CARGO_PKG_VERSION")), k))
 }
 
-fn scan_detail(title: &str, result: Option<&ScanResult>, k: &Kit) -> El {
+/// `labels` name a passed and a failed result.
+fn scan_detail(title: &str, result: Option<&ScanResult>, labels: (&str, &str), k: &Kit) -> El {
     let value = result.map_or_else(
         || "Not checked yet".to_owned(),
         |result| {
@@ -711,21 +838,27 @@ fn scan_detail(title: &str, result: Option<&ScanResult>, k: &Kit) -> El {
                 .map_or(0, |d| d.as_secs());
             format!(
                 "{} · {:02}:{:02} UTC",
-                if result.passed {
-                    "Passed"
-                } else {
-                    "Incomplete / failed"
-                },
+                if result.passed { labels.0 } else { labels.1 },
                 seconds / 3600 % 24,
                 seconds / 60 % 60
             )
         },
     );
     let node = detail(title, value, k);
-    if let Some(result) = result {
-        node.help(&result.summary)
-    } else {
-        node
+    match result {
+        // The CLI's first line carries the counts: objects, pages, blocks, units.
+        Some(result) => {
+            let first = result.summary.lines().next().unwrap_or("");
+            node.child(
+                muted(
+                    first.split_once(": ").map_or(first, |(_, counts)| counts),
+                    k,
+                )
+                .wrap(),
+            )
+            .help(first)
+        }
+        None => node,
     }
 }
 fn overview(s: &State, k: &Kit) -> El {
@@ -738,6 +871,7 @@ fn overview(s: &State, k: &Kit) -> El {
         let used = total.saturating_sub(free);
         let key = (browser.info.uuid, browser.info.generation);
         let integrity = s.integrity.get(&key);
+        let plan = integrity.and_then(|i| i.plan.as_ref());
         let mut title = row()
             .w_full()
             .gap(16.0)
@@ -749,6 +883,7 @@ fn overview(s: &State, k: &Kit) -> El {
                     .disabled(busy)
                     .on_press(|s: &mut State| {
                         s.browser = None;
+                        s.damaged = None;
                         s.selected = None;
                         s.status = "Image closed.".into();
                         s.error = false;
@@ -797,17 +932,33 @@ fn overview(s: &State, k: &Kit) -> El {
             .child(label("Integrity", k))
             .child(
                 row()
+                    .w_full()
                     .gap(40.0)
-                    .child(scan_detail(
-                        "Structure",
-                        integrity.and_then(|i| i.structure.as_ref()),
-                        k,
-                    ))
-                    .child(scan_detail(
-                        "File data",
-                        integrity.and_then(|i| i.scrub.as_ref()),
-                        k,
-                    )),
+                    .child(
+                        scan_detail(
+                            "Structure",
+                            integrity.and_then(|i| i.structure.as_ref()),
+                            ("Passed", "Incomplete / failed"),
+                            k,
+                        )
+                        .grow(1.0)
+                        .min_w(0.0),
+                    )
+                    .child(
+                        scan_detail(
+                            "File data",
+                            integrity.and_then(|i| i.scrub.as_ref()),
+                            ("Passed", "Incomplete / failed"),
+                            k,
+                        )
+                        .grow(1.0)
+                        .min_w(0.0),
+                    )
+                    .child(
+                        scan_detail("Damage", plan, ("None found", "Repairs needed"), k)
+                            .grow(1.0)
+                            .min_w(0.0),
+                    ),
             )
             .child(
                 row()
@@ -815,43 +966,136 @@ fn overview(s: &State, k: &Kit) -> El {
                     .child(
                         Button::new("Check structure")
                             .disabled(busy)
-                            .on_press_tx(|s: &mut State, tx| s.inspect(false, tx))
+                            .on_press_tx(|s: &mut State, tx| s.inspect(Scan::Structure, tx))
                             .build(k)
                             .key("check"),
                     )
                     .child(
                         Button::new("Scrub file data")
                             .disabled(busy)
-                            .on_press_tx(|s: &mut State, tx| s.inspect(true, tx))
+                            .on_press_tx(|s: &mut State, tx| s.inspect(Scan::Data, tx))
                             .build(k)
                             .key("scrub"),
                     )
                     .child(
-                        Button::new("Recover files…")
+                        Button::new("Diagnose damage")
                             .disabled(busy)
-                            .on_press_tx(recover_dialog)
+                            .on_press_tx(|s: &mut State, tx| s.inspect(Scan::Plan, tx))
                             .build(k)
-                            .key("recover"),
+                            .key("diagnose"),
                     ),
             )
             .child(
                 muted(
-                    "Checks read the source. Recovery saves accessible files to a new destination.",
+                    "Checks and diagnosis only read the source. Diagnosis lists what an offline repair would change.",
                     k,
                 )
                 .wrap(),
+            );
+        body = body.child(recovery(s, &browser.source(), plan, k));
+        body = body
+            .child(rule(k))
+            .child(label("Format features", k))
+            .child(
+                row()
+                    .gap(40.0)
+                    .child(detail(
+                        "Permissions & hidden flag",
+                        if browser.attributes {
+                            "Stored"
+                        } else {
+                            "Not stored · files read as rw-r--r--, folders as rwxr-xr-x"
+                        },
+                        k,
+                    ))
+                    .child(detail(
+                        "Preallocation",
+                        if browser.preallocation {
+                            "Enabled"
+                        } else {
+                            "Not used"
+                        },
+                        k,
+                    ))
+                    .child(detail(
+                        "Hard links",
+                        if browser.links { "Used" } else { "Not used" },
+                        k,
+                    )),
             )
             .child(
-                Button::new(if s.show_details {
-                    "Hide volume details"
-                } else {
-                    "Show volume details"
-                })
-                .variant(ButtonVariant::Ghost)
-                .on_press(|s: &mut State| s.show_details = !s.show_details)
-                .build(k)
-                .key("volume-details"),
+                muted(
+                    if browser.attributes || browser.preallocation || browser.links {
+                        "Releases older than these features, including CarryFS 0.1.0, cannot mount this volume. Use a current CarryFS on every computer that uses it."
+                    } else {
+                        "Every CarryFS release can mount this volume. Preallocation and hard links turn on the first time software reserves space or links a file on it."
+                    },
+                    k,
+                )
+                .wrap(),
             );
+        if !browser.attributes {
+            body = body.child(
+                Button::new("Upgrade volume…")
+                    .disabled(busy)
+                    .on_press_tx(|s: &mut State, tx| {
+                        s.upgrade = true;
+                        tx.scroll_into_view("upgrade-confirmation");
+                    })
+                    .build(k)
+                    .key("upgrade"),
+            );
+        }
+        if s.upgrade {
+            body = body.child(
+                col()
+                    .w_full()
+                    .gap(12.0)
+                    .key("upgrade-confirmation")
+                    .child(
+                    label(
+                        format!(
+                            "Upgrade {} to store permissions and the hidden flag? Files are kept. CarryFS 0.1.0 can no longer mount it, and the upgrade cannot be undone.",
+                            browser.info.name()
+                        ),
+                        k,
+                    )
+                    .wrap(),
+                )
+                .child(
+                    row()
+                        .gap(8.0)
+                        .child(
+                            Button::new(if browser.device.is_some() {
+                                "Review upgrade in Terminal…"
+                            } else {
+                                "Upgrade volume"
+                            })
+                            .disabled(busy)
+                            .on_press_tx(|s: &mut State, tx| s.upgrade(tx))
+                            .build(k)
+                            .key("confirm-upgrade"),
+                        )
+                        .child(
+                            Button::new("Keep current format")
+                                .on_press(|s: &mut State| s.upgrade = false)
+                                .build(k)
+                                .key("cancel-upgrade"),
+                        ),
+                ),
+            );
+        }
+        body = body.child(
+            Button::new(if s.show_details {
+                "Hide volume details"
+            } else {
+                "Show volume details"
+            })
+            .variant(ButtonVariant::Ghost)
+            .on_press(|s: &mut State| s.show_details = !s.show_details)
+            .build(k)
+            .key("volume-details"),
+        );
         if s.show_details {
             body = body
                 .child(detail("Source", browser.path.display().to_string(), k))
@@ -867,6 +1111,59 @@ fn overview(s: &State, k: &Kit) -> El {
                     k,
                 ));
         }
+    } else if let Some(damaged) = &s.damaged {
+        let image = damaged.source.device.is_none();
+        let mut title = row()
+            .w_full()
+            .gap(16.0)
+            .items_center()
+            .child(heading(damaged.source.name(), k).grow(1.0).min_w(0.0));
+        if image {
+            title = title.child(
+                Button::new("Close image")
+                    .disabled(busy)
+                    .on_press(|s: &mut State| {
+                        s.damaged = None;
+                        s.status = "Image closed.".into();
+                        s.error = false;
+                    })
+                    .build(k)
+                    .key("close-image"),
+            );
+        }
+        body = body
+            .child(title)
+            .child(muted(
+                format!(
+                    "{} · Cannot be opened",
+                    if image { "Image file" } else { "Device" }
+                ),
+                k,
+            ))
+            .child(label(format!("Damaged metadata: {}", damaged.error), k).wrap_anywhere())
+            .child(scan_detail(
+                "Damage",
+                damaged.plan.as_ref(),
+                ("None found", "Repairs needed"),
+                k,
+            ))
+            .child(
+                row().child(
+                    Button::new("Diagnose damage")
+                        .disabled(busy)
+                        .on_press_tx(|s: &mut State, tx| s.inspect(Scan::Plan, tx))
+                        .build(k)
+                        .key("diagnose"),
+                ),
+            )
+            .child(
+                muted(
+                    "Diagnosis only reads the source and lists what an offline repair would change.",
+                    k,
+                )
+                .wrap(),
+            )
+            .child(recovery(s, &damaged.source, damaged.plan.as_ref(), k));
     } else if let Some(device) = &s.device {
         let state = if device.mount.is_some() {
             "Mounted"
@@ -884,7 +1181,7 @@ fn overview(s: &State, k: &Kit) -> El {
             .child(rule(k)).child(label("Inspect this source",k))
             .child(muted(if device.whole && !device.carryfs(){"Select a volume under this disk to inspect its filesystem."}else if device.mount.is_some(){"Unmount the volume before inspection, checks, or recovery."}else{"Open the volume read-only to inspect its CarryFS format, browse files, and run maintenance. Administrator approval may be required."},k).wrap())
             .child(Button::new("Open read-only").variant(ButtonVariant::Contrast).disabled(busy||device.mount.is_some()||(device.whole&&!device.carryfs()))
-                .on_press_tx(|s:&mut State,tx|if let Some(device)=s.device.clone(){s.start("Open device read-only",false,tx,move |_|Browser::open_device(device).map(|b|Update::Browser(Box::new(b))));}).build(k).key("inspect-device"));
+                .on_press_tx(|s:&mut State,tx|if let Some(device)=s.device.clone(){s.start("Open device read-only",false,tx,move |_|{let source=Source{path:device.path(),device:Some(device.clone())};opened(Browser::open_device(device),source)});}).build(k).key("inspect-device"));
     } else {
         body=body.child(heading("Choose a source",k))
             .child(label("Select a system device in the sidebar, or open a CarryFS image file.",k).wrap())
@@ -977,6 +1274,139 @@ fn overview(s: &State, k: &Kit) -> El {
     }
     body
 }
+/// Diagnosis results, recovery, and in-place repair for a source that may not open.
+fn recovery(s: &State, source: &Source, plan: Option<&ScanResult>, k: &Kit) -> El {
+    let busy = s.pending.is_some();
+    let mut body = col().w_full().gap(24.0);
+    if let Some(plan) = plan.filter(|plan| !plan.passed) {
+        let actions: Vec<_> = plan.summary.lines().skip(1).take(12).collect();
+        body = body.child(muted(actions.join("\n"), k).wrap_anywhere());
+    }
+    body = body
+            .child(rule(k))
+            .child(label("Recovery", k))
+            .child(
+                row()
+                    .gap(8.0)
+                    .child(
+                        Button::new("Recover files…")
+                            .disabled(busy)
+                            .on_press_tx(|s: &mut State, tx| fsck_dialog(s, tx, false))
+                            .build(k)
+                            .key("recover"),
+                    )
+                    .child(
+                        Button::new("Rebuild into new image…")
+                            .disabled(busy)
+                            .on_press_tx(|s: &mut State, tx| fsck_dialog(s, tx, true))
+                            .build(k)
+                            .key("rebuild"),
+                    ),
+            )
+            .child(
+                muted(
+                    "Both keep the source read-only and work around damaged metadata. Recovery exports accessible files, with their permissions, hidden flags and hard links, to a new folder. Rebuild copies them into a new verified image. Each writes a report beside its destination; unreadable ranges stay missing, never zero-filled.",
+                    k,
+                )
+                .wrap(),
+            );
+    if source.device.is_none() && plan.is_some_and(ScanResult::repairable) {
+        body = body.child(
+            Button::new("Repair in place…")
+                .disabled(busy)
+                .on_press_tx(|s: &mut State, tx| {
+                    s.repair = true;
+                    tx.scroll_into_view("repair-confirmation");
+                })
+                .build(k)
+                .key("repair"),
+        );
+    } else if plan.is_some_and(|plan| !plan.passed) {
+        body = body.child(
+                muted(
+                    "In-place repair is not offered here: it is blocked, would discard data, or the source is a device. Recover or rebuild instead; RECOVERY.md covers the command-line options.",
+                    k,
+                )
+                .wrap(),
+            );
+    }
+    if s.repair {
+        body = body.child(
+                col()
+                    .w_full()
+                    .gap(12.0)
+                    .key("repair-confirmation")
+                    .child(
+                        label(
+                            format!(
+                                "Repair {} in place? This rewrites its metadata. Recover or rebuild first if you need the current state.",
+                                source.name()
+                            ),
+                            k,
+                        )
+                        .wrap(),
+                    )
+                    .child(
+                        row()
+                            .gap(8.0)
+                            .child(
+                                Button::new("Repair volume")
+                                    .disabled(busy)
+                                    .on_press_tx(|s: &mut State, tx| s.repair(tx))
+                                    .build(k)
+                                    .key("confirm-repair"),
+                            )
+                            .child(
+                                Button::new("Cancel repair")
+                                    .on_press(|s: &mut State| s.repair = false)
+                                    .build(k)
+                                    .key("cancel-repair"),
+                            ),
+                    ),
+            );
+    }
+    body
+}
+/// Ask for a new destination, then recover files to a folder or rebuild a new image.
+fn fsck_dialog(s: &mut State, tx: &mut Tx, rebuild: bool) {
+    let Some(source) = s.source() else {
+        return;
+    };
+    tx.save_file(
+        FileDialogOptions {
+            title: if rebuild {
+                "Rebuild into a new image"
+            } else {
+                "Recover files to a new folder"
+            }
+            .into(),
+            file_name: Some(
+                if rebuild {
+                    "Recovered.cfs"
+                } else {
+                    "CarryFS recovered files"
+                }
+                .into(),
+            ),
+            ..Default::default()
+        },
+        move |s: &mut State, result, tx| match result {
+            Ok(Some(path)) => {
+                let source = source.clone();
+                let (name, mode) = if rebuild {
+                    ("Rebuild into new image", Fsck::Rebuild(path))
+                } else {
+                    ("Recover files", Fsck::Recover(path))
+                };
+                s.start(name, true, tx, move |cancel| {
+                    operation::fsck(source, mode, cancel).map(Update::Report)
+                });
+            }
+            Ok(None) => {}
+            Err(e) => s.apply(Err(e.to_string())),
+        },
+    );
+}
 fn recover_dialog(s: &mut State, tx: &mut Tx) {
     let Some(browser) = s.browser.clone() else {
         return;
@@ -1065,8 +1495,20 @@ fn files(s: &State, k: &Kit) -> El {
                         s.enter(index, tx);
                     }
                 })
-                .child(label(name, k).grow(1.0).min_w(0.0).truncate())
+                .child(
+                    text(name)
+                        .font(type_::BODY)
+                        .color(if entry.attrs.hidden {
+                            k.c.text_weak
+                        } else {
+                            k.c.text_base
+                        })
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .truncate(),
+                )
                 .child(muted(kind(entry.item.kind), k).w(100.0))
+                .child(muted(permissions(entry.attrs.mode), k).w(90.0))
                 .child(muted(size, k).w(90.0)),
         );
     }
@@ -1083,7 +1525,8 @@ fn files(s: &State, k: &Kit) -> El {
                 .w_full()
                 .gap(4.0)
                 .child(heading(browser.info.name(), k))
-                .child(muted(browser.path.display().to_string(), k).truncate_middle()),
+                .child(muted(browser.path.display().to_string(), k).truncate_middle())
+                .child(muted(folder_summary(browser), k)),
         )
         .child(
             row()
@@ -1114,6 +1557,7 @@ fn files(s: &State, k: &Kit) -> El {
                 .gap(12.0)
                 .child(muted("Name", k).grow(1.0))
                 .child(muted("Kind", k).w(100.0))
+                .child(muted("Permissions", k).w(90.0))
                 .child(muted("Size", k).w(90.0)),
         )
         .child(
@@ -1151,9 +1595,17 @@ fn files(s: &State, k: &Kit) -> El {
                         )
                         .child(muted(
                             format!(
-                                "{} · {} · Object {}",
+                                "{} · {} · {} allocated · {}{}{} · Object {}",
                                 kind(entry.item.kind),
                                 bytes(entry.attrs.size),
+                                bytes(entry.attrs.allocated_bytes),
+                                permissions(entry.attrs.mode),
+                                if entry.attrs.hidden { " · Hidden" } else { "" },
+                                if entry.attrs.links > 1 {
+                                    format!(" · {} names", entry.attrs.links)
+                                } else {
+                                    String::new()
+                                },
                                 entry.item.object.get()
                             ),
                             k,
@@ -1207,6 +1659,40 @@ fn files(s: &State, k: &Kit) -> El {
         ));
     }
     body
+}
+/// Counts and sizes of the listed folder's direct entries.
+fn folder_summary(browser: &Browser) -> String {
+    let count = |wanted| {
+        browser
+            .entries
+            .iter()
+            .filter(|e| e.item.kind == wanted)
+            .count()
+    };
+    let size: u64 = browser
+        .entries
+        .iter()
+        .filter(|e| e.item.kind == ObjectKind::File)
+        .map(|e| e.attrs.size)
+        .sum();
+    let allocated: u64 = browser
+        .entries
+        .iter()
+        .map(|e| e.attrs.allocated_bytes)
+        .sum();
+    let hidden = browser.entries.iter().filter(|e| e.attrs.hidden).count();
+    let mut summary = format!(
+        "Folders {} · Files {} · Symlinks {} · {} in files · {} allocated",
+        count(ObjectKind::Directory),
+        count(ObjectKind::File),
+        count(ObjectKind::Symlink),
+        bytes(size),
+        bytes(allocated)
+    );
+    if hidden > 0 {
+        summary += &format!(" · Hidden {hidden}");
+    }
+    summary
 }
 fn activity(s: &State, k: &Kit) -> El {
     let mut body = col().w_full().gap(20.0).child(heading("Activity", k));
@@ -1268,7 +1754,7 @@ fn software(s: &State, k: &Kit) -> El {
     let mut body=col().w_full().gap(24.0).child(heading("Software & updates",k))
         .child(muted("Software releases and volume formats are versioned separately.",k).wrap())
         .child(row().gap(40.0).child(detail("Manager",env!("CARGO_PKG_VERSION"),k)).child(detail("Bundled core",core,k))
-            .child(detail("Installed adapter",s.versions.installed.as_deref().unwrap_or("Not detected"),k)).child(detail("Supported format","Revision 1",k)))
+            .child(detail("Installed adapter",s.versions.installed.as_deref().unwrap_or("Not detected"),k)).child(detail("Supported format","Revision 1 · permissions, preallocation, hard links",k)))
         .child(detail("Latest stable release",s.versions.latest.as_deref().unwrap_or("Not checked"),k))
         .child(row().gap(8.0).child(Button::new("Check for updates").disabled(busy).on_press_tx(|s:&mut State,tx|s.start("Check software releases",false,tx,|_|platform::check_updates().map(Update::Versions))).build(k).key("check-updates"))
             .child(Button::new("Refresh installed version").disabled(busy).on_press(|s:&mut State|{let latest=s.versions.latest.clone();s.versions=platform::versions();s.versions.latest=latest;}).build(k).key("refresh-versions")))
@@ -1291,8 +1777,8 @@ fn software(s: &State, k: &Kit) -> El {
         );
     }
     body.child(rule(k)).child(label("Volume format upgrades",k))
-        .child(muted("Supported on-disk revision: 1. No in-place migration is currently available. Revision 1 is not frozen, so the revision number alone is not a compatibility guarantee between releases.",k).wrap())
-        .child(muted("For a future incompatible format, keep the original volume intact and migrate through a separate verified copy. A software rollback cannot undo a disk-format conversion.",k).wrap())
+        .child(muted("Revision 1 volumes gain features in place, without rewriting files. Upgrade volume, in a volume's Overview, adds permissions and the hidden flag. Preallocation and hard links turn on the first time software reserves space or links a file. None can be turned off.",k).wrap())
+        .child(muted("CarryFS 0.1.0 cannot mount a volume with any of them, and a software rollback does not undo them. Update CarryFS on every computer that uses a volume before upgrading it.",k).wrap())
 }
 fn view(s: &State, _: &mut Cx<State>) -> El {
     let t = tok::theme(false);
@@ -1405,8 +1891,7 @@ fn capture_sources(s: &mut State) {
     s.initialized = true;
     if let Some(path) = s.startup_image.take() {
         s.apply(
-            Browser::open(path)
-                .map(|b| Update::Browser(Box::new(b)))
+            opened(Browser::open(path.clone()), Source { path, device: None })
                 .map_err(|e| e.to_string()),
         );
     }

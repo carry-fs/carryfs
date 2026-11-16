@@ -1,6 +1,6 @@
 # CarryFS Manager
 
-A native Rune manager for system devices and CarryFS image files. The default sidebar lists external storage, CarryFS volumes, and opened images. Internal/system storage and unrelated virtual disk images are available through **Show system devices**, grouped under expandable disks and APFS containers. The device list supports wheel scrolling and a native scrollbar. Each source has **Overview**, **Files**, and **Activity** tabs. **Software & updates** is separate from volume operations.
+A native Rune manager for system devices and CarryFS image files. The default sidebar lists external storage, CarryFS volumes, and opened images. Internal/system storage and unrelated virtual disk images are available through **Show system devices**, grouped under expandable disks and APFS containers. The device list supports wheel scrolling and a native scrollbar. Each source has **Overview**, **Files**, and **Activity** tabs. A volume whose metadata is too damaged to open still appears, with diagnosis and recovery. **Software & updates** is separate from volume operations.
 
 ## Run
 
@@ -11,7 +11,7 @@ cargo build --manifest-path manager/Cargo.toml --locked
 manager/target/debug/carryfs-manager
 ```
 
-On macOS, build a complete app bundle containing the manager and its companion tool:
+On macOS, build a complete release app bundle containing the manager and its companion tool:
 
 ```sh
 manager/scripts/bundle-macos.sh
@@ -26,13 +26,15 @@ Unknown device kind is shown as unknown; omitted metadata is not treated as virt
 
 ## Work with a volume
 
-- **Overview** shows capacity, available space, maintenance reserve, format revision, and per-volume integrity results. **Show volume details** reveals the source path, UUID, and generation. **Check structure** validates metadata and ownership. **Scrub file data** also checks backed file contents. Both are read-only.
-- **Files** browses directories and exports regular files to new paths. Double-click a folder, or select it and choose **Open folder**. Symlinks are listed but are not followed by the browser. **Recover this folder…** extracts the current folder using the CLI's descriptor-relative destination handling, including symlinks and reports of unreadable ranges.
+- **Overview** shows capacity, available space, maintenance reserve, format revision, format features, and per-volume integrity results with their counts (objects, metadata pages, data and free blocks; scrubbed files, verified units, unreadable ranges). **Show volume details** reveals the source path, UUID, and generation. **Check structure** validates metadata and ownership. **Scrub file data** also checks backed file contents. **Diagnose damage** runs `carryfs fsck --plan` and lists what an offline repair would change. All three are read-only.
+- **Recovery** works around damaged metadata and keeps the source read-only. **Recover files…** exports accessible files with their permissions, hidden flags and hard links to a new folder (`fsck --recover`). **Rebuild into new image…** copies them into a new image and verifies its data (`fsck --repair --output --verify-data`). Each writes a report beside its destination. After a diagnosis that is neither blocked nor losing data, an image offers **Repair in place…**, which runs `fsck --repair` with a timestamped report beside the image and reopens it. Devices are not repaired in place; rebuild them instead. Discarding data (`--accept-data-loss`) stays a command-line decision; see `RECOVERY.md`.
+- **Format features** shows whether the volume stores permissions and the hidden flag, whether preallocation is enabled, and whether hard links are used. Any of them stops CarryFS 0.1.0 from mounting the volume. **Upgrade volume…** adds permissions and the hidden flag in place after an inline confirmation: an image is upgraded by the companion tool (`carryfs upgrade`) and reopened; a device opens a Terminal review that asks for its identifier again, checks its UUID, and runs the installed adapter's `upgrade` with administrator approval. Preallocation and hard links are never turned on by the manager; they turn on when software reserves space or links a file on a mounted volume.
+- **Files** browses directories and exports regular files to new paths. Each entry shows its permissions; hidden entries are dimmed. The header counts the folder's entries, file bytes, and allocated bytes; the selection shows allocated bytes, the hidden flag, and how many names a hard-linked file has. **Recover this folder…** exports the current folder with `carryfs get`. Double-click a folder, or select it and choose **Open folder**. Symlinks are listed but are not followed by the browser. **Recover this folder…** extracts the current folder using the CLI's descriptor-relative destination handling, including symlinks and reports of unreadable ranges.
 - **Activity** retains the latest 100 operation results in this session, with the source and completion time. Incomplete recovery is reported as incomplete, including when the CLI returns partial output.
 
 Checks, scrubs, and recovery run in child processes with bounded output capture. **Cancel operation** stops their process group. Closing the manager also stops an active cancellable process. Cancellation can leave incomplete recovery files; the source stays read-only. Single-file export runs on a worker thread and does not offer cancellation.
 
-Images are opened only for the duration of each operation. Before using a cached listing, the manager checks the volume UUID and generation. If either changed, reopen the image to refresh it. The selected device's identifier, size, and available UUID are rechecked before device actions. Disconnected devices do not silently redirect operations to a replacement device.
+Apart from **Upgrade volume…** and **Repair in place…**, the manager never writes to a source. Images are opened only for the duration of each operation. Before using a cached listing, the manager checks the volume UUID and generation. If either changed, reopen the image to refresh it. The selected device's identifier, size, and available UUID are rechecked before device actions. Disconnected devices do not silently redirect operations to a replacement device.
 
 ## Mount, eject, and format
 
@@ -48,7 +50,7 @@ Formatting destroys files. It is never used as an implicit format upgrade.
 
 **Check for updates** reads the project's stable release index. **Review installation…** opens the existing release installer in Terminal with an exact version. That installer verifies the package checksum, requires mounted adapters to be stopped, and asks for installation and administrator confirmation. The manager does not install anything automatically and does not offer a downgrade as an update. Refresh the installed version after the installer finishes.
 
-No in-place disk-format migration exists in CarryFS today. Revision 1 is not frozen, and the number alone does not establish compatibility across releases. A future incompatible format needs a separate, verified copy before reformatting the source. Software replacement does not migrate disk contents, and rolling back software does not undo a format conversion.
+Revision 1 volumes gain features in place through root feature bits; no file is rewritten. Neither feature can be turned off, and rolling back software does not undo one. Update CarryFS on every computer that uses a volume before upgrading it. A volume using a feature this manager does not know is refused with a request to update the manager.
 
 ## Disposable demo and headless checks
 

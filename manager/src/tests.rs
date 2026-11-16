@@ -581,3 +581,218 @@ fn long_directories_scroll_to_files_below_the_viewport() {
         "Last file is unreachable: {before} -> {after}"
     );
 }
+
+#[test]
+fn ui_upgrades_an_image_in_place_and_shows_stored_permissions() {
+    let fixture = Fixture::new();
+    let mut rt = runtime();
+    let browser = Browser::open(fixture.image()).unwrap();
+    rt.update(|s, _| s.apply(Ok(Update::Browser(Box::new(browser)))));
+    rt.frame(0.01);
+    let before = rt.state.browser.as_ref().unwrap().info.clone();
+    assert!(!rt.state.browser.as_ref().unwrap().attributes);
+    // The format section sits below the fold of the Overview.
+    rt.wheel(700.0, 400.0, -10000.0);
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "upgrade");
+    click(&mut rt, "cancel-upgrade");
+    assert!(!rt.state.upgrade);
+    click(&mut rt, "upgrade");
+    click(&mut rt, "confirm-upgrade");
+    finish(&mut rt);
+    let browser = rt.state.browser.as_ref().unwrap();
+    assert!(browser.attributes, "{}", rt.state.status);
+    assert!(!browser.preallocation);
+    assert_eq!(browser.info.uuid, before.uuid);
+    assert!(browser.info.generation > before.generation);
+    assert!(rt.state.status.contains("now stores permissions"));
+    assert!(
+        rt.find("upgrade").is_none(),
+        "An upgraded volume offers no upgrade"
+    );
+    assert_eq!(rt.state.history.last().unwrap().task, "Upgrade volume");
+
+    let mut volume =
+        Volume::open(ImageDevice::open(fixture.image(), MountMode::ReadWrite).unwrap()).unwrap();
+    let file = volume
+        .lookup(ROOT, &Name::parse("readme.txt").unwrap())
+        .unwrap();
+    let handle = volume.retain_object(file).unwrap();
+    volume
+        .set_attributes(
+            &handle,
+            carryfs_core::AttributeChange {
+                mode: Some(carryfs_core::Mode::from_host(0o600)),
+                hidden: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    volume.close_handle(handle).unwrap();
+    volume.eject().unwrap();
+    let browser = Browser::open(fixture.image()).unwrap();
+    let entry = browser
+        .entries
+        .iter()
+        .find(|e| e.item.object == file)
+        .unwrap();
+    assert_eq!(model::permissions(entry.attrs.mode), "rw-------");
+    assert!(entry.attrs.hidden);
+    assert!(folder_summary(&browser).ends_with("Hidden 1"));
+}
+
+#[test]
+fn permissions_read_like_ls() {
+    use carryfs_core::Mode;
+    assert_eq!(model::permissions(Mode::FILE), "rw-r--r--");
+    assert_eq!(model::permissions(Mode::DIRECTORY), "rwxr-xr-x");
+    assert_eq!(model::permissions(Mode::from_host(0o751)), "rwxr-x--x");
+    assert_eq!(model::permissions(Mode::from_host(0)), "---------");
+}
+
+/// Scroll the main view to its end, where recovery actions sit.
+fn reveal(rt: &mut Runtime<State>) {
+    rt.wheel(700.0, 400.0, -10000.0);
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+}
+
+/// Flip a byte in the newest root's allocation tree page.
+fn damage_allocation(image: &Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(image)
+        .unwrap();
+    let blocks = file.metadata().unwrap().len() / 4096;
+    let mut newest = (0, 0);
+    for slot in [256, blocks - 257] {
+        let mut root = [0; 4096];
+        file.seek(SeekFrom::Start(slot * 4096)).unwrap();
+        file.read_exact(&mut root).unwrap();
+        let field = |at: usize| u64::from_le_bytes(root[at..at + 8].try_into().unwrap());
+        if &root[..8] == b"CFSXROOT" && field(48) > newest.0 {
+            newest = (field(48), field(80));
+        }
+    }
+    let at = newest.1 * 4096;
+    let mut byte = [0];
+    file.seek(SeekFrom::Start(at)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    file.seek(SeekFrom::Start(at)).unwrap();
+    file.write_all(&[byte[0] ^ 1]).unwrap();
+}
+
+#[test]
+fn damaged_images_can_be_diagnosed_and_repaired_in_place() {
+    let fixture = Fixture::new();
+    damage_allocation(&fixture.image());
+    let mut rt = runtime();
+    click(&mut rt, "open-image");
+    rt.resolve_file_dialog(Some(fixture.image())).unwrap();
+    rt.frame(0.01);
+    while rt.state.pending.is_some() {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.state.browser.is_none());
+    assert!(rt.state.damaged.is_some(), "{}", rt.state.status);
+    assert!(rt.state.status.contains("Diagnose damage"));
+    assert!(rt.find("repair").is_none(), "Repair waits for a diagnosis");
+
+    click(&mut rt, "diagnose");
+    while rt.state.pending.is_some() {
+        rt.frame(1.0 / 60.0);
+    }
+    let plan = rt.state.damaged.as_ref().unwrap().plan.as_ref().unwrap();
+    assert!(!plan.passed && plan.repairable(), "{}", plan.summary);
+    assert!(plan.summary.contains("Inaccessible Allocation page"));
+
+    reveal(&mut rt);
+    click(&mut rt, "repair");
+    click(&mut rt, "confirm-repair");
+    finish(&mut rt);
+    assert!(rt.state.damaged.is_none());
+    assert!(rt.state.browser.is_some());
+    assert!(
+        rt.state.status.starts_with("Repair committed"),
+        "{}",
+        rt.state.status
+    );
+    let reports = fs::read_dir(&fixture.0)
+        .unwrap()
+        .filter(|e| {
+            let name = e.as_ref().unwrap().file_name();
+            name.to_string_lossy().starts_with("test.cfs.repair-")
+        })
+        .count();
+    assert_eq!(reports, 1, "The repair report sits beside the image");
+    click(&mut rt, "check");
+    finish(&mut rt);
+    assert!(rt.state.status.starts_with("Structural check passed"));
+}
+
+#[test]
+fn a_clean_volume_with_hard_links_rebuilds_into_a_new_verified_image() {
+    let fixture = Fixture::new();
+    let mut volume =
+        Volume::open(ImageDevice::open(fixture.image(), MountMode::ReadWrite).unwrap()).unwrap();
+    let readme = volume
+        .lookup(ROOT, &Name::parse("readme.txt").unwrap())
+        .unwrap();
+    let documents = volume
+        .lookup(ROOT, &Name::parse("Documents").unwrap())
+        .unwrap();
+    volume
+        .link(readme, documents, Name::parse("readme-link.txt").unwrap())
+        .unwrap();
+    volume.eject().unwrap();
+    let before = hash(&fixture.image());
+
+    let mut rt = runtime();
+    let browser = Browser::open(fixture.image()).unwrap();
+    assert!(browser.links);
+    let entry = browser
+        .entries
+        .iter()
+        .find(|e| e.item.object == readme)
+        .unwrap();
+    assert_eq!(entry.attrs.links, 2);
+    rt.update(|s, _| s.apply(Ok(Update::Browser(Box::new(browser)))));
+    rt.frame(0.01);
+
+    click(&mut rt, "diagnose");
+    finish(&mut rt);
+    let key = {
+        let b = rt.state.browser.as_ref().unwrap();
+        (b.info.uuid, b.info.generation)
+    };
+    assert!(rt.state.integrity[&key].plan.as_ref().unwrap().passed);
+
+    reveal(&mut rt);
+    click(&mut rt, "rebuild");
+    assert_eq!(rt.file_dialog().unwrap().0, FileDialogKind::Save);
+    let output = fixture.0.join("rebuilt.cfs");
+    rt.resolve_file_dialog(Some(output.clone())).unwrap();
+    rt.frame(0.01);
+    finish(&mut rt);
+    assert!(
+        rt.state.status.starts_with("Recovered image"),
+        "{}",
+        rt.state.status
+    );
+    assert!(fixture.0.join("rebuilt.cfs.recovery.json").is_file());
+    let rebuilt = Browser::open(output).unwrap();
+    assert_ne!(rebuilt.info.uuid, key.0);
+    assert!(rebuilt.links, "The rebuilt image keeps the hard link");
+    assert!(
+        rebuilt
+            .entries
+            .iter()
+            .any(|e| e.item.name.stored() == b"readme.txt" && e.attrs.links == 2)
+    );
+    assert_eq!(before, hash(&fixture.image()), "The source stays read-only");
+}

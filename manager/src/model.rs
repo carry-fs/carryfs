@@ -1,6 +1,6 @@
 use carryfs_core::{
-    Access, Attributes, DirectoryEntry, ImageDevice, MountMode, ObjectId, ObjectKind, ROOT, Space,
-    Volume, VolumeInfo,
+    Access, Attributes, DirectoryEntry, Error, ImageDevice, Mode, MountMode, ObjectId, ObjectKind,
+    ROOT, Space, Volume, VolumeInfo,
 };
 use std::{
     fs::{self, OpenOptions},
@@ -16,12 +16,47 @@ pub struct Entry {
     pub attrs: Attributes,
 }
 
+/// Where a volume lives, whether or not it opens.
+#[derive(Clone)]
+pub struct Source {
+    pub path: PathBuf,
+    pub device: Option<crate::platform::Device>,
+}
+
+impl Source {
+    pub fn name(&self) -> String {
+        match &self.device {
+            Some(device) => format!("{} · {}", device.name, device.id),
+            None => self
+                .path
+                .file_name()
+                .unwrap_or(self.path.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
+        }
+    }
+}
+
+/// Whether `error` is metadata damage that offline repair may handle.
+pub fn corrupt(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    matches!(
+        error.downcast_ref::<Error>(),
+        Some(Error::Corrupt(_) | Error::Corruption { .. })
+    )
+}
+
 #[derive(Clone)]
 pub struct Browser {
     pub device: Option<crate::platform::Device>,
     pub path: PathBuf,
     pub info: VolumeInfo,
     pub space: Space,
+    /// Stores permissions and the hidden attribute.
+    pub attributes: bool,
+    /// Permits preallocated (unwritten) extents.
+    pub preallocation: bool,
+    /// A file has had more than one name.
+    pub links: bool,
     pub trail: Vec<(ObjectId, String)>,
     pub entries: Vec<Entry>,
 }
@@ -33,33 +68,42 @@ impl Browser {
                 "Choose a regular CarryFS image file; raw devices are not supported.".into(),
             );
         }
-        let mut volume = Volume::open(ImageDevice::open(&path, MountMode::ReadOnly)?)?;
-        let info = volume.info()?;
-        let space = volume.space()?;
-        let entries = list(&mut volume, ROOT)?;
-        Ok(Self {
-            device: None,
-            path,
-            info,
-            space,
-            trail: vec![(ROOT, "/".into())],
-            entries,
-        })
+        Self::load(
+            None,
+            path.clone(),
+            ImageDevice::open(&path, MountMode::ReadOnly)?,
+        )
     }
 
     pub fn open_device(device: crate::platform::Device) -> Result<Self> {
-        let mut volume = Volume::open(crate::platform::open_device(&device)?)?;
-        let info = volume.info()?;
-        let space = volume.space()?;
-        let entries = list(&mut volume, ROOT)?;
+        let image = crate::platform::open_device(&device)?;
+        Self::load(Some(device.clone()), device.path(), image)
+    }
+
+    fn load(
+        device: Option<crate::platform::Device>,
+        path: PathBuf,
+        image: ImageDevice,
+    ) -> Result<Self> {
+        let mut volume = open_volume(image)?;
         Ok(Self {
-            path: device.path(),
-            device: Some(device),
-            info,
-            space,
+            info: volume.info()?,
+            space: volume.space()?,
+            attributes: volume.stores_attributes(),
+            preallocation: volume.supports_preallocation(),
+            links: volume.supports_links(),
+            entries: list(&mut volume, ROOT)?,
+            device,
+            path,
             trail: vec![(ROOT, "/".into())],
-            entries,
         })
+    }
+
+    pub fn source(&self) -> Source {
+        Source {
+            path: self.path.clone(),
+            device: self.device.clone(),
+        }
     }
 
     pub fn volume(&self) -> Result<Volume<ImageDevice>> {
@@ -67,7 +111,7 @@ impl Browser {
             Some(device) => crate::platform::open_device(device)?,
             None => ImageDevice::open(&self.path, MountMode::ReadOnly)?,
         };
-        let volume = Volume::open(device)?;
+        let volume = open_volume(device)?;
         let info = volume.info()?;
         if info.uuid != self.info.uuid || info.generation != self.info.generation {
             return Err(
@@ -125,6 +169,13 @@ impl Browser {
     }
 }
 
+fn open_volume(device: ImageDevice) -> Result<Volume<ImageDevice>> {
+    Volume::open(device).map_err(|error| match error {
+        Error::UnsupportedFormat => "This volume uses a CarryFS format feature this manager does not support. Update CarryFS Manager.".into(),
+        error => error.into(),
+    })
+}
+
 fn list(volume: &mut Volume<ImageDevice>, directory: ObjectId) -> Result<Vec<Entry>> {
     let handle = volume.open_directory(directory)?;
     let result = (|| -> Result<Vec<Entry>> {
@@ -163,6 +214,20 @@ pub fn bytes(value: u64) -> String {
     } else {
         format!("{amount:.1} {}", UNITS[unit])
     }
+}
+
+/// `rwxr-xr-x` for the nine permission bits.
+pub fn permissions(mode: Mode) -> String {
+    let bits = mode.bits();
+    (0..9)
+        .map(|i| {
+            if bits & (0o400 >> i) == 0 {
+                '-'
+            } else {
+                ['r', 'w', 'x'][i % 3]
+            }
+        })
+        .collect()
 }
 
 pub fn kind(kind: ObjectKind) -> &'static str {

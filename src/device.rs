@@ -462,6 +462,11 @@ impl BlockDevice for ImageDevice {
     }
 
     fn flush_durable(&mut self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if is_device_file(&self.file)? {
+            return flush_macos_device(&self.file)
+                .map_err(|source| Error::io("flush_durable", source));
+        }
         // On Apple targets Rust maps this call to F_FULLFSYNC and retries only
         // EINTR; unsupported or failed barriers are returned to the caller.
         self.file
@@ -627,6 +632,19 @@ fn open_parent_directory(_path: &Path) -> Result<File> {
             "durable directory synchronization is unavailable on this platform",
         ),
     ))
+}
+
+/// Ask a raw macOS disk to write out its volatile cache. Its node has no
+/// buffer cache and rejects F_FULLFSYNC with ENOTTY, as the adapters found.
+#[cfg(target_os = "macos")]
+fn flush_macos_device(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    const DKIOCSYNCHRONIZECACHE: libc::c_ulong = 0x2000_6416;
+    // SAFETY: DKIOCSYNCHRONIZECACHE takes no argument, on an open descriptor.
+    if unsafe { libc::ioctl(file.as_raw_fd(), DKIOCSYNCHRONIZECACHE) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn lock_file(file: &File) -> Result<()> {

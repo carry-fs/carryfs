@@ -1163,6 +1163,7 @@ fn normalize_catalog(
             mode: 0,
             attributes: 0,
             target: Vec::new(),
+            extra_links: 0,
         });
         plan.actions.push("Reconstruct the root directory".into());
         plan.data_loss = true;
@@ -1170,7 +1171,10 @@ fn normalize_catalog(
     if inodes[&1].kind != ObjectKind::Directory {
         return Err(Error::Corrupt("root inode is not a directory"));
     }
+    // A directory has exactly one entry. A file or symlink may have several:
+    // `links` holds its first and `extra` the rest.
     let mut links = BTreeMap::<u64, (u64, Name)>::new();
+    let mut extra = BTreeMap::<u64, Vec<(u64, Name)>>::new();
     let mut ambiguous = BTreeSet::new();
     for (key, value) in records.iter().filter(|(key, _)| key[8] == 2) {
         let parent = u64_be(&key[..8])?;
@@ -1180,7 +1184,9 @@ fn normalize_catalog(
             .is_some_and(|inode| inode.kind == ObjectKind::Directory)
             && entry.target != 1
             && inodes.get(&entry.target).is_some_and(|inode| {
-                inode.kind == entry.kind && inode.parent == parent && !inode.orphan
+                inode.kind == entry.kind
+                    && (inode.kind != ObjectKind::Directory || inode.parent == parent)
+                    && !inode.orphan
             })
             && crate::name::validate_disk_name(entry.stored_name, &key[9..]).is_ok();
         if !valid {
@@ -1197,8 +1203,15 @@ fn normalize_catalog(
             stored: entry.stored_name.to_vec(),
             folded: key[9..].to_vec(),
         };
-        if links.insert(entry.target, (parent, name)).is_some() {
-            ambiguous.insert(entry.target);
+        if inodes[&entry.target].kind == ObjectKind::Directory {
+            if links.insert(entry.target, (parent, name)).is_some() {
+                ambiguous.insert(entry.target);
+            }
+        } else if let std::collections::btree_map::Entry::Vacant(first) = links.entry(entry.target)
+        {
+            first.insert((parent, name));
+        } else {
+            extra.entry(entry.target).or_default().push((parent, name));
         }
     }
     for object in ambiguous {
@@ -1264,6 +1277,7 @@ fn normalize_catalog(
                         mode: 0,
                         attributes: 0,
                         target: Vec::new(),
+                        extra_links: 0,
                     };
                     inodes.insert(id, inode);
                     links.insert(id, (1, name.clone()));
@@ -1282,9 +1296,14 @@ fn normalize_catalog(
                 // Generated names for different object IDs cannot collide.
                 // Check only retained source entries using the catalog index.
                 let occupied = match records.get(&dirent_key(lost, &name.folded)) {
-                    Some(value) => links.get(&DirentValue::decode(value)?.target).is_some_and(
-                        |(parent, candidate)| *parent == lost && candidate.folded == name.folded,
-                    ),
+                    Some(value) => {
+                        let target = DirentValue::decode(value)?.target;
+                        let here = |(parent, candidate): &(u64, Name)| {
+                            *parent == lost && candidate.folded == name.folded
+                        };
+                        links.get(&target).is_some_and(here)
+                            || extra.get(&target).is_some_and(|rest| rest.iter().any(here))
+                    }
                     None => false,
                 };
                 if !occupied {
@@ -1325,17 +1344,26 @@ fn normalize_catalog(
         }
         inode.orphan = false;
         inode.parent = links.get(id).map_or(1, |(parent, _)| *parent);
+        inode.extra_links = extra.get(id).map_or(0, |rest| rest.len() as u32);
         inode.child_count = 0;
     }
-    for (id, (parent, name)) in &links {
+    let entries = links
+        .iter()
+        .map(|(id, (parent, name))| (*id, *parent, name))
+        .chain(
+            extra
+                .iter()
+                .flat_map(|(id, rest)| rest.iter().map(|(parent, name)| (*id, *parent, name))),
+        );
+    for (id, parent, name) in entries {
         let entry = DirentValue {
-            target: *id,
-            kind: inodes[id].kind,
+            target: id,
+            kind: inodes[&id].kind,
             stored_name: name.stored(),
         };
-        records.insert(dirent_key(*parent, &name.folded), entry.encode()?);
+        records.insert(dirent_key(parent, &name.folded), entry.encode()?);
         inodes
-            .get_mut(parent)
+            .get_mut(&parent)
             .ok_or(Error::Corrupt("recovery parent missing"))?
             .child_count += 1;
     }

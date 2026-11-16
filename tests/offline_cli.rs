@@ -475,6 +475,33 @@ fn fsck_plans_exports_and_repairs_the_original_offline() {
 }
 
 #[test]
+fn fsck_repair_keeps_every_name_of_a_hard_linked_file() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = Temp::new();
+    fs::create_dir_all(temp.0.join("source/sub")).unwrap();
+    fs::write(temp.0.join("source/a"), b"shared").unwrap();
+    fs::hard_link(temp.0.join("source/a"), temp.0.join("source/sub/b")).unwrap();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/backup"]);
+    damage_page(&temp, disk_root(&temp).allocation.block);
+    let repair = fsck(&temp, &["--repair", "image"]);
+    assert_eq!(
+        repair.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&repair.stderr)
+    );
+    temp.pass(&["check", "image"]);
+    temp.pass(&["get", "image", "/backup", "recovered"]);
+    let (a, b) = (temp.0.join("recovered/a"), temp.0.join("recovered/sub/b"));
+    assert_eq!(
+        fs::metadata(&a).unwrap().ino(),
+        fs::metadata(&b).unwrap().ino()
+    );
+    assert_eq!(fs::read(&b).unwrap(), b"shared");
+}
+
+#[test]
 fn fsck_refuses_implicit_data_loss_and_exports_with_a_broken_workspace() {
     let temp = Temp::new();
     fs::write(temp.0.join("source"), b"keep these bytes").unwrap();
@@ -734,4 +761,34 @@ fn fsck_new_image_refuses_existing_outputs_aliases_reports_and_invalid_flags() {
         assert!(!temp.0.join("busy-output.recovery.txt").exists());
     }
     drop(writer);
+}
+
+#[test]
+fn cli_keeps_hard_links_through_put_and_get() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = Temp::new();
+    let source = temp.0.join("source");
+    fs::create_dir_all(source.join("sub")).unwrap();
+    fs::write(source.join("a"), b"shared").unwrap();
+    fs::hard_link(source.join("a"), source.join("sub/b")).unwrap();
+    std::os::unix::fs::symlink("a", source.join("s")).unwrap();
+    fs::hard_link(source.join("s"), source.join("sub/s2")).unwrap();
+    let inode = |path: &Path| fs::symlink_metadata(path).unwrap().ino();
+    assert_eq!(inode(&source.join("s")), inode(&source.join("sub/s2")));
+
+    temp.pass(&["mkfs", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/backup"]);
+    temp.pass(&["check", "image"]);
+    temp.pass(&["get", "image", "/backup", "recovered"]);
+    let recovered = temp.0.join("recovered");
+    for (first, second) in [("a", "sub/b"), ("s", "sub/s2")] {
+        let (first, second) = (recovered.join(first), recovered.join(second));
+        assert_eq!(inode(&first), inode(&second), "{first:?}");
+        assert_eq!(fs::symlink_metadata(&first).unwrap().nlink(), 2);
+    }
+    assert_eq!(fs::read(recovered.join("sub/b")).unwrap(), b"shared");
+    assert_eq!(
+        fs::read_link(recovered.join("sub/s2")).unwrap(),
+        Path::new("a")
+    );
 }

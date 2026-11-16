@@ -401,17 +401,29 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
     }
     let mut pending = Some((source.to_path_buf(), parent, name.clone()));
     let mut stack: Vec<(fs::ReadDir, ObjectId)> = Vec::new();
+    // Imported files and symlinks with other host names, by device and
+    // inode, so those names link instead of copying.
+    // ponytail: one entry per such host object in the tree.
+    let mut linked = std::collections::HashMap::<(u64, u64), ObjectId>::new();
     let result = (|| -> Result<()> {
         loop {
             if let Some((source, parent, name)) = pending.take() {
+                use std::os::unix::fs::MetadataExt;
                 let metadata = fs::symlink_metadata(&source)?;
-                if metadata.is_dir() {
+                let host = (metadata.dev(), metadata.ino());
+                let shared = !metadata.is_dir() && metadata.nlink() > 1;
+                if let Some(&object) = linked.get(&host).filter(|_| shared) {
+                    volume.link(object, parent, name)?;
+                } else if metadata.is_dir() {
                     let entries = fs::read_dir(&source)?;
                     let directory =
                         volume.create_directory_with(parent, name, host_attributes(&metadata))?;
                     stack.push((entries, directory));
                 } else if metadata.is_file() {
-                    import_file(&mut volume, &source, parent, name, &image_metadata)?;
+                    import_file(&mut volume, &source, parent, name.clone(), &image_metadata)?;
+                    if shared {
+                        linked.insert(host, volume.lookup(parent, &name)?);
+                    }
                 } else if metadata.is_symlink() {
                     let target = fs::read_link(&source)?;
                     let object =
@@ -427,6 +439,9 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
                         );
                         volume.close_handle(handle)?;
                         result?;
+                    }
+                    if shared {
+                        linked.insert(host, object);
                     }
                 } else {
                     return Err(format!("unsupported import entry: {}", source.display()).into());

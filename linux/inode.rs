@@ -13,6 +13,7 @@ use kernel::prelude::*;
 use crate::glue;
 use crate::namei::{self, DIRECTORY, FILE, SYMLINK};
 use crate::ondisk::error::Error as Encoding;
+use crate::ondisk::format::extra_links;
 use crate::tree::{self, le_u64, Tree};
 use crate::vfs::{Dentry, Inode};
 use crate::{corrupt, dir, file, names, volume};
@@ -184,7 +185,7 @@ unsafe fn fill(
         (*inode).i_mode = mode as _;
         (*inode).i_uid = volume.uid;
         (*inode).i_gid = volume.gid;
-        bindings::set_nlink(inode, 1);
+        bindings::set_nlink(inode, extra_links(&record) + 1);
         glue::carryfs_i_size_write(inode, le_u64(&record, 16) as i64);
         (*inode).i_blocks = le_u64(&record, namei::ALLOCATED).saturating_mul(8) as _;
         set_inode_times(inode, &record);

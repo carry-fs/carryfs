@@ -62,6 +62,9 @@ pub trait ExtractionSink {
         target: &[u8],
         attributes: &Attributes,
     ) -> Result<()>;
+    /// Give the file or symlink already created at `existing` another name at
+    /// `path`. On failure extraction writes `path` as a separate copy.
+    fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -359,68 +362,90 @@ impl<D: BlockDevice> Volume<D> {
         let mut path = Vec::new();
         let mut pending = Some(object);
         let mut active = object;
+        // The first path of each object with other names, which later names
+        // link to. ponytail: one path per such object in the subtree.
+        let mut first_names = std::collections::BTreeMap::<ObjectId, Vec<Name>>::new();
         let result = (|| -> std::result::Result<(), ExtractionError> {
             loop {
                 if let Some(object) = pending.take() {
                     active = object;
                     let attributes = self.attributes_fresh(object)?;
-                    match attributes.kind {
-                        ObjectKind::File => {
-                            let mut file = destination
-                                .create_file(&path, &attributes)
-                                .map_err(ExtractionError::Destination)?;
-                            summary.objects += 1;
-                            file.set_len(attributes.size).map_err(|e| {
-                                ExtractionError::Destination(Error::io("size extraction output", e))
-                            })?;
-                            let mut counts = UnitCounts::default();
-                            let mut write = |offset, bytes: &[u8]| {
-                                file.seek(SeekFrom::Start(offset))
-                                    .and_then(|_| file.write_all(bytes))
-                                    .map_err(|error| Error::io("write extraction output", error))
-                            };
-                            let result = self.inspect_file(
-                                object,
-                                attributes.size,
-                                FileScan {
-                                    path: &path,
-                                    output: Some(&mut write),
-                                    report,
-                                    counts: &mut counts,
-                                    reuse_cache: false,
-                                },
-                            );
-                            summary.verified_bytes += counts.bytes;
-                            summary.unreadable_ranges += counts.unreadable;
-                            result?;
-                            summary.files += 1;
-                            path.pop();
-                        }
-                        ObjectKind::Symlink => {
-                            let target = self.read_symlink_fresh(object)?;
-                            destination
-                                .create_symlink(&path, &target, &attributes)
-                                .map_err(ExtractionError::Destination)?;
-                            summary.objects += 1;
-                            path.pop();
-                        }
-                        ObjectKind::Directory => {
-                            let handle = self.retain_object_fresh(object)?;
-                            // Register the handle before fallible work so every exit closes it.
-                            directories.push(Directory {
-                                object,
-                                handle,
-                                cursor: None,
-                                entries: Vec::new().into_iter(),
-                            });
-                            destination
-                                .create_directory(&path, &attributes)
-                                .map_err(ExtractionError::Destination)?;
-                            summary.objects += 1;
-                            let dir = directories.last_mut().ok_or(Error::LimitExceeded)?;
-                            let page = self.read_directory_fresh(&dir.handle, None)?;
-                            dir.entries = page.entries.into_iter();
-                            dir.cursor = page.cursor;
+                    let linked = attributes.kind != ObjectKind::Directory
+                        && attributes.links > 1
+                        && match first_names.get(&object) {
+                            Some(existing) => destination.create_link(&path, existing).is_ok(),
+                            None => {
+                                first_names.insert(object, path.clone());
+                                false
+                            }
+                        };
+                    if linked {
+                        summary.objects += 1;
+                        path.pop();
+                    } else {
+                        match attributes.kind {
+                            ObjectKind::File => {
+                                let mut file = destination
+                                    .create_file(&path, &attributes)
+                                    .map_err(ExtractionError::Destination)?;
+                                summary.objects += 1;
+                                file.set_len(attributes.size).map_err(|e| {
+                                    ExtractionError::Destination(Error::io(
+                                        "size extraction output",
+                                        e,
+                                    ))
+                                })?;
+                                let mut counts = UnitCounts::default();
+                                let mut write = |offset, bytes: &[u8]| {
+                                    file.seek(SeekFrom::Start(offset))
+                                        .and_then(|_| file.write_all(bytes))
+                                        .map_err(|error| {
+                                            Error::io("write extraction output", error)
+                                        })
+                                };
+                                let result = self.inspect_file(
+                                    object,
+                                    attributes.size,
+                                    FileScan {
+                                        path: &path,
+                                        output: Some(&mut write),
+                                        report,
+                                        counts: &mut counts,
+                                        reuse_cache: false,
+                                    },
+                                );
+                                summary.verified_bytes += counts.bytes;
+                                summary.unreadable_ranges += counts.unreadable;
+                                result?;
+                                summary.files += 1;
+                                path.pop();
+                            }
+                            ObjectKind::Symlink => {
+                                let target = self.read_symlink_fresh(object)?;
+                                destination
+                                    .create_symlink(&path, &target, &attributes)
+                                    .map_err(ExtractionError::Destination)?;
+                                summary.objects += 1;
+                                path.pop();
+                            }
+                            ObjectKind::Directory => {
+                                let handle = self.retain_object_fresh(object)?;
+                                // Register the handle before fallible work so every exit closes it.
+                                directories.push(Directory {
+                                    object,
+                                    handle,
+                                    cursor: None,
+                                    entries: Vec::new().into_iter(),
+                                });
+                                destination
+                                    .create_directory(&path, &attributes)
+                                    .map_err(ExtractionError::Destination)?;
+                                summary.objects += 1;
+                                let dir = directories.last_mut().ok_or(Error::LimitExceeded)?;
+                                let page = self.read_directory_fresh(&dir.handle, None)?;
+                                dir.entries = page.entries.into_iter();
+                                dir.cursor = page.cursor;
+                            }
                         }
                     }
                 }

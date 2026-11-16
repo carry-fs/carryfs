@@ -15,7 +15,8 @@ use crate::commit;
 use crate::edit::{Disk, Txn};
 use crate::glue;
 use crate::ondisk::format::{
-    TreeKind, FEATURE_ATTRIBUTES, INODE_MODE, MAINTENANCE_RESERVE, MAX_ID, MODE_RECORDED,
+    extra_links, TreeKind, FEATURE_ATTRIBUTES, FEATURE_LINKS, INODE_EXTRA_LINKS, INODE_MODE,
+    MAINTENANCE_RESERVE, MAX_EXTRA_LINKS, MAX_ID, MODE_RECORDED,
 };
 use crate::tree::{self, le_u64, Tree};
 use crate::vfs::{Dentry, Inode};
@@ -235,6 +236,25 @@ fn touch_parent(
     inode::refresh_times(dir, state)
 }
 
+/// Drop one of `object`'s entries, already removed: a file with extra links
+/// loses one, and anything else becomes an orphan.
+fn drop_link(
+    sb: *mut bindings::super_block,
+    state: &mut State,
+    disk: &Disk,
+    object: u64,
+    time: (i64, u32),
+) -> Result {
+    let mut record = read_record(sb, state, object)?;
+    let links = extra_links(&record);
+    if links == 0 {
+        return orphan(sb, state, disk, object, time);
+    }
+    record[INODE_EXTRA_LINKS..INODE_EXTRA_LINKS + 4].copy_from_slice(&(links - 1).to_le_bytes());
+    set_time(&mut record, CHANGED, time);
+    write_record(state, disk, object, &record)
+}
+
 /// Mark `object` unlinked: set its orphan flag and add its marker. Its
 /// eviction removes it.
 fn orphan(
@@ -349,28 +369,42 @@ unsafe extern "C" fn link(
         let (stored, folded) = parse_name(new)?;
         let key = entry_key(dir_ref.object(), &folded)?;
         let sb = dir_ref.super_block().as_ptr();
-        mutate(sb, |state, disk| {
+        let nlink = mutate(sb, |state, disk| {
             let mut record = read_record(sb, state, inode.object())?;
-            if record[0] != FILE || record[1] & ORPHAN == 0 {
+            if record[0] == DIRECTORY {
                 return Err(EPERM);
             }
             if read_entry(sb, state, &key)?.is_some() {
                 return Err(EEXIST);
             }
+            // An unnamed file gets its first entry; a named one another.
+            let relinked = record[1] & ORPHAN != 0;
+            let links = extra_links(&record);
+            if !relinked {
+                if links == MAX_EXTRA_LINKS {
+                    return Err(crate::code(bindings::EMLINK));
+                }
+                record[INODE_EXTRA_LINKS..INODE_EXTRA_LINKS + 4]
+                    .copy_from_slice(&(links + 1).to_le_bytes());
+                txn(state).features |= FEATURE_LINKS;
+            }
             let time = now();
             record[1] &= !ORPHAN;
             set_u64(&mut record, PARENT, dir_ref.object());
             set_time(&mut record, CHANGED, time);
-            let value = entry_value(inode.object(), FILE, &stored)?;
+            let value = entry_value(inode.object(), record[0], &stored)?;
             write_record(state, disk, inode.object(), &record)?;
             txn(state).put(disk, TreeKind::Catalog, &key, &value)?;
-            txn(state).delete(disk, TreeKind::Cleanup, &orphan_key(inode.object()))?;
+            if relinked {
+                txn(state).delete(disk, TreeKind::Cleanup, &orphan_key(inode.object()))?;
+            }
             touch_parent(sb, state, disk, dir_ref, 1, time)?;
-            inode::refresh_times(inode, state)
+            inode::refresh_times(inode, state)?;
+            Ok(extra_links(&record) + 1)
         })?;
         changed(dir_ref);
-        // SAFETY: The new dentry takes its own reference; this is the file's only link.
-        unsafe { glue::carryfs_link_tmpfile(dentry, inode.as_ptr()) };
+        // SAFETY: The new dentry takes its own reference to the inode.
+        unsafe { glue::carryfs_link(dentry, inode.as_ptr(), nlink) };
         Ok(())
     })();
     match result {
@@ -504,7 +538,7 @@ fn remove_entry(dir: &Inode, dentry: &Dentry, directory: bool) -> Result {
         let time = now();
         txn(state).delete(disk, TreeKind::Catalog, &key)?;
         touch_parent(sb, state, disk, dir, -1, time)?;
-        orphan(sb, state, disk, entry.target, time)?;
+        drop_link(sb, state, disk, entry.target, time)?;
         if let Some(victim) = dentry.inode() {
             inode::refresh_times(victim, state)?;
         }
@@ -512,7 +546,7 @@ fn remove_entry(dir: &Inode, dentry: &Dentry, directory: bool) -> Result {
     })?;
     changed(dir);
     if let Some(victim) = dentry.inode() {
-        victim.clear_nlink();
+        victim.drop_nlink();
     }
     Ok(())
 }
@@ -683,7 +717,7 @@ fn rename_entry(
             inode::refresh_times(moved, state)?;
         }
         if let Some(destination) = destination {
-            orphan(sb, state, disk, destination.target, time)?;
+            drop_link(sb, state, disk, destination.target, time)?;
             if let Some(replaced) = new_dentry.inode() {
                 inode::refresh_times(replaced, state)?;
             }
@@ -698,7 +732,7 @@ fn rename_entry(
     changed(new_dir);
     if victim_unlinked {
         if let Some(replaced) = new_dentry.inode() {
-            replaced.clear_nlink();
+            replaced.drop_nlink();
         }
     }
     Ok(())

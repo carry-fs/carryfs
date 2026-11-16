@@ -65,7 +65,7 @@ fn namespace_links_reject_missing_and_duplicate_entries() {
         assert!(matches!(
             crate::check::validate(volume.device.as_mut().unwrap(), &root),
             Err(Error::Corruption {
-                reason: "linked inode does not have exactly one directory entry",
+                reason: "linked inode's directory entries do not match its links",
                 ..
             })
         ));

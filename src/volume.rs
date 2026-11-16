@@ -261,8 +261,11 @@ pub struct Attributes {
     pub size: u64,
     /// Allocated data bytes backing the object's current extents.
     pub allocated_bytes: u64,
-    /// The containing directory. The root is its own parent.
+    /// The containing directory. The root is its own parent. For a file or
+    /// symlink it is only a hint: the directory of its newest entry.
     pub parent: ObjectId,
+    /// Directory entries naming this object; 0 for an unlinked one.
+    pub links: u32,
     /// Creation timestamp.
     pub creation: Timestamp,
     /// Modification timestamp.
@@ -719,6 +722,14 @@ impl<D: BlockDevice> Volume<D> {
         self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
         self.sync_publication()?;
         Ok(true)
+    }
+
+    /// Whether a file on this volume has ever had a second directory entry.
+    /// An accepted link still in the open batch counts.
+    pub fn supports_links(&self) -> bool {
+        let batch = self.batch.as_ref().map_or(0, |batch| batch.features());
+        let root = self.root.as_ref().map_or(0, |root| root.features);
+        (root | batch) & crate::format::FEATURE_LINKS != 0
     }
 
     /// Whether unwritten allocations are enabled on this volume.

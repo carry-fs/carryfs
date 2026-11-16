@@ -475,7 +475,7 @@ fn fsck_plans_exports_and_repairs_the_original_offline() {
 }
 
 #[test]
-fn fsck_repair_keeps_every_name_of_a_hard_linked_file() {
+fn fsck_repair_and_rebuild_keep_every_name_of_a_hard_linked_file() {
     use std::os::unix::fs::MetadataExt;
     let temp = Temp::new();
     fs::create_dir_all(temp.0.join("source/sub")).unwrap();
@@ -484,21 +484,31 @@ fn fsck_repair_keeps_every_name_of_a_hard_linked_file() {
     temp.pass(&["mkfs", "image", "268435456"]);
     temp.pass(&["put", "image", "source", "/backup"]);
     damage_page(&temp, disk_root(&temp).allocation.block);
-    let repair = fsck(&temp, &["--repair", "image"]);
-    assert_eq!(
-        repair.status.code(),
-        Some(1),
-        "{}",
-        String::from_utf8_lossy(&repair.stderr)
-    );
-    temp.pass(&["check", "image"]);
-    temp.pass(&["get", "image", "/backup", "recovered"]);
-    let (a, b) = (temp.0.join("recovered/a"), temp.0.join("recovered/sub/b"));
-    assert_eq!(
-        fs::metadata(&a).unwrap().ino(),
-        fs::metadata(&b).unwrap().ino()
-    );
-    assert_eq!(fs::read(&b).unwrap(), b"shared");
+    // Rebuild into a new image first; it leaves the damaged source untouched.
+    for args in [
+        &["--repair", "--output", "new-image", "image"][..],
+        &["--repair", "image"],
+    ] {
+        let result = fsck(&temp, args);
+        assert_eq!(
+            result.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    for image in ["image", "new-image"] {
+        temp.pass(&["check", image]);
+        let out = temp.0.join(format!("{image}.out"));
+        temp.pass(&["get", image, "/backup", out.to_str().unwrap()]);
+        let (a, b) = (out.join("a"), out.join("sub/b"));
+        assert_eq!(
+            fs::metadata(&a).unwrap().ino(),
+            fs::metadata(&b).unwrap().ino(),
+            "{image}"
+        );
+        assert_eq!(fs::read(&b).unwrap(), b"shared");
+    }
 }
 
 #[test]

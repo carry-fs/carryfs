@@ -82,8 +82,8 @@ updates retain the earlier report and can leave a `.working` file. A completed
 report has state `complete`, `partial`, or `verification_failed`. Generated
 manifest files are excluded from recovered object and file totals.
 
-The new image retains the volume label, recovered paths, symlink targets,
-timestamps, permission bits, and hidden attributes. It receives a fresh UUID
+The new image retains the volume label, recovered paths, hard links, symlink
+targets, timestamps, permission bits, and hidden attributes. It receives a fresh UUID
 and assigns object IDs during reconstruction. Sparse file contents are retained.
 Unwritten preallocation is not copied.
 

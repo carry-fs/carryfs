@@ -576,7 +576,8 @@ impl<D: BlockDevice> Repair<D> {
     ///
     /// The caller must supply new zeroed media and exclude source aliases.
     /// The source is never written. The destination receives a new UUID and
-    /// object IDs, retaining the label, names, timestamps, modes, and symlinks.
+    /// object IDs, retaining the label, names, hard links, timestamps, modes,
+    /// and symlinks.
     /// Sparse holes and reported unreadable ranges remain unwritten. Unwritten
     /// preallocation is not copied. Check `complete` and `unreadable_ranges`:
     /// successful output may still be partial. Errors can leave a partial image.
@@ -672,6 +673,9 @@ impl<D: BlockDevice> Repair<D> {
         let mut directories: Vec<ImageDirectory> = Vec::new();
         let mut path = Vec::new();
         let mut pending = Some((ROOT, ROOT));
+        // Destination objects of multiply linked sources, so later names link
+        // to the first copy instead of duplicating it.
+        let mut linked = BTreeMap::new();
         loop {
             if let Some((object, destination)) = pending.take() {
                 let attributes = source.attributes_fresh(object)?;
@@ -692,6 +696,14 @@ impl<D: BlockDevice> Repair<D> {
             if let Some(entry) = directory.entries.next() {
                 path.push(entry.name.clone());
                 let attributes = source.attributes_fresh(entry.object)?;
+                if let Some(&object) = linked.get(&entry.object) {
+                    target.link(object, directory.destination, entry.name)?;
+                    // Linking changes the change time; restore the source's.
+                    restore_image_attributes(&mut target, object, attributes)?;
+                    summary.objects += 1;
+                    path.pop();
+                    continue;
+                }
                 let destination = match entry.kind {
                     ObjectKind::Directory => {
                         let object = target.create_directory(directory.destination, entry.name)?;
@@ -751,6 +763,9 @@ impl<D: BlockDevice> Repair<D> {
                         &source.read_symlink_fresh(entry.object)?,
                     )?,
                 };
+                if attributes.links > 1 {
+                    linked.insert(entry.object, destination);
+                }
                 restore_image_attributes(&mut target, destination, attributes)?;
                 summary.objects += 1;
                 path.pop();

@@ -2,17 +2,18 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 target="$root/manager/target"
-cargo build --manifest-path "$root/manager/Cargo.toml" --target-dir "$target" --locked --bins
+cargo build --manifest-path "$root/manager/Cargo.toml" --target-dir "$target" --locked --release --bins
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/manager/Cargo.toml" | head -n 1)
 stage=$(mktemp -d "$target/bundle.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 bundle="$target/CarryFS Manager.app"
 mkdir -p "$stage/MacOS" "$bundle/Contents/MacOS"
 for binary in carryfs-manager carryfs; do
-    cp "$target/debug/$binary" "$stage/MacOS/$binary"
+    cp "$target/release/$binary" "$stage/MacOS/$binary"
     test -x "$stage/MacOS/$binary"
     test -s "$stage/MacOS/$binary"
 done
-cat >"$stage/Info.plist" <<'PLIST'
+cat >"$stage/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -20,7 +21,9 @@ cat >"$stage/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>dev.carryfs.manager</string>
 <key>CFBundleName</key><string>CarryFS Manager</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
+<key>CFBundleVersion</key><string>$version</string>
+<key>LSMinimumSystemVersion</key><string>15.6</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST

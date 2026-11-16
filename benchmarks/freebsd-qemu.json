@@ -1,0 +1,33 @@
+{
+  "command": [
+    "benchmarks/freebsd.py",
+    "build/perf/baseline",
+    "build/perf/coalesced",
+    "--out",
+    "build/perf/compare-verified",
+    "--rounds",
+    "5"
+  ],
+  "uname": [
+    "FreeBSD",
+    "carryfs-freebsd",
+    "15.1-RELEASE-p6",
+    "FreeBSD 15.1-RELEASE-p6 releng/15.1-n283643-95719d8a895b GENERIC",
+    "arm64",
+    "aarch64"
+  ],
+  "cpu": "hw.model: ARM Cortex-A72 r0p3\nhw.ncpu: 4\n",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01) (built from a source tarball)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-unknown-freebsd\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "binaries_sha256": {
+    "/root/carryfs/build/perf/baseline": {
+      "carryfs": "88e39f0533aeddfa0616680290b85fe2a0fd7155c745635f0b1d190c59afe877",
+      "carryfs-fuse": "70a1f47839361c3f6f3af50f365d8a199a93524b6d876f2127bf4ffb153985d9"
+    },
+    "/root/carryfs/build/perf/coalesced": {
+      "carryfs": "88e39f0533aeddfa0616680290b85fe2a0fd7155c745635f0b1d190c59afe877",
+      "carryfs-fuse": "e78011dca898eb9520961a9a274f8c3c220e024f541b1cd491c3cf799808fdb1"
+    }
+  },
+  "rounds": 5,
+  "image_bytes": 536870912
+}

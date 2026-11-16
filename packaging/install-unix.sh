@@ -14,6 +14,10 @@ case $platform in
         marker=/Library/Filesystems/carryfs.fs/Contents/VERSION
         paths='/usr/local/bin/carryfs /Library/Filesystems/carryfs.fs'
         ;;
+    freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64)
+        marker=/usr/local/libexec/carryfs/VERSION
+        paths='/usr/local/bin/carryfs /usr/local/libexec/carryfs /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs'
+        ;;
     *) die 'Unsupported package platform.' ;;
 esac
 mkdir /var/run/carryfs-install.lock || die 'Another installation is running, or /var/run/carryfs-install.lock needs cleanup after an interrupted installation.'
@@ -169,6 +173,20 @@ case $platform in
             depmod -a "$native_kernel"
         fi
         udevadm control --reload
+        ;;
+    freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64)
+        for link in /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs; do
+            if [ -e "$link" ] || [ -L "$link" ]; then
+                [ -L "$link" ] && [ "$(readlink "$link")" = /usr/local/libexec/carryfs/carryfs-fuse ] || die "$link already belongs to another installation."
+            fi
+        done
+        mkdir -p /usr/local/libexec/carryfs /usr/local/sbin
+        install -m 755 "$payload/carryfs-fuse" /usr/local/libexec/carryfs/carryfs-fuse.new
+        mv -f /usr/local/libexec/carryfs/carryfs-fuse.new /usr/local/libexec/carryfs/carryfs-fuse
+        for link in /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs; do
+            if [ ! -L "$link" ]; then ln -s /usr/local/libexec/carryfs/carryfs-fuse "$link"; fi
+        done
+        install -m 644 "$payload/VERSION" "$marker"
         ;;
     macos-arm64)
         mkdir -p /Library/Filesystems

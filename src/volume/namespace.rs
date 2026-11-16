@@ -3,13 +3,16 @@
 
 use super::Fault;
 use crate::allocation::Transaction;
-use crate::format::{TreeKind, Validation, validate_symlink_target};
+use crate::format::{
+    ATTRIBUTE_HIDDEN, INODE_ATTRIBUTES, INODE_MODE, TreeKind, Validation, validate_symlink_target,
+};
 use crate::name::{Name, validate_disk_name};
 use crate::tree::{Forest, u64_le};
 use crate::{BlockDevice, Error, MountMode, Result};
 
 use super::{
-    Access, Attributes, Handle, ObjectId, ObjectKind, ROOT, RemoveKind, Replace, Timestamp, Volume,
+    Access, AttributeChange, Attributes, Handle, Mode, NewAttributes, ObjectId, ObjectKind, ROOT,
+    RemoveKind, Replace, Timestamp, Volume,
 };
 
 pub(super) const INODE_BYTES: usize = 128;
@@ -63,6 +66,10 @@ pub(super) struct Inode {
     pub(super) creation: Timestamp,
     pub(super) modification: Timestamp,
     pub(super) metadata_change: Timestamp,
+    /// The stored mode field: zero, or bit 15 and nine permission bits.
+    pub(super) mode: u16,
+    /// The stored attributes byte: bit 0 hidden.
+    pub(super) attributes: u8,
     /// A symlink's target, stored after the fixed fields; empty otherwise.
     pub(super) target: Vec<u8>,
 }
@@ -104,8 +111,14 @@ impl Inode {
             creation: decode_timestamp(&value[40..56])?,
             modification: decode_timestamp(&value[56..72])?,
             metadata_change: decode_timestamp(&value[72..88])?,
+            mode: u16::from_le_bytes([value[INODE_MODE], value[INODE_MODE + 1]]),
+            attributes: value[INODE_ATTRIBUTES],
             target: value[INODE_BYTES..].to_vec(),
         })
+    }
+
+    pub(super) fn hidden(&self) -> bool {
+        self.attributes & ATTRIBUTE_HIDDEN != 0
     }
 
     pub(super) fn encode(&self) -> Vec<u8> {
@@ -117,6 +130,8 @@ impl Inode {
                 Some(false) => 2,
                 Some(true) => 6,
             };
+        value[INODE_MODE..INODE_MODE + 2].copy_from_slice(&self.mode.to_le_bytes());
+        value[INODE_ATTRIBUTES] = self.attributes;
         value[8..16].copy_from_slice(&self.parent.to_le_bytes());
         value[16..24].copy_from_slice(&self.size.to_le_bytes());
         value[24..32].copy_from_slice(&self.allocated_blocks.to_le_bytes());
@@ -504,6 +519,8 @@ impl<D: BlockDevice> Volume<D> {
                         metadata_change: inode.metadata_change,
                         orphan: inode.orphan,
                         directory_link: inode.directory_link,
+                        mode: Mode::decode(inode.kind, inode.mode),
+                        hidden: inode.hidden(),
                     })
                 })?
                 .ok_or(Error::NotFound)
@@ -521,9 +538,20 @@ impl<D: BlockDevice> Volume<D> {
         self.attributes(object)
     }
 
-    /// Create a new empty directory under `parent`.
+    /// Create a new empty directory under `parent` with default attributes.
     pub fn create_directory(&mut self, parent: ObjectId, name: Name) -> Result<ObjectId> {
-        self.create(parent, name, ObjectKind::Directory)
+        self.create_directory_with(parent, name, NewAttributes::default())
+    }
+
+    /// Create a new empty directory under `parent`. On a volume that does
+    /// not store attributes, `new` is ignored.
+    pub fn create_directory_with(
+        &mut self,
+        parent: ObjectId,
+        name: Name,
+        new: NewAttributes,
+    ) -> Result<ObjectId> {
+        self.create(parent, name, ObjectKind::Directory, new)
     }
 
     /// Create a symlink to `target` under `parent`. The target is 1 through
@@ -535,7 +563,13 @@ impl<D: BlockDevice> Volume<D> {
         target: &[u8],
     ) -> Result<ObjectId> {
         validate_symlink_target(target, Validation::Input)?;
-        self.create_with(parent, name, ObjectKind::Symlink, target)
+        self.create_with(
+            parent,
+            name,
+            ObjectKind::Symlink,
+            target,
+            NewAttributes::default(),
+        )
     }
 
     /// Read a symlink's target.
@@ -582,8 +616,9 @@ impl<D: BlockDevice> Volume<D> {
         parent: ObjectId,
         name: Name,
         kind: ObjectKind,
+        new: NewAttributes,
     ) -> Result<ObjectId> {
-        self.create_with(parent, name, kind, &[])
+        self.create_with(parent, name, kind, &[], new)
     }
 
     fn create_with(
@@ -592,12 +627,111 @@ impl<D: BlockDevice> Volume<D> {
         name: Name,
         kind: ObjectKind,
         target: &[u8],
+        new: NewAttributes,
     ) -> Result<ObjectId> {
         let now = Timestamp::now()?;
-        let object = self
-            .edit(|transaction| create_in(transaction, parent, name.clone(), kind, target, now))?;
+        // Without the feature the fields stay zero, as a 0.1.0 reader requires.
+        let new = if self.stores_attributes() {
+            new
+        } else {
+            NewAttributes::default()
+        };
+        let object = self.edit(|transaction| {
+            create_in(transaction, parent, name.clone(), kind, target, new, now)
+        })?;
         self.namespace_epoch = self.namespace_epoch.wrapping_add(1);
         Ok(object)
+    }
+
+    /// Create an unnamed file, pinned until its handle closes or it is linked.
+    pub fn create_tmpfile(
+        &mut self,
+        parent: ObjectId,
+        new: NewAttributes,
+    ) -> Result<(ObjectId, Handle)> {
+        if !self.handles.has_room() {
+            return Err(Error::LimitExceeded);
+        }
+        let new = if self.stores_attributes() {
+            new
+        } else {
+            NewAttributes::default()
+        };
+        let now = Timestamp::now()?;
+        let object = self.edit(|transaction| {
+            create_object_in(transaction, parent, None, ObjectKind::File, &[], new, now)
+        })?;
+        let handle = self.handles.open(object, Access::ReadWrite)?;
+        Ok((object, handle))
+    }
+
+    /// Give an orphaned regular file its single directory entry.
+    /// Existing named files cannot acquire a second link.
+    pub fn link_tmpfile(&mut self, object: ObjectId, parent: ObjectId, name: Name) -> Result<()> {
+        let now = Timestamp::now()?;
+        self.edit(|transaction| {
+            let catalog = transaction.catalog.clone();
+            let key = inode_key(object.0);
+            let mut inode = transaction
+                .forest
+                .lookup_with(&catalog, TreeKind::Catalog, &key, Inode::decode)?
+                .ok_or(Error::NotFound)?;
+            if inode.kind != ObjectKind::File || !inode.orphan {
+                return Err(Error::InvalidInput("only an unnamed file can be linked"));
+            }
+            let parent_key = inode_key(parent.0);
+            let mut directory = transaction
+                .forest
+                .lookup_with(&catalog, TreeKind::Catalog, &parent_key, Inode::decode)?
+                .ok_or(Error::NotFound)?;
+            if directory.kind != ObjectKind::Directory {
+                return Err(Error::WrongType);
+            }
+            if directory.orphan {
+                return Err(Error::NotFound);
+            }
+            let entry_key = dirent_key(parent.0, &name.folded);
+            if transaction
+                .forest
+                .lookup(&catalog, TreeKind::Catalog, &entry_key)?
+                .is_some()
+            {
+                return Err(Error::NameCollision);
+            }
+            directory.child_count = directory
+                .child_count
+                .checked_add(1)
+                .ok_or(Error::LimitExceeded)?;
+            directory.modification = now;
+            directory.metadata_change = now;
+            inode.orphan = false;
+            inode.parent = parent.0;
+            inode.metadata_change = now;
+            let entry = DirentValue {
+                target: object.0,
+                kind: ObjectKind::File,
+                stored_name: &name.stored,
+            }
+            .encode()?;
+            let catalog =
+                transaction
+                    .forest
+                    .put(catalog, TreeKind::Catalog, &key, &inode.encode())?;
+            let catalog = transaction.forest.put(
+                catalog,
+                TreeKind::Catalog,
+                &parent_key,
+                &directory.encode(),
+            )?;
+            transaction.catalog =
+                transaction
+                    .forest
+                    .put(catalog, TreeKind::Catalog, &entry_key, &entry)?;
+            transaction.unmark_orphan(object.0)?;
+            Ok(())
+        })?;
+        self.namespace_epoch = self.namespace_epoch.wrapping_add(1);
+        Ok(())
     }
 
     /// Remove a file or an empty directory from its parent.
@@ -695,6 +829,27 @@ impl<D: BlockDevice> Volume<D> {
                 destination_parent.0,
                 &destination,
                 replace,
+                now,
+            )
+        })?;
+        self.namespace_epoch = self.namespace_epoch.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Atomically exchange the objects two existing entries name, as macOS
+    /// `renamex_np(RENAME_SWAP)` does. Types may differ; names stay put.
+    pub fn swap(
+        &mut self,
+        first_parent: ObjectId,
+        first: &Name,
+        second_parent: ObjectId,
+        second: &Name,
+    ) -> Result<()> {
+        let now = Timestamp::now()?;
+        self.edit(|transaction| {
+            swap_entries(
+                transaction,
+                [(first_parent.0, first), (second_parent.0, second)],
                 now,
             )
         })?;
@@ -830,15 +985,17 @@ impl<D: BlockDevice> Volume<D> {
         }
     }
 
-    /// Overwrite explicit creation/modification timestamps. Always bumps the
-    /// metadata-change time.
-    pub fn set_times(
-        &mut self,
-        handle: &Handle,
-        creation: Option<Timestamp>,
-        modification: Option<Timestamp>,
-    ) -> Result<()> {
+    /// Change timestamps, mode and hidden state in one inode rewrite. Always
+    /// bumps the metadata-change time. A mode for a symlink is dropped: a
+    /// symlink stores none. A mode or hidden state on a volume that does not
+    /// store attributes is `InvalidInput`; check `stores_attributes` first.
+    pub fn set_attributes(&mut self, handle: &Handle, change: AttributeChange) -> Result<()> {
         let object = self.handles.validate(handle)?;
+        if (change.mode.is_some() || change.hidden.is_some()) && !self.stores_attributes() {
+            return Err(Error::InvalidInput(
+                "volume does not store modes or attributes",
+            ));
+        }
         let now = Timestamp::now()?;
         self.edit(|transaction| {
             let key = inode_key(object.0);
@@ -846,11 +1003,23 @@ impl<D: BlockDevice> Volume<D> {
                 .forest
                 .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
                 .ok_or(Error::Corrupt("handle target inode is missing"))?;
-            if let Some(creation) = creation {
+            if let Some(creation) = change.creation {
                 inode.creation = creation;
             }
-            if let Some(modification) = modification {
+            if let Some(modification) = change.modification {
                 inode.modification = modification;
+            }
+            if let Some(mode) = change.mode
+                && inode.kind != ObjectKind::Symlink
+            {
+                inode.mode = mode.encode();
+            }
+            if let Some(hidden) = change.hidden {
+                inode.attributes = if hidden {
+                    inode.attributes | ATTRIBUTE_HIDDEN
+                } else {
+                    inode.attributes & !ATTRIBUTE_HIDDEN
+                };
             }
             inode.metadata_change = now;
             let catalog = transaction.forest.put(
@@ -1104,27 +1273,8 @@ fn rename_move<D: BlockDevice>(
         ));
     }
 
-    // A live directory has live ancestors, so a missing one is corruption. The
-    // catalog is unedited here, so every step reads a disk page and the
-    // forest's read budget bounds the walk.
     if moved_kind == ObjectKind::Directory {
-        let mut current = destination_parent;
-        while current != ROOT.0 {
-            if current == moved {
-                return Err(Error::InvalidInput(
-                    "cannot move a directory into itself or a descendant",
-                ));
-            }
-            current = transaction
-                .forest
-                .lookup_with(
-                    &transaction.catalog,
-                    TreeKind::Catalog,
-                    &inode_key(current),
-                    |value| Inode::decode(value).map(|inode| inode.parent),
-                )?
-                .ok_or(Error::Corrupt("directory ancestor is missing"))?;
-        }
+        refuse_cycle(transaction, moved, destination_parent)?;
     }
 
     let destination_key = dirent_key(destination_parent, &destination.folded);
@@ -1274,6 +1424,114 @@ fn rename_move<D: BlockDevice>(
     Ok(())
 }
 
+/// Refuse to put directory `moved` under `destination_parent` when that is
+/// `moved` itself or one of its descendants.
+fn refuse_cycle<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    moved: u64,
+    destination_parent: u64,
+) -> Result<()> {
+    // A live directory has live ancestors, so a missing one is corruption. The
+    // catalog is unedited here, so every step reads a disk page and the
+    // forest's read budget bounds the walk.
+    let mut current = destination_parent;
+    while current != ROOT.0 {
+        if current == moved {
+            return Err(Error::InvalidInput(
+                "cannot move a directory into itself or a descendant",
+            ));
+        }
+        current = transaction
+            .forest
+            .lookup_with(
+                &transaction.catalog,
+                TreeKind::Catalog,
+                &inode_key(current),
+                |value| Inode::decode(value).map(|inode| inode.parent),
+            )?
+            .ok_or(Error::Corrupt("directory ancestor is missing"))?;
+    }
+    Ok(())
+}
+
+/// Exchange the objects of two existing entries. Each entry keeps its name.
+fn swap_entries<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    entries: [(u64, &Name); 2],
+    now: Timestamp,
+) -> Result<()> {
+    let keys = entries.map(|(parent, name)| dirent_key(parent, &name.folded));
+    let mut found = Vec::with_capacity(2);
+    for key in &keys {
+        let value = transaction
+            .forest
+            .lookup(&transaction.catalog, TreeKind::Catalog, key)?
+            .ok_or(Error::NotFound)?;
+        let dirent = DirentValue::decode(&value)?;
+        found.push((dirent.target, dirent.kind, dirent.stored_name.to_vec()));
+    }
+    if keys[0] == keys[1] {
+        return Ok(());
+    }
+    let parents = entries.map(|(parent, _)| parent);
+    let mut catalog = transaction.catalog.clone();
+    for (side, key) in keys.iter().enumerate() {
+        let (target, kind, _) = &found[1 - side];
+        let (moved, parent) = (*target, parents[side]);
+        if parents[0] != parents[1] && *kind == ObjectKind::Directory {
+            refuse_cycle(transaction, moved, parent)?;
+        }
+        let dirent = DirentValue {
+            target: moved,
+            kind: *kind,
+            stored_name: &found[side].2,
+        }
+        .encode()?;
+        catalog = transaction
+            .forest
+            .put(catalog, TreeKind::Catalog, key, &dirent)?;
+        let mut inode = transaction
+            .forest
+            .lookup_with(
+                &transaction.catalog,
+                TreeKind::Catalog,
+                &inode_key(moved),
+                Inode::decode,
+            )?
+            .ok_or(Error::Corrupt("directory entry has no inode"))?;
+        inode.parent = parent;
+        inode.metadata_change = now;
+        catalog = transaction.forest.put(
+            catalog,
+            TreeKind::Catalog,
+            &inode_key(moved),
+            &inode.encode(),
+        )?;
+    }
+    let distinct = if parents[0] == parents[1] { 1 } else { 2 };
+    for &parent in &parents[..distinct] {
+        let mut inode = transaction
+            .forest
+            .lookup_with(
+                &transaction.catalog,
+                TreeKind::Catalog,
+                &inode_key(parent),
+                Inode::decode,
+            )?
+            .ok_or(Error::Corrupt("parent inode is missing"))?;
+        inode.modification = now;
+        inode.metadata_change = now;
+        catalog = transaction.forest.put(
+            catalog,
+            TreeKind::Catalog,
+            &inode_key(parent),
+            &inode.encode(),
+        )?;
+    }
+    transaction.catalog = catalog;
+    Ok(())
+}
+
 /// Create an empty object of `kind` under `parent` inside `transaction`. The
 /// edit validates everything before it changes the catalog and assigns the
 /// transaction's catalog root last, so a failure leaves the transaction as it
@@ -1284,6 +1542,19 @@ pub(super) fn create_in<D: BlockDevice>(
     name: Name,
     kind: ObjectKind,
     target: &[u8],
+    new: NewAttributes,
+    now: Timestamp,
+) -> Result<ObjectId> {
+    create_object_in(transaction, parent, Some(name), kind, target, new, now)
+}
+
+fn create_object_in<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    parent: ObjectId,
+    name: Option<Name>,
+    kind: ObjectKind,
+    target: &[u8],
+    new: NewAttributes,
     now: Timestamp,
 ) -> Result<ObjectId> {
     let parent_key = inode_key(parent.0);
@@ -1304,18 +1575,19 @@ pub(super) fn create_in<D: BlockDevice>(
             "cannot create a child in an orphaned directory",
         ));
     }
-    let dirent_key_bytes = dirent_key(parent.0, &name.folded);
-    if transaction
-        .forest
-        .lookup(&transaction.catalog, TreeKind::Catalog, &dirent_key_bytes)?
-        .is_some()
+    let dirent_key_bytes = name.as_ref().map(|name| dirent_key(parent.0, &name.folded));
+    if let Some(key) = &dirent_key_bytes
+        && transaction
+            .forest
+            .lookup(&transaction.catalog, TreeKind::Catalog, key)?
+            .is_some()
     {
         return Err(Error::NameCollision);
     }
     let child = transaction.new_object()?;
     let child_inode = Inode {
         kind,
-        orphan: false,
+        orphan: name.is_none(),
         directory_link: None,
         parent: parent.0,
         size: target.len() as u64,
@@ -1324,21 +1596,10 @@ pub(super) fn create_in<D: BlockDevice>(
         creation: now,
         modification: now,
         metadata_change: now,
+        mode: new.mode.map_or(0, Mode::encode),
+        attributes: if new.hidden { ATTRIBUTE_HIDDEN } else { 0 },
         target: target.to_vec(),
     };
-    let dirent = DirentValue {
-        target: child,
-        kind,
-        stored_name: &name.stored,
-    }
-    .encode()?;
-    parent_inode.child_count = parent_inode
-        .child_count
-        .checked_add(1)
-        .ok_or(Error::LimitExceeded)?;
-    parent_inode.modification = now;
-    parent_inode.metadata_change = now;
-
     let mut catalog = transaction.catalog.clone();
     catalog = transaction.forest.put(
         catalog,
@@ -1346,15 +1607,31 @@ pub(super) fn create_in<D: BlockDevice>(
         &inode_key(child),
         &child_inode.encode(),
     )?;
-    catalog = transaction
-        .forest
-        .put(catalog, TreeKind::Catalog, &dirent_key_bytes, &dirent)?;
-    catalog = transaction.forest.put(
-        catalog,
-        TreeKind::Catalog,
-        &parent_key,
-        &parent_inode.encode(),
-    )?;
+    if let (Some(name), Some(key)) = (name, dirent_key_bytes) {
+        let dirent = DirentValue {
+            target: child,
+            kind,
+            stored_name: &name.stored,
+        }
+        .encode()?;
+        parent_inode.child_count = parent_inode
+            .child_count
+            .checked_add(1)
+            .ok_or(Error::LimitExceeded)?;
+        parent_inode.modification = now;
+        parent_inode.metadata_change = now;
+        catalog = transaction
+            .forest
+            .put(catalog, TreeKind::Catalog, &key, &dirent)?;
+        catalog = transaction.forest.put(
+            catalog,
+            TreeKind::Catalog,
+            &parent_key,
+            &parent_inode.encode(),
+        )?;
+    } else {
+        transaction.mark_orphan(child)?;
+    }
     transaction.catalog = catalog;
     Ok(ObjectId(child))
 }
@@ -1390,6 +1667,8 @@ fn make_symlink_in<D: BlockDevice>(
     // Windows keeps directory and file links apart and asks for the one it created.
     inode.directory_link = Some(inode.kind == ObjectKind::Directory);
     inode.kind = ObjectKind::Symlink;
+    // A symlink has no mode; hidden stays.
+    inode.mode = 0;
     inode.size = target.len() as u64;
     inode.target = target.to_vec();
     inode.modification = now;

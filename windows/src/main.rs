@@ -30,13 +30,14 @@ fn main() -> ExitCode {
         ["mkfs", volume] => mkfs(volume, false),
         ["mkfs", volume, "force"] => mkfs(volume, true),
         ["wipe", volume] => wipe(volume),
+        ["upgrade", volume] => upgrade(volume),
         ["probe", volume] => probe(volume),
         ["service"] => service::run(),
         ["serve", volume] => serve(volume, None, false),
         ["serve", volume, letter] => serve(volume, Some(letter), false),
         ["serve", volume, letter, "ro"] => serve(volume, Some(letter), true),
         _ => Err(
-            "usage: carryfs-windows mkfs VOLUME [force] | carryfs-windows wipe VOLUME | carryfs-windows probe VOLUME | carryfs-windows serve VOLUME [X: [ro]] | carryfs-windows service".into(),
+            "usage: carryfs-windows mkfs VOLUME [force] | carryfs-windows wipe VOLUME | carryfs-windows upgrade VOLUME | carryfs-windows probe VOLUME | carryfs-windows serve VOLUME [X: [ro]] | carryfs-windows service".into(),
         ),
     };
     match result {
@@ -128,6 +129,28 @@ fn wipe(volume_path: &str) -> Result<()> {
     carryfs_core::erase_reserved_bands(&mut disk)
         .map_err(|e| format!("erase reserved bands: {e}"))?;
     println!("wiped CarryFS from {volume_path}; format it with any tool now");
+    Ok(())
+}
+
+/// Let the volume store modes and the hidden attribute. CarryFS 0.1.0 cannot
+/// mount it afterwards. Owning the partition fails while the service has it
+/// mounted.
+#[cfg(windows)]
+fn upgrade(volume_path: &str) -> Result<()> {
+    use carryfs_core::Volume;
+
+    let disk = open_owned(volume_path, "upgrade")?;
+    let mut volume = Volume::open(disk).map_err(|e| format!("{volume_path}: {e}"))?;
+    let changed = volume.upgrade().map_err(|e| format!("upgrade: {e}"))?;
+    volume.eject().map_err(|e| format!("eject: {e}"))?;
+    println!(
+        "{volume_path}: {}",
+        if changed {
+            "now stores permissions and the hidden attribute; CarryFS 0.1.0 can no longer mount it"
+        } else {
+            "already stores permissions and the hidden attribute"
+        }
+    );
     Ok(())
 }
 

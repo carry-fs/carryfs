@@ -27,6 +27,13 @@
       "sha256": "51de32966422359385d1e4bf206b90b3aec329c8aaca497c318f9d55184822ac"
     },
     {
+      "name": "attributes-root-a",
+      "file": "vectors/attributes-root-a.bin",
+      "crc_offset": 4092,
+      "crc32c": "adb42b23",
+      "sha256": "9cfe2390adc6db46a5f47a8a5b59016591e5447bdedea95ed955b883804694f5"
+    },
+    {
       "name": "empty-catalog-leaf",
       "file": "vectors/empty-catalog-leaf.bin",
       "crc_offset": 64,
@@ -53,6 +60,13 @@
       "crc_offset": 64,
       "crc32c": "2fc2bd93",
       "sha256": "dbbc1d09879b6482579c48e323359b8da840758054b7b3e511be7cf7f8e22f00"
+    },
+    {
+      "name": "attributes-catalog-leaf",
+      "file": "vectors/attributes-catalog-leaf.bin",
+      "crc_offset": 64,
+      "crc32c": "33f41c05",
+      "sha256": "4e86bd0e948db9a1d77092892f73e124fac6d7a6fbd5f1fd1d744385b2d6cafb"
     },
     {
       "name": "workspace-leaf",

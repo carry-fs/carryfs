@@ -149,6 +149,7 @@ pub fn serve(device: &Path, directory: &Path, options: &str) -> Result<()> {
         format!("fsname={}", device.display()),
         format!("volname={escaped_name}"),
         "local".into(),
+        "sparse".into(),
         "nodev".into(),
         "nosuid".into(),
         // Not `noreadahead`, though the kernel reads about 128 MiB past a
@@ -165,8 +166,8 @@ pub fn serve(device: &Path, directory: &Path, options: &str) -> Result<()> {
         mount_options.push("nobrowse".into());
     }
     // A root mount serves the console user. DiskArbitration mounted a disk
-    // image as the user who attached it, which needs neither. The daemon
-    // checks no permissions itself, as CarryFS stores none.
+    // image as the user who attached it, which needs neither. macFUSE checks
+    // the stored or synthetic permissions; the daemon does not check them.
     let acl = if is_root() {
         mount_options.push("allow_other".into());
         SessionACL::All
@@ -328,7 +329,7 @@ fn mount_status(mut socket: UnixStream) -> Result<()> {
 }
 
 /// `/dev/rdiskNsM` for `/dev/diskNsM`.
-fn raw_node(device: &Path) -> Result<PathBuf> {
+pub(crate) fn raw_node(device: &Path) -> Result<PathBuf> {
     let name = device
         .to_str()
         .and_then(|path| path.strip_prefix("/dev/disk"))

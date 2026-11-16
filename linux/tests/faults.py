@@ -8,7 +8,7 @@ import subprocess
 import struct
 import tempfile
 
-from check import Volume, run
+from check import Volume, detach, run
 
 
 class Device:
@@ -45,7 +45,8 @@ class Device:
 
     def close(self):
         run("dmsetup", "remove", self.name)
-        run("losetup", "-d", self.loop)
+        # The checker that follows needs the image released.
+        detach(self.loop)
 
 
 def expect_eio(fd):

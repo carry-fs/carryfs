@@ -195,6 +195,12 @@ def fixtures():
     page[4092:] = bytes(4)
     struct.pack_into('<I', page, 4092, crc32c(page))
     result['labeled-root-a'] = (bytes(page), 4092)
+    # Root feature bit 0: inodes may record a mode and attributes.
+    page = bytearray(result['root-a'][0])
+    struct.pack_into('<Q', page, 128, 1)
+    page[4092:] = bytes(4)
+    struct.pack_into('<I', page, 4092, crc32c(page))
+    result['attributes-root-a'] = (bytes(page), 4092)
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
     struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 0, 0, 0)
@@ -245,6 +251,27 @@ def fixtures():
     page[80:80 + len(records)] = records
     struct.pack_into('<I', page, 64, crc32c(page))
     result['symlink-catalog-leaf'] = (bytes(page), 64)
+    # Inodes with a mode at offset 2 (bit 15 set, or zero for the default) and
+    # attributes at offset 4 (bit 0 hidden): file 0o755, file 0o000, hidden
+    # directory with the default mode, hidden symlink.
+    target = b'x'
+    records = b''
+    for owner, kind, mode, attributes, tail in [(2, 1, 0x81ED, 0, b''), (3, 1, 0x8000, 0, b''),
+                                                (4, 2, 0, 1, b''), (5, 3, 0, 1, target)]:
+        inode = bytearray(128)
+        struct.pack_into('<BBHBxxxQQQQ', inode, 0, kind, 0, mode, attributes, 1, len(tail), 0, 0)
+        for offset in (40, 56, 72):
+            struct.pack_into('<qI', inode, offset, 1_700_000_000, 0)
+        key = struct.pack('>QB', owner, 1)
+        value = bytes(inode) + tail
+        records += struct.pack('<HH', len(key), len(value)) + key + value
+    page = bytearray(4096)
+    page[:8] = b'CFSXPAGE'
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 4, len(records), 0)
+    page[40:56] = UUID
+    page[80:80 + len(records)] = records
+    struct.pack_into('<I', page, 64, crc32c(page))
+    result['attributes-catalog-leaf'] = (bytes(page), 64)
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
     # Workspace leaf records are runs: first block big-endian, slot count.

@@ -30,7 +30,16 @@ fn symlinks_round_trip_through_rename_times_and_reopen() {
         .unwrap();
     let stamp = Timestamp::new(1_000_000_000, 5).unwrap();
     let pin = volume.retain_object(link).unwrap();
-    volume.set_times(&pin, Some(stamp), Some(stamp)).unwrap();
+    volume
+        .set_attributes(
+            &pin,
+            AttributeChange {
+                creation: Some(stamp),
+                modification: Some(stamp),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     volume.close_handle(pin).unwrap();
     assert_eq!(target(&mut volume, dir, "moved"), b"dir/../notes.txt");
 

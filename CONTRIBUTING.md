@@ -156,6 +156,31 @@ that budget. Parser seeds come from `testdata/vectors/`. Logs go to
 `build/check-fuzz/`; corpora and failing inputs stay under `fuzz/corpus/` and
 `fuzz/artifacts/`. These are bounded runs, not exhaustive verification.
 
+### Allocation and unnamed-file checks
+
+Core tests cover reservations across remounts, conversion interruptions,
+truncation, hole punching, and writes after another file fills the volume.
+Windows adapter tests cover allocation at create, overwrite, size changes,
+and last cleanup.
+
+On Linux with `/dev/fuse` and permission to mount:
+
+```sh
+cargo test --locked -p carryfs-fuse tmpfile -- --include-ignored
+```
+
+On macOS with macFUSE, after building the CLI and adapter:
+
+```sh
+cargo build --locked -p carryfs-core -p carryfs-fuse
+python3 fuse/tests/preallocate_macos.py
+```
+
+The macOS test checks `F_PREALLOCATE` return values, persistent and temporary
+reservations, and the image with `check` and `scrub` after unmounting. The
+installed macFUSE 5.5 reports allocation only up to EOF through `stat`, so
+the test verifies reservations beyond EOF with the on-disk checker.
+
 ### Linux directory synchronization
 
 On a disposable Linux host with root access, FUSE, udev, and loop-device
@@ -194,6 +219,12 @@ Run the additional checks for the adapter you touch:
 - Linux: `cargo test --locked -p carryfs-fuse -- --ignored` mounts a volume
   through FUSE and checks the kernel's directory cache. It needs `/dev/fuse`,
   `fusermount3` and root.
+- FreeBSD: load `fusefs`, then run `sh scripts/check-freebsd.sh`. It runs
+  workspace tests and actual mount, durability, raw-format, and device-lock
+  tests against disposable md devices. The mount tests require root or sudo.
+  CI runs this on FreeBSD 14.5 and 15.1, on amd64 and arm64. On macOS, edit
+  locally and synchronize the checkout into a FreeBSD QEMU VM; build and run
+  this script inside the guest. Keep the checkout on the guest filesystem.
 - macOS: `bash macos/tests/layout.sh` checks the ioctl constants in
   `macos/src/raw.rs` against the macOS SDK.
 - Windows: `windows/tests/layout.sh` compares the struct layouts in

@@ -96,7 +96,7 @@ Each root occupies one complete page. CRC covers all 4,096 bytes with bytes
 | 96 | 16 | Cleanup `TreeRef` |
 | 112 | 8 | Next object ID, greater than every issued ID |
 | 120 | 8 | Free blocks, including the maintenance reserve |
-| 128 | 8 | Feature bits, zero |
+| 128 | 8 | Feature bits: bit 0 inode attributes; other bits zero |
 | 136 | 4 | Filename profile, 2 |
 | 140 | 4 | State flags, zero |
 | 144 | 8 | Maintenance reserve floor, 16,384 blocks |
@@ -115,6 +115,20 @@ The UUID changes on every format, preventing accidental cross-volume references.
 The label participates in the root CRC and same-generation mirror comparison.
 Naming or renaming publishes both roots using the normal commit sequence and
 does not change the UUID, allocation accounting, or page encodings.
+
+Feature bit 0 lets inodes record a mode and attributes (section 5). A reader
+that does not know a feature bit returns "unsupported format" and writes
+nothing; it never falls back to the other root for that reason. A publication
+carries the feature bits of the root it succeeds. Formatting leaves the bit
+clear; `carryfs upgrade` sets it by publishing one root, with no page writes.
+Nothing clears it.
+
+Feature bit 1 permits unwritten extents. A successful preallocation operation
+opts the volume into this feature; ordinary writes leave it unchanged. The
+userspace engine publishes the feature before reserving blocks. The Linux
+kernel engine publishes it with the first reservation. The feature remains
+set after all reservations are consumed or released. A request that fails after
+the userspace engine enables the feature does not clear it.
 
 ### Selection and reopen
 
@@ -291,7 +305,9 @@ one object a detachable interval. Only the specified suffixes are valid.
 |---:|---:|---|
 | 0 | 1 | Object type: 1 regular file, 2 directory, 3 symbolic link |
 | 1 | 1 | Flags: bit 0 orphan; on symlinks only, bit 1 link kind recorded and bit 2 directory link; other bits zero |
-| 2 | 6 | Reserved zero |
+| 2 | 2 | Mode `u16`: zero, or bit 15 set with permission bits 0 through 8 |
+| 4 | 1 | Attributes: bit 0 hidden; other bits zero |
+| 5 | 3 | Reserved zero |
 | 8 | 8 | Parent object ID; root refers to itself |
 | 16 | 8 | Logical file size; zero for directories; target length for symlinks |
 | 24 | 8 | Allocated data blocks in the object's current extents |
@@ -318,6 +334,17 @@ and creates a directory link as a directory first, so a conversion records
 which object it started from. Links made elsewhere leave both bits clear. The
 Linux and macOS adapters ignore them.
 
+The mode is zero or `0x8000 | p` with `p` in `0o000..=0o777`, the usual
+`rwxrwxrwx`; bits 9 through 14 are zero, so no setuid, setgid or sticky bit
+is stored. Zero means the type's default: `0o644` for a file, `0o755` for a
+directory. A symlink's mode is zero and reads as `0o777`. Bit 15 lets all-zero
+bytes keep meaning "default", so inodes written before the feature need no
+rewrite, and `0o000` is storable as `0x8000`. The hidden bit applies to every
+type and does not affect access. No owner is stored: every object belongs to
+the account that mounts the volume. When root feature bit 0 is clear, bytes 2
+through 4 of every inode are zero; a reader that predates the feature
+reports anything else as corruption.
+
 Each timestamp is signed Unix seconds `i64`, nanoseconds `u32`, reserved zero
 `u32`. Seconds range from -11644473600 through 253402300799, corresponding to
 1601 through 9999; nanoseconds range from 0 through 999999999. These are UTC
@@ -339,8 +366,10 @@ bytes. The name must recompute to the key's folded suffix. Type agrees with the
 target inode (1 file, 2 directory, 3 symlink). Case-only rename updates stored
 spelling in this same key.
 
-Create, rename, replacement, and removal publish all affected entries, inodes,
-parent child counts, and timestamps atomically in one transaction. Rename
+Create, rename, replacement, exchange, and removal publish all affected entries,
+inodes, parent child counts, and timestamps atomically in one transaction.
+Exchange swaps two existing entries' target and type, each keeping its stored
+spelling, and sets each moved inode's parent; any types may swap. Rename
 replacement accepts non-directory-for-non-directory or directory-for-empty-directory. It rejects
 nonempty destination directories and moving a directory into itself or a
 descendant. Renaming an object to its own key is either a spelling update or a
@@ -356,21 +385,41 @@ new object and then sets its reparse point.
 
 ### Extent
 
-Value: physical starting block `u64`, block count `u32`, reserved zero `u32`.
+Value: physical starting block `u64`, block count `u32`, flags `u32`.
+Flag bit 0 marks an unwritten extent and requires root feature bit 1. All
+other flag bits are zero. Without the feature, the entire flags word is zero.
 Count is nonzero. Logical and physical ends use checked arithmetic. Extents are
 ordered, nonoverlapping, in range, and uniquely own their data blocks.
 
 Sparse allocation has 64 KiB granularity. Each logical checksum unit is either
-entirely a hole or entirely backed for its valid bytes. Backed units need 16
+entirely zero without a checksum or entirely mapped for its valid bytes.
+Unwritten extents contribute zeros to a mapped unit. A unit with initialized
+blocks has a checksum covering both its data and any unwritten zero ranges. Backed units need 16
 blocks except the last file unit, which needs `ceil(valid_bytes/4096)`. An
 allocated unit may use multiple physically fragmented extents. Each physical
 block still holds exactly the corresponding logical 4 KiB slice. Adjacent
 logical/physical runs may be coalesced up to the `u32` count limit.
 
-No extent lies past `ceil(file_size/4096)`. Bytes beyond EOF in the last allocated
-block are zero. Missing blocks inside a backed unit, overlapping extents, and
+Initialized extents end at or before `ceil(file_size/4096)`. Unwritten extents
+may extend beyond EOF. Bytes beyond EOF in the last initialized block are zero. Missing blocks inside a backed unit, overlapping extents, and
 nonzero padding past EOF are corruption. Holes within the same checksum unit as
 a write are materialized as zero bytes when that unit becomes backed.
+
+Unwritten extents own physical blocks and count toward inode allocation and
+all tree ownership totals. Their device contents are never read as file data.
+They need no checksum while the unit contains only holes and unwritten blocks.
+The first write may initialize reserved blocks in place: before publication,
+the old mapping still reads as zeros. That publication records initialized
+extents and a checksum together, after flushing the data. Unused blocks in a
+partially written unit remain unwritten, including storage beyond EOF.
+
+Preallocation fills gaps in the requested range, rounded to 64 KiB units,
+and preserves existing data. `KEEP_SIZE` preserves EOF. Explicit truncation
+releases reservations beyond a shrinking or unchanged EOF; growth preserves
+later reservations. Hole punching frees covered units and zeros requested
+boundary bytes. Deletion reclaims initialized and unwritten extents alike.
+Extent splitting and merging preserve flags; extents with different flags
+cannot merge.
 
 ### Packed checksum group
 
@@ -380,7 +429,7 @@ bitmap, least-significant bit first within each byte. Bytes 32 onward are
 little-endian CRC32C values for slots 0 through the last present slot, and the
 value ends there: a group whose last present slot is `n - 1` is `32 + 4n`
 bytes, 36 through 1,056. Slot `unit_index % 256` has bit 1 exactly when that
-logical unit is backed by extents. Hole slots below the last present slot have
+logical unit contains initialized data. Entirely unwritten units need no slot. Hole slots below the last present slot have
 bit 0 and CRC zero; bitmap bits at or above the stored length are zero. CRC
 zero is also a valid result for a present slot. Entirely empty groups are
 omitted. Slots beyond EOF are absent. Any other length or layout is corrupt,
@@ -428,6 +477,12 @@ The checksum binds logical identity and EOF length, but not physical placement.
   Namespace changes update affected parent modification/metadata-change times
   and the renamed/unlinked object's metadata-change time. Access times are not
   stored. Explicit creation/modification-time setters update metadata-change time.
+- Changing the mode or the hidden bit updates the metadata-change time and
+  nothing else. A create records the mode and hidden state the caller asked
+  for; nothing is inherited from the parent. Writes, truncation, rename and
+  unlink keep both. A mode change on a symlink succeeds and stores nothing.
+  Converting an empty file or directory to a symlink clears the mode and
+  keeps the hidden bit.
 
 ## 6. Allocation and bounded cleanup
 
@@ -568,7 +623,11 @@ prove every catalog deletion or open-handle lifetime can be admitted safely.
 
 Foreground allocation must leave maintenance headroom after charging its maximum
 publication cost and partial-tail rewrites. Report `available = max(free - 16384,
-0)` to users. Cleanup and space-reducing mutations may spend the reserve. Before
+0)` to users. Cleanup and space-reducing mutations may spend the reserve.
+With feature bit 1, replacing writes may borrow data blocks from it when
+retirement repays those blocks after mirroring. The userspace planner limits
+this allowance to 4,096 blocks per batch; the kernel bounds it by the current
+write batch. New reservations receive no such allowance. Before
 doing so, account for the live reserve held across publication/mirroring and the
 next reclamation step. No successful foreground operation may consume that
 required budget. Returning all newly retired blocks to users prematurely is

@@ -4,6 +4,7 @@ use crate::Name;
 use crate::format::{BLOCK_BYTES, UNIT_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod attributes;
 mod deferred;
 mod faults;
 mod file_state;
@@ -450,7 +451,7 @@ fn conflicting_roots_and_unsupported_format_never_fall_back() {
             0 => a.0[120..128].copy_from_slice(&60000_u64.to_le_bytes()),
             1 => a.0[24] ^= 1,
             2 => a.0[8..12].copy_from_slice(&5_u32.to_le_bytes()),
-            _ => a.0[128] = 1,
+            _ => a.0[128] = 4,
         }
         a.0[4092..].fill(0);
         let crc = crate::format::crc32c(&a.0[..]);
@@ -899,6 +900,48 @@ fn rename_replace_orphans_the_old_destination_instead_of_deleting_it_inline() {
     volume.sync().unwrap();
     assert!(matches!(
         volume.attributes(destination),
+        Err(Error::NotFound)
+    ));
+    checked(&volume);
+}
+
+#[test]
+fn swap_exchanges_objects_and_keeps_names() {
+    let mut volume = opened();
+    // Archive Utility: swap a filled temporary directory with an empty placeholder.
+    let filled = volume.create_directory(ROOT, name(".temp")).unwrap();
+    let file = volume.create_file(filled, name("video.mp4")).unwrap();
+    volume.close_handle(file).unwrap();
+    let placeholder = volume.create_directory(ROOT, name("Archive")).unwrap();
+    volume
+        .swap(ROOT, &name(".TEMP"), ROOT, &name("Archive"))
+        .unwrap();
+    assert_eq!(volume.lookup(ROOT, &name("Archive")).unwrap(), filled);
+    assert_eq!(volume.lookup(ROOT, &name(".temp")).unwrap(), placeholder);
+    assert!(volume.lookup(filled, &name("video.mp4")).is_ok());
+    checked(&volume);
+
+    // Across parents with different types; each object moves to the other parent.
+    let other = volume.create_directory(ROOT, name("other")).unwrap();
+    let file = volume.create_file(other, name("file")).unwrap();
+    volume.close_handle(file).unwrap();
+    volume
+        .swap(filled, &name("video.mp4"), other, &name("file"))
+        .unwrap();
+    volume
+        .swap(ROOT, &name(".temp"), other, &name("file"))
+        .unwrap();
+    assert_eq!(volume.lookup(other, &name("file")).unwrap(), placeholder);
+    assert_eq!(volume.attributes(placeholder).unwrap().parent, other);
+    checked(&volume);
+
+    // A directory cannot be swapped into its own subtree, and both names must exist.
+    assert!(matches!(
+        volume.swap(ROOT, &name("other"), other, &name("file")),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        volume.swap(ROOT, &name("missing"), ROOT, &name("other")),
         Err(Error::NotFound)
     ));
     checked(&volume);
@@ -2675,7 +2718,7 @@ fn regression_corruption_must_fault_mutations() {
         assert!(matches!(volume.write(&file, 0, b""), Err(Error::Faulted)));
         assert!(matches!(volume.truncate(&file, 0), Err(Error::Faulted)));
         assert!(matches!(
-            volume.set_times(&file, None, None),
+            volume.set_attributes(&file, AttributeChange::default()),
             Err(Error::Faulted)
         ));
         assert!(matches!(
@@ -2778,7 +2821,13 @@ fn regression_case_rename_updates_parent_times() {
     let object = volume.create_directory(ROOT, name("child")).unwrap();
     let parent = volume.open_directory(ROOT).unwrap();
     volume
-        .set_times(&parent, None, Some(Timestamp::new(1, 0).unwrap()))
+        .set_attributes(
+            &parent,
+            AttributeChange {
+                modification: Some(Timestamp::new(1, 0).unwrap()),
+                ..Default::default()
+            },
+        )
         .unwrap();
     let before = volume.attributes(ROOT).unwrap();
     volume

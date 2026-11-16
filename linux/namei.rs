@@ -11,10 +11,12 @@ use kernel::bindings;
 use kernel::ffi::c_int;
 use kernel::prelude::*;
 
-use crate::commit::{self, COMMIT_DRAFTS};
+use crate::commit;
 use crate::edit::{Disk, Txn};
 use crate::glue;
-use crate::ondisk::format::{TreeKind, MAINTENANCE_RESERVE, MAX_ID};
+use crate::ondisk::format::{
+    TreeKind, FEATURE_ATTRIBUTES, INODE_MODE, MAINTENANCE_RESERVE, MAX_ID, MODE_RECORDED,
+};
 use crate::tree::{self, le_u64, Tree};
 use crate::vfs::{Dentry, Inode};
 use crate::volume::{self, State};
@@ -38,6 +40,18 @@ const CHILDREN: usize = 32;
 const CREATED: usize = 40;
 const MODIFIED: usize = 56;
 const CHANGED: usize = 72;
+
+/// Whether the volume stores modes: root feature bit 0. Without it the mode
+/// field stays zero, as a reader that predates the feature requires.
+pub(crate) fn stores_attributes(state: &State) -> bool {
+    state.root.features & FEATURE_ATTRIBUTES != 0
+}
+
+/// Record `mode`'s nine permission bits in an inode record.
+pub(crate) fn set_mode(record: &mut [u8], mode: u32) {
+    let field = MODE_RECORDED | (mode & 0o777) as u16;
+    record[INODE_MODE..INODE_MODE + 2].copy_from_slice(&field.to_le_bytes());
+}
 
 pub(crate) fn set_u64(record: &mut [u8], offset: usize, value: u64) {
     record[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
@@ -79,8 +93,8 @@ fn changed(dir: &Inode) {
 }
 
 /// Run `f` on the open transaction of a writable volume, opening one, and
-/// committing a large one first. Faults the volume if `f` fails after its
-/// first edit.
+/// committing first when the transaction is large or the workspace is short
+/// (`commit::make_room`). Faults the volume if `f` fails after its first edit.
 pub(crate) fn mutate<T>(
     sb: *mut bindings::super_block,
     f: impl FnOnce(&mut State, &Disk) -> Result<T>,
@@ -93,13 +107,7 @@ pub(crate) fn mutate<T>(
     if state.faulted {
         return Err(EIO);
     }
-    if state
-        .txn
-        .as_ref()
-        .is_some_and(|txn| txn.drafts.len() >= COMMIT_DRAFTS)
-    {
-        commit::commit(sb, &mut state)?;
-    }
+    commit::make_room(sb, &mut state)?;
     if state.txn.is_none() {
         let txn = Txn::new(&state.root, state.hint)?;
         state.txn = Some(txn);
@@ -177,6 +185,29 @@ fn read_entry(sb: *mut bindings::super_block, state: &State, key: &[u8]) -> Resu
     })
 }
 
+/// The catalog key of the entry `folded` in directory `parent`.
+fn entry_key(parent: u64, folded: &[u8]) -> Result<KVec<u8>> {
+    let mut key = KVec::with_capacity(9 + folded.len(), GFP_KERNEL)?;
+    key.extend_from_slice(&tree::prefix(parent, tree::ENTRY), GFP_KERNEL)?;
+    key.extend_from_slice(folded, GFP_KERNEL)?;
+    Ok(key)
+}
+
+/// An existing entry's whole value: target, type, and stored spelling.
+fn read_entry_value(sb: *mut bindings::super_block, state: &State, key: &[u8]) -> Result<KVec<u8>> {
+    let mut value = KVec::new();
+    Tree::catalog(sb, state)
+        .get(key, |bytes| tree::append(&mut value, bytes))?
+        .ok_or(ENOENT)?;
+    if value.len() < 12 {
+        return Err(crate::corrupt(
+            0,
+            crate::ondisk::error::Error::Corrupt("short directory entry"),
+        ));
+    }
+    Ok(value)
+}
+
 fn entry_value(target: u64, kind: u8, stored: &[u8]) -> Result<KVec<u8>> {
     let mut value = KVec::with_capacity(12 + stored.len(), GFP_KERNEL)?;
     value.extend_from_slice(&target.to_le_bytes(), GFP_KERNEL)?;
@@ -226,19 +257,24 @@ fn parse_name(dentry: &Dentry) -> Result<(KVec<u8>, KVec<u8>)> {
 }
 
 /// Create an object of `kind` named by `dentry` in `dir`; its new inode.
+/// `mode` is the one the VFS passed, umask applied; a symlink has none.
 fn create_object(
     dir: &Inode,
-    dentry: &Dentry,
+    dentry: Option<&Dentry>,
     kind: u8,
     target: &[u8],
+    mode: Option<bindings::umode_t>,
 ) -> Result<*mut bindings::inode> {
-    let (stored, folded) = parse_name(dentry)?;
+    let (stored, folded) = match dentry {
+        Some(dentry) => parse_name(dentry)?,
+        None => (KVec::new(), KVec::new()),
+    };
     let (sb, parent) = (dir.super_block().as_ptr(), dir.object());
     let mut key = KVec::with_capacity(9 + folded.len(), GFP_KERNEL)?;
     key.extend_from_slice(&tree::prefix(parent, tree::ENTRY), GFP_KERNEL)?;
     key.extend_from_slice(&folded, GFP_KERNEL)?;
     let object = mutate(sb, |state, disk| {
-        if read_entry(sb, state, &key)?.is_some() {
+        if dentry.is_some() && read_entry(sb, state, &key)?.is_some() {
             return Err(EEXIST);
         }
         if crate::reserve::available(state) < HEADROOM {
@@ -252,6 +288,9 @@ fn create_object(
         let mut record = KVec::with_capacity(128 + target.len(), GFP_KERNEL)?;
         record.resize(128, 0, GFP_KERNEL)?;
         record[0] = kind;
+        if let Some(mode) = mode.filter(|_| stores_attributes(state)) {
+            set_mode(&mut record, mode.into());
+        }
         set_u64(&mut record, PARENT, parent);
         set_u64(&mut record, SIZE, target.len() as u64);
         set_time(&mut record, CREATED, time);
@@ -261,23 +300,94 @@ fn create_object(
         let value = entry_value(object, kind, &stored)?;
         txn(state).next_object = object + 1;
         write_record(state, disk, object, &record)?;
-        txn(state).put(disk, TreeKind::Catalog, &key, &value)?;
-        touch_parent(sb, state, disk, dir, 1, time)?;
+        if dentry.is_some() {
+            txn(state).put(disk, TreeKind::Catalog, &key, &value)?;
+            touch_parent(sb, state, disk, dir, 1, time)?;
+        } else {
+            orphan(sb, state, disk, object, time)?;
+        }
         Ok(object)
     })?;
-    changed(dir);
+    if dentry.is_some() {
+        changed(dir);
+    }
     inode::get(sb, object)
+}
+
+unsafe extern "C" fn tmpfile(
+    _idmap: *mut bindings::mnt_idmap,
+    dir: *mut bindings::inode,
+    file: *mut bindings::file,
+    mode: bindings::umode_t,
+) -> c_int {
+    // SAFETY: The VFS holds the directory and the unopened file referenced.
+    let dir = unsafe { Inode::from_raw(dir) };
+    match create_object(dir, None, FILE, &[], Some(mode)) {
+        // SAFETY: The helper transfers the inode reference to the temporary dentry.
+        Ok(inode) => unsafe { glue::carryfs_finish_tmpfile(file, inode) },
+        Err(error) => error.to_errno(),
+    }
+}
+
+unsafe extern "C" fn link(
+    old: *mut bindings::dentry,
+    dir: *mut bindings::inode,
+    dentry: *mut bindings::dentry,
+) -> c_int {
+    // SAFETY: The VFS holds the dentries and both inodes, with mutation locks.
+    let (old, dir_ref, new) = unsafe {
+        (
+            Dentry::from_raw(old),
+            Inode::from_raw(dir),
+            Dentry::from_raw(dentry),
+        )
+    };
+    let Some(inode) = old.inode() else {
+        return ENOENT.to_errno();
+    };
+    let result: Result = (|| {
+        let (stored, folded) = parse_name(new)?;
+        let key = entry_key(dir_ref.object(), &folded)?;
+        let sb = dir_ref.super_block().as_ptr();
+        mutate(sb, |state, disk| {
+            let mut record = read_record(sb, state, inode.object())?;
+            if record[0] != FILE || record[1] & ORPHAN == 0 {
+                return Err(EPERM);
+            }
+            if read_entry(sb, state, &key)?.is_some() {
+                return Err(EEXIST);
+            }
+            let time = now();
+            record[1] &= !ORPHAN;
+            set_u64(&mut record, PARENT, dir_ref.object());
+            set_time(&mut record, CHANGED, time);
+            let value = entry_value(inode.object(), FILE, &stored)?;
+            write_record(state, disk, inode.object(), &record)?;
+            txn(state).put(disk, TreeKind::Catalog, &key, &value)?;
+            txn(state).delete(disk, TreeKind::Cleanup, &orphan_key(inode.object()))?;
+            touch_parent(sb, state, disk, dir_ref, 1, time)?;
+            inode::refresh_times(inode, state)
+        })?;
+        changed(dir_ref);
+        // SAFETY: The new dentry takes its own reference; this is the file's only link.
+        unsafe { glue::carryfs_link_tmpfile(dentry, inode.as_ptr()) };
+        Ok(())
+    })();
+    match result {
+        Ok(()) => 0,
+        Err(error) => error.to_errno(),
+    }
 }
 
 unsafe extern "C" fn create(
     _idmap: *mut bindings::mnt_idmap,
     dir: *mut bindings::inode,
     dentry: *mut bindings::dentry,
-    _mode: bindings::umode_t,
+    mode: bindings::umode_t,
 ) -> c_int {
     // SAFETY: The VFS holds `dir` locked and `dentry` referenced.
     let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
-    match create_object(dir_ref, dentry_ref, FILE, &[]) {
+    match create_object(dir_ref, Some(dentry_ref), FILE, &[], Some(mode)) {
         // SAFETY: `d_instantiate` takes the new inode's reference.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -333,11 +443,11 @@ unsafe extern "C" fn mkdir(
     _idmap: *mut bindings::mnt_idmap,
     dir: *mut bindings::inode,
     dentry: *mut bindings::dentry,
-    _mode: bindings::umode_t,
+    mode: bindings::umode_t,
 ) -> *mut bindings::dentry {
     // SAFETY: As in `create`.
     let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
-    match create_object(dir_ref, dentry_ref, DIRECTORY, &[]) {
+    match create_object(dir_ref, Some(dentry_ref), DIRECTORY, &[], Some(mode)) {
         // SAFETY: As in `create`.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -363,7 +473,7 @@ unsafe extern "C" fn symlink(
     }
     // SAFETY: As in `create`.
     let (dir_ref, dentry_ref) = unsafe { (Inode::from_raw(dir), Dentry::from_raw(dentry)) };
-    match create_object(dir_ref, dentry_ref, SYMLINK, target) {
+    match create_object(dir_ref, Some(dentry_ref), SYMLINK, target, None) {
         // SAFETY: As in `create`.
         Ok(inode) => unsafe {
             bindings::d_instantiate(dentry, inode);
@@ -427,6 +537,7 @@ unsafe extern "C" fn rmdir(dir: *mut bindings::inode, dentry: *mut bindings::den
 
 /// `rename(2)` flags the format supports.
 const RENAME_NOREPLACE: u32 = 1;
+const RENAME_EXCHANGE: u32 = 2;
 
 unsafe extern "C" fn rename(
     _idmap: *mut bindings::mnt_idmap,
@@ -436,7 +547,8 @@ unsafe extern "C" fn rename(
     new_dentry: *mut bindings::dentry,
     flags: u32,
 ) -> c_int {
-    if flags & !RENAME_NOREPLACE != 0 {
+    // The VFS refuses exchange with no-replace.
+    if flags & !(RENAME_NOREPLACE | RENAME_EXCHANGE) != 0 {
         return EINVAL.to_errno();
     }
     // SAFETY: The VFS holds both directories and both dentries locked.
@@ -448,10 +560,73 @@ unsafe extern "C" fn rename(
             Dentry::from_raw(new_dentry),
         )
     };
-    match rename_entry(operands.0, operands.1, operands.2, operands.3, flags) {
+    let result = if flags & RENAME_EXCHANGE != 0 {
+        exchange_entries(operands.0, operands.1, operands.2, operands.3)
+    } else {
+        rename_entry(operands.0, operands.1, operands.2, operands.3, flags)
+    };
+    match result {
         Ok(()) => 0,
         Err(error) => error.to_errno(),
     }
+}
+
+/// Exchange the objects `old_dentry` and `new_dentry` name. Each entry keeps
+/// its stored spelling. The VFS checked that both exist and that neither
+/// directory would land inside itself, and it swaps the dentries afterwards.
+fn exchange_entries(
+    old_dir: &Inode,
+    old_dentry: &Dentry,
+    new_dir: &Inode,
+    new_dentry: &Dentry,
+) -> Result {
+    let (_, old_folded) = parse_name(old_dentry)?;
+    let (_, new_folded) = parse_name(new_dentry)?;
+    let (sb, from, to) = (
+        old_dir.super_block().as_ptr(),
+        old_dir.object(),
+        new_dir.object(),
+    );
+    let keys = [entry_key(from, &old_folded)?, entry_key(to, &new_folded)?];
+    mutate(sb, |state, disk| {
+        // Read everything first: a failure after the first edit faults the volume.
+        let mut values = [
+            read_entry_value(sb, state, &keys[0])?,
+            read_entry_value(sb, state, &keys[1])?,
+        ];
+        let objects = [le_u64(&values[0], 0), le_u64(&values[1], 0)];
+        let mut records = [
+            read_record(sb, state, objects[0])?,
+            read_record(sb, state, objects[1])?,
+        ];
+        let time = now();
+        // Target and type lead an entry; the stored spelling after them stays.
+        let (first, second) = values.split_at_mut(1);
+        first[0][..9].swap_with_slice(&mut second[0][..9]);
+        for (record, parent) in records.iter_mut().zip([to, from]) {
+            set_u64(record, PARENT, parent);
+            set_time(record, CHANGED, time);
+        }
+        for (key, value) in keys.iter().zip(&values) {
+            txn(state).put(disk, TreeKind::Catalog, key, value)?;
+        }
+        for (object, record) in objects.iter().zip(&records) {
+            write_record(state, disk, *object, record)?;
+        }
+        for dentry in [old_dentry, new_dentry] {
+            if let Some(inode) = dentry.inode() {
+                inode::refresh_times(inode, state)?;
+            }
+        }
+        touch_parent(sb, state, disk, old_dir, 0, time)?;
+        if from != to {
+            touch_parent(sb, state, disk, new_dir, 0, time)?;
+        }
+        Ok(())
+    })?;
+    changed(old_dir);
+    changed(new_dir);
+    Ok(())
 }
 
 /// Rename `old_dentry` in `old_dir` to `new_dentry` in `new_dir`, all
@@ -470,12 +645,7 @@ fn rename_entry(
         old_dir.object(),
         new_dir.object(),
     );
-    let mut old_key = KVec::new();
-    old_key.extend_from_slice(&tree::prefix(from, tree::ENTRY), GFP_KERNEL)?;
-    old_key.extend_from_slice(&old_folded, GFP_KERNEL)?;
-    let mut new_key = KVec::new();
-    new_key.extend_from_slice(&tree::prefix(to, tree::ENTRY), GFP_KERNEL)?;
-    new_key.extend_from_slice(&new_folded, GFP_KERNEL)?;
+    let (old_key, new_key) = (entry_key(from, &old_folded)?, entry_key(to, &new_folded)?);
     let mut victim_unlinked = false;
     mutate(sb, |state, disk| {
         let source = read_entry(sb, state, &old_key)?.ok_or(ENOENT)?;
@@ -566,6 +736,8 @@ pub(crate) static DIRECTORY_INODE_OPERATIONS: inode::Ops<bindings::inode_operati
     inode::Ops(bindings::inode_operations {
         lookup: Some(inode::lookup),
         create: Some(CreateOp::OP),
+        tmpfile: Some(tmpfile),
+        link: Some(link),
         mkdir: Some(mkdir),
         symlink: Some(symlink),
         unlink: Some(unlink),

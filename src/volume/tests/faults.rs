@@ -316,12 +316,20 @@ fn wrong_address_reads_and_payload_replay_fail_checksums_without_verified_output
             vec![0; UNIT_BYTES]
         );
         #[cfg(unix)]
-        assert_eq!(
-            std::os::unix::fs::MetadataExt::blocks(
-                &std::fs::metadata(output.root.join("a")).unwrap()
-            ),
-            0
-        );
+        {
+            // UFS allocates an EOF block even when a file contains only a hole.
+            let baseline = output.root.join("allocation-baseline");
+            std::fs::File::create(&baseline)
+                .unwrap()
+                .set_len(UNIT_BYTES as u64)
+                .unwrap();
+            assert_eq!(
+                std::os::unix::fs::MetadataExt::blocks(
+                    &std::fs::metadata(output.root.join("a")).unwrap()
+                ),
+                std::os::unix::fs::MetadataExt::blocks(&std::fs::metadata(baseline).unwrap())
+            );
+        }
         assert_eq!(
             std::fs::read(output.root.join("b")).unwrap(),
             vec![0x72; UNIT_BYTES]

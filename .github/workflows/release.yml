@@ -59,10 +59,53 @@ jobs:
           path: payload
           if-no-files-found: error
 
+  freebsd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '14.5'
+            architecture: x86-64
+            platform: freebsd14-x86_64
+          - version: '14.5'
+            architecture: arm64
+            platform: freebsd14-arm64
+          - version: '15.1'
+            architecture: x86-64
+            platform: freebsd15-x86_64
+          - version: '15.1'
+            architecture: arm64
+            platform: freebsd15-arm64
+    steps:
+      - uses: actions/checkout@v7
+      - name: FreeBSD VM
+        uses: cross-platform-actions/action@ef53f0d3fd471648f2758f3fcdc3cb2aa40c87cb # v1.7.0
+        with:
+          operating_system: freebsd
+          architecture: ${{ matrix.architecture }}
+          version: ${{ matrix.version }}
+      - name: Build and stage
+        shell: cpa.sh {0}
+        run: |
+          sudo pkg install -y rust bash
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+            [ "$GITHUB_REF_NAME" = "v$version" ]
+          fi
+          cargo build --release --locked -p carryfs-core -p carryfs-fuse
+          bash packaging/stage-release.sh ${{ matrix.platform }} payload
+      - uses: actions/upload-artifact@v7
+        with:
+          name: payload-${{ matrix.platform }}
+          path: payload
+          if-no-files-found: error
+
   # Archives are built on Linux so the Windows zip has forward-slash entries,
   # which install.ps1 requires.
   package:
-    needs: build
+    needs: [build, freebsd]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
@@ -73,7 +116,7 @@ jobs:
           set -euo pipefail
           version=$(cat payloads/payload-linux-x86_64/VERSION)
           mkdir dist
-          for platform in linux-x86_64 macos-arm64; do
+          for platform in linux-x86_64 macos-arm64 freebsd14-x86_64 freebsd14-arm64 freebsd15-x86_64 freebsd15-arm64; do
             [ "$(cat payloads/payload-$platform/VERSION)" = "$version" ]
             tar --owner=0 --group=0 --numeric-owner -czf "dist/carryfs-$version-$platform.tar.gz" -C "payloads/payload-$platform" .
           done

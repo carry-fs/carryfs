@@ -9,7 +9,7 @@
 //! creation. So `flush` is left to fuser's default `ENOSYS`, after which Linux
 //! and macFUSE stop sending FLUSH for the mount, one round trip fewer per close.
 //!
-//! Linux publishes in `before_destroy`, while the mount still owns the
+//! Linux and FreeBSD publish in `before_destroy`, while the mount still owns the
 //! device, and fuser waits for it before replying to DESTROY. `destroy`
 //! runs after that reply and issues no Linux writes. The Linux syncfs
 //! callback also publishes and returns publication errors to the caller.
@@ -34,15 +34,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "macos")]
 use carryfs_core::ROOT;
 use carryfs_core::{
-    Access, Attributes, BlockDevice, DirectoryEntry, Error, Handle, Name, ObjectId, ObjectKind,
-    RemoveKind, Replace, Timestamp, Volume,
+    Access, AttributeChange, Attributes, BlockDevice, DirectoryEntry, Error, Handle, Mode, Name,
+    NewAttributes, ObjectId, ObjectKind, RemoveKind, Replace, Timestamp, Volume,
 };
 use fuser::{
-    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
-    KernelConfig, LockOwner, Notifier, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
+    KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
     ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
+
+#[cfg(not(target_os = "freebsd"))]
+use fuser::{InitFlags, Notifier};
 
 #[cfg(target_os = "macos")]
 use crate::eject_macos::Failure;
@@ -53,7 +56,7 @@ use crate::eject_macos::Failure;
 // only an entry's stored spelling is ever given a lifetime, and every change
 // made through any other spelling invalidates cached names. Linux increments
 // the connection epoch before mutation; macOS queues per-name invalidation.
-// Older Linux kernels use zero entry TTL.
+// Older Linux kernels and FreeBSD use zero entry TTL.
 // Other spellings and missing names are never cached. Caching exact names let
 // `stat` skip the lookup round trip. Attributes
 // belong to the inode, and this mount is the only writer; the kernel drops
@@ -96,13 +99,13 @@ const MAX_WRITE: u32 = 1 << 20;
 /// `iosize` mount option nor the statfs block size changed that.
 #[cfg(target_os = "macos")]
 const IO_BYTES: u32 = MAX_WRITE;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 const IO_BYTES: u32 = 4096;
 #[cfg(target_os = "macos")]
 const MACFUSE_CASE_INSENSITIVE: u64 = 1 << 29;
-const FILE_MODE: u16 = 0o644;
-const DIRECTORY_MODE: u16 = 0o755;
-const SYMLINK_MODE: u16 = 0o777;
+/// The BSD flag Finder hides an object by.
+#[cfg(target_os = "macos")]
+const UF_HIDDEN: u32 = 0x8000;
 
 type Reply<T> = std::result::Result<T, Errno>;
 
@@ -246,11 +249,13 @@ struct State<D: BlockDevice> {
     /// Writable attributes of a clean generation; pending edits always read the core.
     #[cfg(target_os = "macos")]
     attributes: (u64, HashMap<u64, Attributes>),
+    #[cfg(target_os = "macos")]
+    transient_allocations: HashSet<u64>,
 }
 
 /// macOS keeps a volume's Trash in `.Trashes` at its top, owned by root with
 /// mode 01311, and in a folder per user named by user ID, owned by that user
-/// with mode 0700. CarryFS stores no owner or mode, and Finder deleted
+/// with mode 0700. CarryFS stores no owner and no sticky bit, and Finder deleted
 /// immediately rather than use a Trash reported as the console user's with
 /// mode 0755; setting them failed. exFAT avoids this with `noowners`, which
 /// macFUSE ignores. So these folders report what macOS expects; the daemon
@@ -288,6 +293,8 @@ impl<D: BlockDevice> State<D> {
             directory_cache: None,
             #[cfg(target_os = "macos")]
             attributes: (0, HashMap::new()),
+            #[cfg(target_os = "macos")]
+            transient_allocations: HashSet::new(),
         }
     }
 
@@ -455,13 +462,17 @@ impl<D: BlockDevice> CarryFs<D> {
         strict: bool,
     ) -> (Self, Receiver<(INodeNo, OsString)>) {
         let (stale, forgotten) = channel();
-        #[cfg(target_os = "linux")]
+        #[cfg(not(target_os = "macos"))]
         drop(stale);
         let fs = Self {
             state: Arc::new(Mutex::new(State::new(volume))),
             owner,
             read_buffer: Mutex::new(Vec::new()),
-            entry_ttl: if strict { NO_TTL } else { ENTRY_TTL },
+            entry_ttl: if strict || cfg!(target_os = "freebsd") {
+                NO_TTL
+            } else {
+                ENTRY_TTL
+            },
             attr_ttl: ATTR_TTL,
             #[cfg(target_os = "macos")]
             stale,
@@ -506,7 +517,7 @@ impl<D: BlockDevice> CarryFs<D> {
         requested: &OsStr,
         stored: &[u8],
     ) -> Duration {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
             let _ = (state, parent);
             name_ttl(requested, stored, self.entry_ttl)
@@ -577,7 +588,6 @@ impl<D: BlockDevice> CarryFs<D> {
     }
 
     fn attr(&self, object: ObjectId, attributes: &Attributes) -> Reply<FileAttr> {
-        let (kind, perm) = file_type(attributes.kind);
         let modification = system_time(attributes.modification)?;
         Ok(FileAttr {
             ino: INodeNo(object.get()),
@@ -588,14 +598,17 @@ impl<D: BlockDevice> CarryFs<D> {
             mtime: modification,
             ctime: system_time(attributes.metadata_change)?,
             crtime: system_time(attributes.creation)?,
-            kind,
-            perm,
+            kind: file_type(attributes.kind),
+            perm: attributes.mode.bits(),
             // Link counts are not stored; 1 tells tools such as find not to infer
             // subdirectories. An unlinked object still open reports 0, as fstat expects.
             nlink: u32::from(!attributes.orphan),
             uid: self.owner.uid,
             gid: self.owner.gid,
             rdev: 0,
+            #[cfg(target_os = "macos")]
+            flags: if attributes.hidden { UF_HIDDEN } else { 0 },
+            #[cfg(not(target_os = "macos"))]
             flags: 0,
             blksize: IO_BYTES,
         })
@@ -695,6 +708,14 @@ impl<D: BlockDevice> State<D> {
             Open::File(other, _) => *other == object,
             Open::Directory(listing) => listing.directory == object,
         });
+        let trimmed: Reply<()> = Ok(());
+        #[cfg(target_os = "macos")]
+        let trimmed = if !pinned && self.transient_allocations.remove(&object.get()) {
+            self.quiet = None;
+            with_space(&mut self.volume, |v| v.trim_allocation(object)).map_err(|e| errno(&e))
+        } else {
+            trimmed
+        };
         // An unpinned orphan is new cleanup work. Marking the volume unquiet
         // lets the timer pick it up; a close does not publish. If attributes
         // fail, the next maintenance step reports the underlying error.
@@ -706,7 +727,7 @@ impl<D: BlockDevice> State<D> {
         if unpinned_orphan {
             self.quiet = None;
         }
-        Ok(())
+        trimmed
     }
 
     /// Publish pending changes and run bounded cleanup when there may be work.
@@ -749,19 +770,21 @@ impl<D: BlockDevice> State<D> {
     /// Apply a `setattr` in as few commits as it allows. The kernel sends a
     /// size change with a modification time of now, which the core's truncate
     /// sets in the same commit, so the usual request is one commit and cannot
-    /// fail halfway. `size` is `None` when the size does not change.
-    fn set_size_and_times(
+    /// fail halfway. `size` is `None` when the size does not change; `change`
+    /// carries the other attributes, and its modification time comes from
+    /// `mtime`.
+    fn set_size_and_attributes(
         &mut self,
         object: ObjectId,
         size: Option<u64>,
         mtime: Option<TimeOrNow>,
-        creation: Option<Timestamp>,
+        mut change: AttributeChange,
     ) -> Reply<()> {
-        let modification = match mtime {
+        change.modification = match mtime {
             Some(TimeOrNow::Now) if size.is_some() => None,
             mtime => mtime.map(time_or_now).transpose()?,
         };
-        if size.is_none() && modification.is_none() && creation.is_none() {
+        if size.is_none() && change == AttributeChange::default() {
             return Ok(());
         }
         // A temporary handle also reaches an unlinked file still open elsewhere.
@@ -779,10 +802,10 @@ impl<D: BlockDevice> State<D> {
                 with_space(&mut self.volume, |volume| volume.truncate(&handle, size))
             })
             .and_then(|()| {
-                if modification.is_some() || creation.is_some() {
-                    self.volume.set_times(&handle, creation, modification)
-                } else {
+                if change == AttributeChange::default() {
                     Ok(())
+                } else {
+                    self.volume.set_attributes(&handle, change)
                 }
             });
         let close = self.volume.close_handle(handle);
@@ -1111,7 +1134,7 @@ impl Listing {
                 volume,
                 entry.object.get(),
                 index + 3,
-                file_type(entry.kind).0,
+                file_type(entry.kind),
                 OsStr::from_bytes(entry.name.stored()),
             ) {
                 return Ok(());
@@ -1151,7 +1174,9 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         #[cfg(target_os = "macos")]
         config
             .add_capabilities(
-                InitFlags::from_bits_retain(MACFUSE_CASE_INSENSITIVE) | InitFlags::FUSE_VOL_RENAME,
+                InitFlags::from_bits_retain(MACFUSE_CASE_INSENSITIVE)
+                    | InitFlags::FUSE_VOL_RENAME
+                    | InitFlags::FUSE_ALLOCATE,
             )
             .map_err(|_| {
                 io::Error::other("macFUSE lacks case-insensitive names or volume rename")
@@ -1188,7 +1213,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
 
     /// Publish while the mount still owns the device, before unmount can
     /// return. A failed publication must allow removal, with a warning.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn before_destroy(&self) {
         let result = self.with(|state| {
             state.ended = true;
@@ -1304,7 +1329,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
-        _flags: Option<fuser::BsdFileFlags>,
+        flags: Option<fuser::BsdFileFlags>,
         _killpriv: bool,
         reply: ReplyAttr,
     ) {
@@ -1312,19 +1337,39 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             let object = id(ino)?;
             let current = s.volume.attributes(object).map_err(|e| errno(&e))?;
             let shown = s.entry(self, object)?;
-            // macOS copies restore mode and timestamps together. Accept mode
-            // as a no-op so Finder can clear its unfinished-copy timestamp;
-            // reported permissions stay synthetic.
-            if (cfg!(target_os = "linux")
-                && mode.is_some_and(|mode| mode & 0o7777 != u32::from(shown.perm)))
-                || uid.is_some_and(|uid| uid != shown.uid)
-                || gid.is_some_and(|gid| gid != shown.gid)
+            if uid.is_some_and(|uid| uid != shown.uid) || gid.is_some_and(|gid| gid != shown.gid) {
+                return Err(Errno::EPERM);
+            }
+            let stores = s.volume.stores_attributes();
+            // Setuid, setgid and sticky are dropped: CarryFS stores nine bits.
+            let mode = mode.map(Mode::from_host);
+            // Without the feature a Linux or FreeBSD chmod that changes the
+            // mode fails. macOS copies restore mode and timestamps together,
+            // so there it is a no-op and Finder can clear its unfinished-copy
+            // timestamp.
+            if cfg!(any(target_os = "linux", target_os = "freebsd"))
+                && !stores
+                && mode.is_some_and(|mode| mode != current.mode)
             {
                 return Err(Errno::EPERM);
             }
-            let creation = crtime.map(timestamp).transpose()?;
+            // Other BSD flags are accepted and dropped, as before.
+            #[cfg(target_os = "macos")]
+            let hidden = flags.map(|flags| flags.bits() & UF_HIDDEN != 0);
+            // Linux has no file flags, and FreeBSD's fusefs drops them.
+            #[cfg(not(target_os = "macos"))]
+            let hidden: Option<bool> = {
+                let _ = flags;
+                None
+            };
+            let change = AttributeChange {
+                creation: crtime.map(timestamp).transpose()?,
+                mode: mode.filter(|_| stores),
+                hidden: hidden.filter(|_| stores),
+                ..AttributeChange::default()
+            };
             let resize = size.filter(|&size| size != current.size);
-            s.set_size_and_times(object, resize, mtime, creation)?;
+            s.set_size_and_attributes(object, resize, mtime, change)?;
             s.entry(self, object)
         }) {
             Ok(attr) => reply.attr(&self.attr_ttl, &attr),
@@ -1337,7 +1382,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         _req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         _owner: fuser::Owner,
         reply: ReplyEntry,
@@ -1345,7 +1390,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         match self.with(|s| {
             let (parent, requested, name) = (id(parent)?, name, parse(name)?);
             let object = with_space(&mut s.volume, |volume| {
-                volume.create_directory(parent, name.clone())
+                volume.create_directory_with(parent, name.clone(), created(mode))
             })
             .map_err(|e| errno(&e))?;
             s.changed_directory(parent);
@@ -1416,10 +1461,46 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         reply_empty(
             reply,
             self.with(|s| {
-                let replace = rename_replace(flags)?;
                 let (source_parent, source) = (id(parent)?, parse(name)?);
                 let (destination_parent, destination) = (id(newparent)?, parse(newname)?);
+                // Archive Utility and NSFileManager's replaceItem swap a finished
+                // temporary item into place and do not fall back.
+                #[cfg(not(target_os = "freebsd"))]
+                if flags == SWAP {
+                    let mut entry =
+                        |parent, name| s.volume.lookup_entry(parent, name).map_err(|e| errno(&e));
+                    let first = entry(source_parent, &source)?;
+                    let second = entry(destination_parent, &destination)?;
+                    // The kernel exchanges the requested dentries; other spellings go stale.
+                    #[cfg(target_os = "linux")]
+                    self.invalidate_names(
+                        &mut s.notifier,
+                        name.as_bytes() != first.name.stored()
+                            || newname.as_bytes() != second.name.stored(),
+                    )
+                    .map_err(|error| errno(&error))?;
+                    with_space(&mut s.volume, |volume| {
+                        volume.swap(source_parent, &source, destination_parent, &destination)
+                    })
+                    .map_err(|e| errno(&e))?;
+                    for object in [
+                        source_parent,
+                        destination_parent,
+                        first.object,
+                        second.object,
+                    ] {
+                        s.changed_directory(object);
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.forget(parent, name, first.name.stored());
+                        self.forget(newparent, newname, second.name.stored());
+                    }
+                    return Ok(());
+                }
+                let replace = rename_replace(flags)?;
                 let moved = s.volume.lookup_entry(source_parent, &source).ok();
+                #[cfg(not(target_os = "freebsd"))]
                 let replaced = s.volume.lookup_entry(destination_parent, &destination).ok();
                 #[cfg(target_os = "linux")]
                 self.invalidate_names(
@@ -1501,7 +1582,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         _req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         _flags: i32,
         _killpriv: bool,
@@ -1511,7 +1592,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         match self.with(|s| {
             let (parent, requested, name) = (id(parent)?, name, parse(name)?);
             let handle = with_space(&mut s.volume, |volume| {
-                volume.create_file(parent, name.clone())
+                volume.create_file_with(parent, name.clone(), created(mode))
             })
             .map_err(|e| open_errno(&e))?;
             s.changed_directory(parent);
@@ -1543,6 +1624,64 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                     FILE_OPEN,
                 );
             }
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn tmpfile(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        mode: u32,
+        _umask: u32,
+        _flags: i32,
+        _killpriv: bool,
+        _owner: fuser::Owner,
+        reply: ReplyCreate,
+    ) {
+        match self.with(|s| {
+            let parent = id(parent)?;
+            let (object, handle) = with_space(&mut s.volume, |volume| {
+                volume.create_tmpfile(parent, created(mode))
+            })
+            .map_err(|e| open_errno(&e))?;
+            let attr = match s.entry(self, object) {
+                Ok(attr) => attr,
+                Err(error) => {
+                    s.volume.close_handle(handle).map_err(|e| errno(&e))?;
+                    return Err(error);
+                }
+            };
+            Ok((attr, s.insert(Open::File(object, handle))))
+        }) {
+            Ok((attr, fh)) => reply.created(
+                &self.attr_ttl,
+                &attr,
+                Generation(0),
+                FileHandle(fh),
+                FILE_OPEN,
+            ),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn link(&self, _req: &Request, ino: INodeNo, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        match self.with(|s| {
+            let (object, parent, parsed) = (id(ino)?, id(parent)?, parse(name)?);
+            if !s.volume.attributes(object).map_err(|e| errno(&e))?.orphan {
+                return Err(Errno::EPERM);
+            }
+            with_space(&mut s.volume, |v| {
+                v.link_tmpfile(object, parent, parsed.clone())
+            })
+            .map_err(|e| errno(&e))?;
+            s.changed_directory(parent);
+            Ok((
+                s.entry(self, object)?,
+                name_ttl(name, parsed.stored(), self.entry_ttl),
+            ))
+        }) {
+            Ok((attr, ttl)) => reply.entry_with_ttls(&self.attr_ttl, &ttl, &attr, Generation(0)),
             Err(e) => reply.error(e),
         }
     }
@@ -1619,6 +1758,78 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             Ok(written) => reply.written(written),
             Err(e) => reply.error(e),
         }
+    }
+
+    fn fallocate(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        length: u64,
+        mode: i32,
+        reply: ReplyEmpty,
+    ) {
+        let result = self.with(|s| {
+            let handle = match s.open.get(&u64::from(fh)) {
+                Some(Open::File(_, handle)) => handle,
+                _ => return Err(Errno::EBADF),
+            };
+            #[cfg(not(target_os = "macos"))]
+            match mode {
+                0 | 1 => with_space(&mut s.volume, |v| {
+                    v.preallocate(handle, offset, length, mode == 1)
+                })
+                .map_err(|e| errno(&e)),
+                3 => with_space(&mut s.volume, |v| v.punch_hole(handle, offset, length))
+                    .map_err(|e| errno(&e)),
+                _ => Err(Errno::EOPNOTSUPP),
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // XNU VNOP_ALLOCATE flags, forwarded unchanged by macFUSE.
+                const PREALLOCATE: i32 = 1;
+                const CONTIGUOUS: i32 = 2;
+                const ALL: i32 = 4;
+                const PERSIST: i32 = 8;
+                const FROM_EOF: i32 = 16;
+                const FROM_VOLUME: i32 = 32;
+                if mode & PREALLOCATE == 0
+                    || mode & !(PREALLOCATE | CONTIGUOUS | ALL | PERSIST | FROM_EOF | FROM_VOLUME)
+                        != 0
+                {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                // shortcut: contiguous placement is refused; add an allocator for it when needed.
+                if mode & CONTIGUOUS != 0 {
+                    return Err(Errno::ENOSPC);
+                }
+                if mode & (FROM_EOF | FROM_VOLUME) == FROM_EOF | FROM_VOLUME {
+                    return Err(Errno::EINVAL);
+                }
+                // Both modes extend the allocation past its end; a volume
+                // offset is only a physical placement hint.
+                let end = s.volume.allocation_end(handle).map_err(|e| errno(&e))?;
+                let offset = if mode & FROM_EOF != 0 {
+                    end.checked_add(offset).ok_or(Errno::EFBIG)?
+                } else {
+                    end
+                };
+                with_space(&mut s.volume, |v| {
+                    v.preallocate(handle, offset, length, true)
+                })
+                .map_err(|e| errno(&e))?;
+                if let Some(Open::File(object, _)) = s.open.get(&u64::from(fh)) {
+                    if mode & PERSIST == 0 {
+                        s.transient_allocations.insert(object.get());
+                    } else {
+                        s.transient_allocations.remove(&object.get());
+                    }
+                }
+                Ok(())
+            }
+        });
+        reply_empty(reply, result);
     }
 
     fn release(
@@ -1778,7 +1989,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                                 // iterate_dir holds i_rwsem until fuse_readdir has
                                 // linked these names. An alias mutation cannot
                                 // overtake this reply in the same directory.
-                                #[cfg(target_os = "linux")]
+                                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                                 let ttl = self.entry_ttl;
                                 #[cfg(target_os = "macos")]
                                 let ttl = if guarded.contains(name.as_bytes()) {
@@ -1884,7 +2095,7 @@ impl<D: BlockDevice> CarryFs<D> {
             let result = s.volume.remove_with(directory, &parsed, kind, |stored| {
                 self.invalidate_names(&mut s.notifier, name.as_bytes() != stored)
             });
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "freebsd"))]
             let result = s.volume.remove(directory, &parsed, kind);
             match result {
                 Err(Error::WrongType) if kind == RemoveKind::File => return Err(Errno::EISDIR),
@@ -1929,8 +2140,14 @@ fn drain<D: BlockDevice>(volume: &mut Volume<D>) -> Result<(), Error> {
     Ok(())
 }
 
-/// The replacement rule `renameat2` flags ask for. Exchange and whiteout are
-/// unsupported, and rename(2) documents `EINVAL` for both.
+/// The flag that asks `rename` to exchange two existing entries.
+#[cfg(target_os = "linux")]
+const SWAP: RenameFlags = RenameFlags::RENAME_EXCHANGE;
+#[cfg(target_os = "macos")]
+const SWAP: RenameFlags = RenameFlags::RENAME_SWAP;
+
+/// The replacement rule `renameat2` flags ask for. `rename` handles a lone
+/// exchange; whiteout is unsupported, and rename(2) documents `EINVAL` for it.
 #[cfg(target_os = "linux")]
 fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     if flags.is_empty() {
@@ -1942,13 +2159,21 @@ fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     }
 }
 
-/// The replacement rule `renamex_np` flags ask for. Swap is unsupported, and
-/// `ENOTSUP` is what renamex_np(2) documents for that, so callers can fall back.
+/// FreeBSD has no rename flags, so exchange never reaches `rename`.
+#[cfg(target_os = "freebsd")]
+fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
+    if flags.is_empty() {
+        Ok(Replace::Allowed)
+    } else {
+        Err(Errno::EINVAL)
+    }
+}
+
+/// The replacement rule `renamex_np` flags ask for. `rename` handles a lone
+/// swap; swap with exclusive is contradictory, so `EINVAL`.
 #[cfg(target_os = "macos")]
 fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
-    if flags.contains(RenameFlags::RENAME_SWAP) {
-        Err(Errno::ENOTSUP)
-    } else if flags == RenameFlags::RENAME_EXCL {
+    if flags == RenameFlags::RENAME_EXCL {
         Ok(Replace::Forbidden)
     } else if flags.is_empty() {
         Ok(Replace::Allowed)
@@ -1973,12 +2198,21 @@ fn parse(name: &OsStr) -> Reply<Name> {
     Name::parse(text).map_err(|e| errno(&e))
 }
 
-/// The FUSE type and synthetic permissions of an object kind.
-fn file_type(kind: ObjectKind) -> (FileType, u16) {
+/// The FUSE type of an object kind.
+fn file_type(kind: ObjectKind) -> FileType {
     match kind {
-        ObjectKind::File => (FileType::RegularFile, FILE_MODE),
-        ObjectKind::Directory => (FileType::Directory, DIRECTORY_MODE),
-        ObjectKind::Symlink => (FileType::Symlink, SYMLINK_MODE),
+        ObjectKind::File => FileType::RegularFile,
+        ObjectKind::Directory => FileType::Directory,
+        ObjectKind::Symlink => FileType::Symlink,
+    }
+}
+
+/// What a create stores: the mode the kernel passes, which already has the
+/// umask applied because the adapter does not negotiate `FUSE_DONT_MASK`.
+fn created(mode: u32) -> NewAttributes {
+    NewAttributes {
+        mode: Some(Mode::from_host(mode)),
+        hidden: false,
     }
 }
 
@@ -2202,6 +2436,59 @@ mod tests {
             let _ = Self::recv(&self.client);
             self.runner.take().unwrap().join().unwrap().unwrap();
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tmpfile_allocation_and_publication_dispatch_through_fuse() {
+        let session = NameSession::new("tmpfile-allocation", 44, false);
+        let mut create = vec![0; 16];
+        create[..4].copy_from_slice(&(libc::O_TMPFILE | libc::O_RDWR).to_ne_bytes());
+        create[4..8].copy_from_slice(&0o100600u32.to_ne_bytes());
+        create.push(0); // The ABI carries an ignored, NUL-terminated name.
+        let reply = session.call(51, &create);
+        assert_eq!(NameSession::error(&reply), 0);
+        let object = u64::from_ne_bytes(reply[16..24].try_into().unwrap());
+        let fh = u64::from_ne_bytes(reply[144..152].try_into().unwrap());
+        let allocate = |mode: u32| {
+            let mut input = Vec::new();
+            input.extend_from_slice(&fh.to_ne_bytes());
+            input.extend_from_slice(&0u64.to_ne_bytes());
+            input.extend_from_slice(&65_536u64.to_ne_bytes());
+            input.extend_from_slice(&mode.to_ne_bytes());
+            input.extend_from_slice(&0u32.to_ne_bytes());
+            NameSession::send(&session.client, 43, object, &input);
+            assert_eq!(NameSession::error(&NameSession::recv(&session.client)), 0);
+        };
+        allocate(1);
+        {
+            let mut state = session.state.0.lock().unwrap();
+            let attr = state
+                .volume
+                .attributes(ObjectId::new(object).unwrap())
+                .unwrap();
+            assert_eq!(
+                (attr.size, attr.allocated_bytes, attr.orphan),
+                (0, 65_536, true)
+            );
+        }
+        allocate(3);
+        allocate(0);
+        let mut link = object.to_ne_bytes().to_vec();
+        link.extend_from_slice(b"published\0");
+        session.mutation(13, &link, false);
+        let mut state = session.state.0.lock().unwrap();
+        let object = state
+            .volume
+            .lookup(ROOT, &Name::parse("published").unwrap())
+            .unwrap();
+        assert!(!state.volume.attributes(object).unwrap().orphan);
+        assert_eq!(state.volume.attributes(object).unwrap().size, 65_536);
+        drop(state);
+        let mut release = vec![0; 24];
+        release[..8].copy_from_slice(&fh.to_ne_bytes());
+        NameSession::send(&session.client, 18, object.get(), &release);
+        assert_eq!(NameSession::error(&NameSession::recv(&session.client)), 0);
     }
 
     /// A full plus reply leaves the next reply's attributes read ahead. They
@@ -2474,6 +2761,35 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[ignore = "requires a Linux FUSE mount"]
+    fn tmpfile_and_allocation_syscalls() {
+        let (image, mut volume) = volume("allocation-syscalls");
+        volume.set_deferred_checkpoints(true).unwrap();
+        let (fs, _) = CarryFs::new(volume, Owner { uid: 0, gid: 0 }, false);
+        let state = fs.finisher();
+        let point = image.0.with_extension("mnt");
+        std::fs::create_dir(&point).unwrap();
+        let session = fuser::Session::new(fs, &point, &fuser::Config::default()).unwrap();
+        state.set_notifier(session.notifier()).unwrap();
+        let background = session.spawn().unwrap();
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../linux/tests/tmpfile_and_punch.py");
+        let result = std::process::Command::new("python3")
+            .arg(script)
+            .arg(&point)
+            .status();
+        background.umount_and_join().unwrap();
+        std::fs::remove_dir(point).unwrap();
+        drop(state);
+        assert!(result.unwrap().success());
+        Volume::open(ImageDevice::open(&image.0, carryfs_core::MountMode::ReadOnly).unwrap())
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     #[ignore = "requires /dev/fuse and fusermount3"]
     fn kernel_directory_cache_survives_reopen() {
         for (read_only, strict) in [(true, false), (false, false), (false, true)] {
@@ -2647,12 +2963,12 @@ mod tests {
         // Only numeric names under `.Trashes`, and `.Trashes` only at the top.
         assert_eq!(
             folder(&mut s, trashes, "notes").1,
-            (501, 20, DIRECTORY_MODE)
+            (501, 20, Mode::DIRECTORY.bits())
         );
         let (other, _) = folder(&mut s, ROOT, "other");
         assert_eq!(
             folder(&mut s, other, ".Trashes").1,
-            (501, 20, DIRECTORY_MODE)
+            (501, 20, Mode::DIRECTORY.bits())
         );
     }
 
@@ -2663,7 +2979,7 @@ mod tests {
         assert_eq!(rename_replace(RenameFlags::empty()), Ok(Replace::Allowed));
         assert_eq!(rename_replace(noreplace), Ok(Replace::Forbidden));
         for flags in [
-            RenameFlags::RENAME_EXCHANGE,
+            RenameFlags::RENAME_EXCHANGE | noreplace,
             RenameFlags::RENAME_WHITEOUT,
             noreplace | RenameFlags::RENAME_WHITEOUT,
         ] {
@@ -2677,8 +2993,7 @@ mod tests {
         let (swap, excl) = (RenameFlags::RENAME_SWAP, RenameFlags::RENAME_EXCL);
         assert_eq!(rename_replace(RenameFlags::empty()), Ok(Replace::Allowed));
         assert_eq!(rename_replace(excl), Ok(Replace::Forbidden));
-        assert_eq!(rename_replace(swap), Err(Errno::ENOTSUP));
-        assert_eq!(rename_replace(swap | excl), Err(Errno::ENOTSUP));
+        assert_eq!(rename_replace(swap | excl), Err(Errno::EINVAL));
         assert_eq!(
             rename_replace(RenameFlags::from_bits_retain(0x8)),
             Err(Errno::EINVAL)
@@ -3121,7 +3436,14 @@ mod tests {
         let stamp = Timestamp::new(1_000_000, 0).unwrap();
         state
             .volume
-            .set_times(&file, Some(stamp), Some(stamp))
+            .set_attributes(
+                &file,
+                AttributeChange {
+                    creation: Some(stamp),
+                    modification: Some(stamp),
+                    ..AttributeChange::default()
+                },
+            )
             .unwrap();
         state.volume.sync_publication().unwrap();
         let changed = state.cached_attributes(object).unwrap();
@@ -3441,7 +3763,8 @@ mod tests {
         let object = s.volume.lookup(ROOT, &name).unwrap();
         let commits = |s: &mut State<ImageDevice>, size, mtime| {
             let before = s.volume.info().unwrap().generation;
-            s.set_size_and_times(object, size, mtime, None).unwrap();
+            s.set_size_and_attributes(object, size, mtime, AttributeChange::default())
+                .unwrap();
             s.volume.info().unwrap().generation - before
         };
         let time = |t: Timestamp| (t.seconds(), t.nanos());

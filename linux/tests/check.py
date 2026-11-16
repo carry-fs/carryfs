@@ -10,6 +10,7 @@ temporary directory on loop devices.
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import errno
 import hashlib
 import itertools
@@ -29,6 +30,18 @@ from pathlib import Path
 
 def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
+
+
+def detach(loop):
+    """Detach a loop device and wait until it releases its image, which
+    `losetup -d` leaves to finish asynchronously."""
+    run("losetup", "-d", loop)
+    backing = Path("/sys/block") / Path(loop).name / "loop/backing_file"
+    deadline = time.monotonic() + 30
+    while backing.exists():
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"{loop} did not detach")
+        time.sleep(0.02)
 
 
 class Volume:
@@ -53,10 +66,7 @@ class Volume:
     def unmount(self):
         run("umount", self.point)
         Volume.mounted.discard(self)
-        run("losetup", "-d", self.loop)
-        backing = Path("/sys/block") / Path(self.loop).name / "loop/backing_file"
-        while backing.exists():
-            time.sleep(0.02)
+        detach(self.loop)
         self.loop = None
 
     def check(self, scrub=False):
@@ -343,7 +353,7 @@ def unsupported_mount_options(volume):
                 run("umount", volume.point)
                 raise AssertionError(f"unsupported {option} mount succeeded")
     finally:
-        run("losetup", "-d", loop)
+        detach(loop)
     volume.mount()
     for option in ("sync", "dirsync"):
         result = subprocess.run(["mount", "-i", "-o", f"remount,{option}", volume.point], capture_output=True)
@@ -447,7 +457,7 @@ def corrupt_records(volume):
                 run("umount", volume.point)
                 raise AssertionError(f"native driver accepted {case}")
         finally:
-            run("losetup", "-d", loop)
+            detach(loop)
         with volume.image.open("rb") as image:
             assert hashlib.file_digest(image, "sha256").digest() == before, f"{case}: failed mount changed the image"
         print(f"  {case}: rejected without writes or root repair; {checked.stderr.strip()}")
@@ -772,6 +782,49 @@ def full_write(volume):
     print(f"  full write: {written >> 20} MiB accepted and kept; {volume.check()}")
 
 
+PUNCH_RACE_WRITER = """
+import mmap, sys, time
+deadline = time.monotonic() + float(sys.argv[2])
+lost = rounds = 0
+with open(sys.argv[1], 'r+b') as f:
+    m = mmap.mmap(f.fileno(), 0)
+    while time.monotonic() < deadline:
+        rounds += 1
+        value = rounds % 255 + 1
+        m[5] = value
+        for _ in range(200):
+            pass
+        lost += m[5] != value
+print(rounds, lost)
+"""
+
+
+def punch_race(volume, seconds=10):
+    """A shared-mapping write outside a hole is not dropped when the punch
+    discards the cache of the units it touches."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.fallocate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+    root = volume.mount()
+    path = root / "race"
+    path.write_bytes(b"x" * (4 * 65536))
+    os.sync()
+    writer = subprocess.Popen([sys.executable, "-c", PUNCH_RACE_WRITER, path, str(seconds)],
+                              stdout=subprocess.PIPE, text=True)
+    fd = os.open(path, os.O_RDWR)
+    punches = 0
+    try:
+        while writer.poll() is None:
+            # FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, leaving byte 5 outside.
+            assert libc.fallocate(fd, 3, 17, 3 * 65536 - 10) == 0, os.strerror(ctypes.get_errno())
+            punches += 1
+    finally:
+        os.close(fd)
+    rounds, lost = map(int, writer.communicate()[0].split())
+    assert lost == 0, f"{lost} of {rounds} mapped writes lost across {punches} punches"
+    volume.unmount()
+    print(f"  punch race: {rounds} mapped writes kept across {punches} punches; {volume.check()}")
+
+
 def full_truncate(volume):
     """A truncate whose tail rewrite fails for space leaves the stored size
     past i_size; a later writeback of the file must not store i_size over
@@ -877,7 +930,39 @@ def main():
     print("all checks passed")
 
 
+def tmpfile_flood(volume, count=160000):
+    """Hold many unnamed files open at once, then close them. Creating them
+    only adds catalog and cleanup pages, draining the metadata workspace, and
+    removing them supersedes those pages faster than release takes them;
+    either overran the workspace bounds before transactions shrank with them
+    (fstests generic/531)."""
+    root = volume.mount()
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    limit = max(hard, count + 64)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))
+    fds = []
+    try:
+        for _ in range(count):
+            fds.append(os.open(root, os.O_TMPFILE | os.O_RDWR, 0o600))
+    finally:
+        for fd in fds:
+            os.close(fd)
+    assert len(fds) == count, len(fds)
+    # Writable: the flood neither faulted the volume nor left it read-only.
+    (root / "after").write_bytes(b"still writable")
+    volume.unmount()
+    print(f"  unnamed file flood: {count} open at once; {volume.check()}")
+
+
 def checks(args, work):
+    print("unnamed files and hole punching")
+    volume = Volume(args.cli, work, "tmpfile-punch", 256)
+    root = volume.mount()
+    run(sys.executable, Path(__file__).with_name("tmpfile_and_punch.py"), root)
+    volume.unmount()
+    volume.check(scrub=True)
+    print("unnamed file flood")
+    tmpfile_flood(Volume(args.cli, work, "tmpfile-flood", 2048))
     print("namespace")
     namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
     print("case names")
@@ -910,6 +995,8 @@ def checks(args, work):
     full_write(Volume(args.cli, work, "full-write", 512))
     print("full truncate")
     full_truncate(Volume(args.cli, work, "full-truncate", 512))
+    print("punch race")
+    punch_race(Volume(args.cli, work, "punch-race", 256))
     print("orphan")
     orphan(Volume(args.cli, work, "orphan", 512), work)
     print("fsync crash")

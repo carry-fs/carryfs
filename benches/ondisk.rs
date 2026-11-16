@@ -73,7 +73,7 @@ impl Found {
 fn harvest(image: &[u8]) -> Vec<Found> {
     let u64_at = |page: &[u8], at: usize| u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
     let mut found = Vec::new();
-    for page in image.chunks_exact(BLOCK_BYTES) {
+    for page in image.as_chunks::<BLOCK_BYTES>().0 {
         let kind = match page[13] {
             1 => TreeKind::Catalog,
             2 => TreeKind::Allocation,

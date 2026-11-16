@@ -5,6 +5,9 @@ each filesystem, and compares saved results. It runs on Linux, macOS and
 Windows with the same workload and metric names, so you can compare CarryFS
 with exFAT, ext4, Btrfs, APFS or NTFS on your own drive.
 
+FreeBSD has separate adapter benchmarks; see
+[FreeBSD adapter benchmarks](#freebsd-adapter-benchmarks).
+
 Every sample formats its target. Use disposable images or a disk whose
 contents you can lose.
 
@@ -15,6 +18,7 @@ benchmarks/
   run.py                    command line
   full.py, focused.py       the suite, and running one metric of it
   native.py, native_io.py   macOS and Windows mounting and flushing
+  freebsd.py, freebsd_write.py  FreeBSD adapter benchmarks
   mount.rs                  source of the Linux user-mount helper
   workloads/                file operations, usable on any mounted filesystem
   chart.py                  SVG charts of saved results
@@ -432,6 +436,24 @@ python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
 
 [charts/vs-exfat-light.svg](charts/vs-exfat-light.svg) compares CarryFS with
 exFAT on the three hosts in one chart.
+
+## FreeBSD adapter benchmarks
+
+`freebsd.py` compares release builds of the FreeBSD FUSE adapter; `freebsd_write.py`
+isolates vectored and contiguous GEOM writes. They are separate from `run.py`.
+Run them as root on FreeBSD with `fusefs` loaded. They create disposable
+file-backed `md` devices only. Give `freebsd.py` directories containing the
+`carryfs` and `carryfs-fuse` binaries from each build:
+
+```sh
+sudo python3 benchmarks/freebsd.py build/perf/baseline build/perf/candidate \
+  --out build/perf/compare --rounds 5
+sudo python3 benchmarks/freebsd_write.py --out build/perf/raw-writes
+```
+
+Use new output directories. `freebsd.py` writes `metrics.tsv` and
+`environment.json`; the raw-write probe writes its environment and measurements
+as JSON.
 
 ## Workloads on a mounted filesystem
 

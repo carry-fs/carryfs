@@ -903,9 +903,9 @@ unsafe extern "system" fn create(
     name: Wstr,
     options: u32,
     access: u32,
-    _attributes: u32,
+    attributes: u32,
     _descriptor: PSECURITY_DESCRIPTOR,
-    _allocation: u64,
+    allocation: u64,
     context: *mut Context,
     info: *mut FileInfo,
 ) -> NtStatus {
@@ -917,6 +917,8 @@ unsafe extern "system" fn create(
                 wstr(name).unwrap_or_default(),
                 options & FILE_DIRECTORY_FILE != 0,
                 options & FILE_WRITE_THROUGH != 0,
+                attributes,
+                allocation,
             )?;
             *context = key as Context;
             *info = file;
@@ -960,14 +962,14 @@ unsafe extern "system" fn open(
 unsafe extern "system" fn overwrite(
     fs: Fs,
     context: Context,
-    _attributes: u32,
-    _replace: u8,
-    _allocation: u64,
+    attributes: u32,
+    replace: u8,
+    allocation: u64,
     info: *mut FileInfo,
 ) -> NtStatus {
     // SAFETY: WinFsp passes a writable FileInfo.
     guard("overwrite", || unsafe {
-        *info = carry(fs).overwrite(key(context))?;
+        *info = carry(fs).overwrite(key(context), attributes, replace != 0, allocation)?;
         Ok(())
     })
 }
@@ -1057,7 +1059,7 @@ unsafe extern "system" fn get_file_info(fs: Fs, context: Context, info: *mut Fil
 unsafe extern "system" fn set_basic_info(
     fs: Fs,
     context: Context,
-    _attributes: u32,
+    attributes: u32,
     creation: u64,
     _access: u64,
     last_write: u64,
@@ -1066,7 +1068,7 @@ unsafe extern "system" fn set_basic_info(
 ) -> NtStatus {
     // SAFETY: WinFsp passes a writable FileInfo.
     guard("set_basic_info", || unsafe {
-        *info = carry(fs).set_basic_info(key(context), creation, last_write)?;
+        *info = carry(fs).set_basic_info(key(context), attributes, creation, last_write)?;
         Ok(())
     })
 }

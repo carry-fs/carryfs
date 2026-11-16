@@ -736,6 +736,7 @@ pub(crate) fn fuzz_batch(data: &[u8]) {
                         Name::parse("ghost").expect("name"),
                         ObjectKind::File,
                         &[],
+                        Default::default(),
                         now,
                     )?;
                     let runs = transaction.allocate_data(u64::from(len % 32) + 1, 0)?;

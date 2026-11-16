@@ -1,22 +1,35 @@
 //! Exercise the actual CLI with disposable images and host directories.
-#![cfg(any(target_os = "linux", target_os = "macos"))]
+#![cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
-struct Temp(PathBuf);
+/// A test's scratch directory, held with the lock that runs these tests one
+/// at a time. Linux refuses an image lease while any other open file refers to
+/// the image, and a child another test thread is spawning briefly holds copies
+/// of every descriptor this process has open, its images included.
+struct Temp(
+    PathBuf,
+    #[expect(dead_code, reason = "held only for its lock")] MutexGuard<'static, ()>,
+);
 impl Temp {
     fn new() -> Self {
+        static SERIAL: Mutex<()> = Mutex::new(());
         static NEXT: AtomicU64 = AtomicU64::new(0);
+        // A failed test poisons the lock; the next one still needs it.
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "carryfs-cli-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
-        Self(path)
+        Self(path, serial)
     }
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_carryfs"))
@@ -206,4 +219,122 @@ fn fingerprint(path: &Path) -> u64 {
         }
         hash.write(&buffer[..len]);
     }
+}
+
+#[test]
+fn cli_keeps_modes_on_images_that_store_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+    let set = |path: &Path, bits: u32| {
+        fs::set_permissions(path, fs::Permissions::from_mode(bits)).unwrap()
+    };
+    let temp = Temp::new();
+    let source = temp.0.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("script"), b"#!/bin/sh\n").unwrap();
+    set(&source.join("script"), 0o755);
+    fs::write(source.join("private"), b"secret").unwrap();
+    set(&source.join("private"), 0o600);
+    fs::create_dir(source.join("locked")).unwrap();
+    fs::write(source.join("locked/inside"), b"kept").unwrap();
+    set(&source.join("locked/inside"), 0o640);
+    set(&source.join("locked"), 0o500);
+    set(&source, 0o750);
+
+    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/tree"]);
+    let attr = |args: &[&str]| String::from_utf8(temp.pass(args).stdout).unwrap();
+    assert_eq!(attr(&["attr", "image", "/tree/script"]), "file 0755\n");
+    assert_eq!(attr(&["attr", "image", "/tree/locked"]), "directory 0500\n");
+    assert_eq!(
+        attr(&["attr", "image", "/tree/private", "mode=640", "hidden=yes"]),
+        "file 0640 hidden\n"
+    );
+    assert!(
+        !temp
+            .run(&["attr", "image", "/tree/private", "mode=4755"])
+            .status
+            .success()
+    );
+    temp.pass(&["check", "image"]);
+
+    temp.pass(&["get", "image", "/tree", "out"]);
+    let out = temp.0.join("out");
+    assert_eq!(
+        [
+            &out,
+            &out.join("script"),
+            &out.join("private"),
+            &out.join("locked"),
+            &out.join("locked/inside")
+        ]
+        .map(|path| mode(path)),
+        [0o750, 0o755, 0o640, 0o500, 0o640]
+    );
+    assert_eq!(fs::read(out.join("locked/inside")).unwrap(), b"kept");
+    for root in [&source, &out] {
+        set(&root.join("locked"), 0o700);
+    }
+
+    // An image without the feature reads defaults and refuses changes.
+    temp.pass(&["mkfs", "plain", "268435456"]);
+    temp.pass(&["put", "plain", "source", "/tree"]);
+    assert_eq!(attr(&["attr", "plain", "/tree/script"]), "file 0644\n");
+    let refused = temp.run(&["attr", "plain", "/tree/script", "mode=755"]);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("carryfs upgrade"));
+    temp.pass(&["upgrade", "plain"]);
+    assert_eq!(
+        attr(&["attr", "plain", "/tree/script", "mode=755"]),
+        "file 0755\n"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn cli_keeps_hidden_symlinks_without_hiding_their_targets() {
+    use std::os::macos::fs::MetadataExt;
+    use std::os::unix::fs::symlink;
+    let temp = Temp::new();
+    let source = temp.0.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("target"), b"kept").unwrap();
+    symlink("target", source.join("link")).unwrap();
+    symlink("missing", source.join("dangling")).unwrap();
+    assert!(
+        Command::new("chflags")
+            .args(["-h", "hidden"])
+            .arg(source.join("link"))
+            .arg(source.join("dangling"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/tree"]);
+    assert_eq!(
+        temp.pass(&["attr", "image", "/tree/link"]).stdout,
+        b"symlink 0777 hidden\n"
+    );
+    temp.pass(&["get", "image", "/tree", "out"]);
+    let out = temp.0.join("out");
+    assert_ne!(
+        fs::symlink_metadata(out.join("link")).unwrap().st_flags() & 0x8000,
+        0
+    );
+    assert_ne!(
+        fs::symlink_metadata(out.join("dangling"))
+            .unwrap()
+            .st_flags()
+            & 0x8000,
+        0
+    );
+    assert_eq!(
+        fs::metadata(out.join("target")).unwrap().st_flags() & 0x8000,
+        0
+    );
+    assert_eq!(
+        fs::read_link(out.join("link")).unwrap(),
+        Path::new("target")
+    );
+    temp.pass(&["check", "image"]);
 }

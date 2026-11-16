@@ -57,6 +57,17 @@ do not yet publish synchronously. It accepts `uid=` and `gid=`, defaulting to th
 mounting user, as vfat and exfat do; files report mode 644, directories 755.
 `ro` mounts read-only and never writes, not even root mirroring.
 
+## Allocation and unnamed files
+
+The driver implements `fallocate` allocation, `FALLOC_FL_KEEP_SIZE`, and
+`FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`. Other allocation modes return
+`EOPNOTSUPP`. Reservations use unwritten extents behind root feature bit 1;
+older adapters reject a volume once this feature is published.
+
+`O_TMPFILE` creates a pinned orphan without a directory entry. `linkat` may
+publish it under one name, unless it was opened with `O_EXCL`. Additional
+hard links remain unsupported. Last close reclaims an unnamed file.
+
 ## Check
 
 ```sh
@@ -70,6 +81,16 @@ recovery, and judges each phase with the userspace `carryfs check` and
 `carryfs scrub`, comparing file contents after remount.
 It also overlaps data writeback with rename, unlink, replacement, and explicit
 mtime changes, then checks that the timestamps survive completion and remount.
+It holds 160,000 unnamed files open and then closes them, which drives the
+metadata workspace toward both of its bounds (fstests generic/531).
+`tests/tmpfile_and_punch.py` checks allocation, unnamed-file publication,
+exclusive temporary files, and hole punching through an active mmap. It also
+runs directly against a Linux FUSE mount:
+
+```sh
+python3 linux/tests/tmpfile_and_punch.py /path/to/mounted/carryfs
+```
+
 
 `bash tests/vm.sh` runs the native checks in a disposable VM using the
 installed kernel image and module. Run it from `linux/`, or run
@@ -349,8 +370,10 @@ volumes. These remaining differences produce images the userspace checker accept
   drains them.
 - **Reclamation batches are larger.** Up to 64 records and 65,536 blocks per
   commit, above FORMAT.md's initial 1,024-block budget.
-- **Unstored attributes.** Access times are not stored. Changes to mode or
-  owner fail with `EPERM`. The volume label is not exposed.
+- **Unstored attributes.** Access times are not stored. Changes to the
+  owner fail with `EPERM`, as do mode changes on a volume without
+  `carryfs upgrade`. Setuid, setgid and sticky bits are dropped. The volume
+  label is not exposed.
 - **Hard links.** The format has none; `link(2)` fails with `EPERM`.
 - **Cgroup I/O accounting.** Writeback does not preserve cgroup ownership
   across writers. fstests generic/563 exposes this limit.
@@ -400,7 +423,7 @@ changes. Other skips depended on the test environment, including its missing
 | Tests | Cause |
 |---|---|
 | generic/003 | Access times are not stored, and a ctime change through `chmod` is refused |
-| generic/120, generic/452 | Programs run from the volume; the format stores no execute bit |
+| generic/120, generic/452 | Programs run from the volume; `mkfs.carryfs` formats without the attributes feature, so no execute bit is stored |
 | generic/563 | Writeback does not preserve cgroup I/O ownership across writers |
 
 Earlier VM runs filled `/var/tmp` tmpfs while writing their loop images.

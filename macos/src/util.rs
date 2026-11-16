@@ -24,7 +24,7 @@
 use std::process::ExitCode;
 
 #[cfg(target_os = "macos")]
-use carryfs_core::{MountMode, Volume};
+use carryfs_core::{Error, MountMode, Volume};
 
 #[cfg(target_os = "macos")]
 mod raw;
@@ -43,13 +43,21 @@ const IO_SUCCESS: u8 = 253;
 const INVALID: u8 = 250;
 
 /// Open `bsd_name`'s raw device and read its selected-root information.
+/// `Some(None)` is a CarryFS volume this version cannot read: one that uses
+/// a newer feature.
 #[cfg(target_os = "macos")]
-fn volume_info(bsd_name: &str) -> Option<carryfs_core::VolumeInfo> {
+fn volume_info(bsd_name: &str) -> Option<Option<carryfs_core::VolumeInfo>> {
     if bsd_name.contains('/') {
         return None;
     }
     let device = raw::RawDevice::open(format!("/dev/r{bsd_name}"), MountMode::ReadOnly).ok()?;
-    Volume::open(device).ok()?.info().ok()
+    match Volume::open(device) {
+        Ok(volume) => Some(Some(volume.info().ok()?)),
+        // Reported as CarryFS, so macOS shows a volume that cannot mount
+        // rather than offer to initialize the disk.
+        Err(Error::UnsupportedFormat) => Some(None),
+        Err(_) => None,
+    }
 }
 
 /// Report the volume name a CarryFS device carries.
@@ -57,13 +65,16 @@ fn volume_info(bsd_name: &str) -> Option<carryfs_core::VolumeInfo> {
 /// The probe and mount helper use the same stored label or UUID fallback.
 #[cfg(target_os = "macos")]
 fn probe(bsd_name: &str) -> Option<String> {
-    Some(volume_info(bsd_name)?.name())
+    Some(match volume_info(bsd_name)? {
+        Some(info) => info.name(),
+        None => "CarryFS".to_owned(),
+    })
 }
 
 /// Report the volume UUID as the 8-4-4-4-12 string DiskArbitration requires.
 #[cfg(target_os = "macos")]
 fn probe_uuid(bsd_name: &str) -> Option<String> {
-    let uuid = volume_info(bsd_name)?.uuid;
+    let uuid = volume_info(bsd_name)??.uuid;
     Some(format!(
         "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
         uuid[0],

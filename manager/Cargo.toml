@@ -10,12 +10,15 @@ default-run = "carryfs-manager"
 [dependencies]
 carryfs-core = { path = ".." }
 serde_json = "1"
-rune = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "native-file-dialog"] }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "55ef5268f22038a95344b3e9d2b4a25ddba731b1", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "native-file-dialog"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "55ef5268f22038a95344b3e9d2b4a25ddba731b1" }
 
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
-winit = { git = "https://github.com/anomalyco/rune", rev = "656af1d5a4d67af0c849dd25ec54e84a6736880b" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "55ef5268f22038a95344b3e9d2b4a25ddba731b1" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "55ef5268f22038a95344b3e9d2b4a25ddba731b1" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "55ef5268f22038a95344b3e9d2b4a25ddba731b1" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "55ef5268f22038a95344b3e9d2b4a25ddba731b1" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "55ef5268f22038a95344b3e9d2b4a25ddba731b1" }
 
 [profile.dev]
 debug = 1

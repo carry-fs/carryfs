@@ -802,3 +802,60 @@ fn cli_keeps_hard_links_through_put_and_get() {
         Path::new("a")
     );
 }
+
+/// In-place repair writes a raw macOS disk node and must flush it there.
+#[test]
+#[cfg(target_os = "macos")]
+#[ignore = "attaches a disk image with hdiutil"]
+fn fsck_repairs_a_raw_macos_device_in_place() {
+    let temp = Temp::new();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    damage_page(&temp, disk_root(&temp).allocation.block);
+    let attach = Command::new("hdiutil")
+        .args([
+            "attach",
+            "-nomount",
+            "-imagekey",
+            "diskimage-class=CRawDiskImage",
+        ])
+        .arg(temp.0.join("image"))
+        .output()
+        .unwrap();
+    assert!(
+        attach.status.success(),
+        "{}",
+        String::from_utf8_lossy(&attach.stderr)
+    );
+    let disk = String::from_utf8_lossy(&attach.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    let repair = fsck(
+        &temp,
+        &[
+            "--repair",
+            "--report",
+            "repair.txt",
+            "--bytes",
+            "268435456",
+            &disk,
+        ],
+    );
+    let check = temp.run(&["check", "--bytes", "268435456", &disk]);
+    Command::new("hdiutil")
+        .args(["detach", &disk])
+        .output()
+        .unwrap();
+    assert_eq!(
+        repair.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&repair.stderr)
+    );
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+}

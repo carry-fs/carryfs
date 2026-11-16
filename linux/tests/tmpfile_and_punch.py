@@ -6,6 +6,8 @@ import errno
 import mmap
 import os
 from pathlib import Path
+import resource
+import signal
 import sys
 import tempfile
 
@@ -59,6 +61,30 @@ def check(mount):
         finally:
             os.close(fd)
         assert not list(root.iterdir())
+
+        # A punch over a hole still updates the times.
+        sparse = root / "sparse"
+        with open(sparse, "wb") as stream:
+            stream.truncate(4 * 65536)
+        os.utime(sparse, ns=(10**18, 10**18))
+        fd = os.open(sparse, os.O_RDWR)
+        try:
+            call(libc.fallocate(fd, 3, 65536, 65536))
+            stamp = os.fstat(fd)
+            assert stamp.st_mtime_ns > 10**18 and stamp.st_ctime_ns > 10**18, stamp
+        finally:
+            os.close(fd)
+
+        # Growth by fallocate respects RLIMIT_FSIZE.
+        limited = os.fork()
+        if limited == 0:
+            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (65536, resource.RLIM_INFINITY))
+            fd = os.open(root / "limited", os.O_CREAT | os.O_RDWR, 0o600)
+            os._exit(0 if libc.fallocate(fd, 0, 0, 2 * 65536) == -1
+                     and ctypes.get_errno() == errno.EFBIG else 1)
+        assert os.waitpid(limited, 0)[1] == 0, "fallocate past RLIMIT_FSIZE did not fail with EFBIG"
+        assert os.stat(root / "limited").st_size == 0
 
 
 if __name__ == "__main__":

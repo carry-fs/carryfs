@@ -32,6 +32,18 @@ def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
 
+def detach(loop):
+    """Detach a loop device and wait until it releases its image, which
+    `losetup -d` leaves to finish asynchronously."""
+    run("losetup", "-d", loop)
+    backing = Path("/sys/block") / Path(loop).name / "loop/backing_file"
+    deadline = time.monotonic() + 30
+    while backing.exists():
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"{loop} did not detach")
+        time.sleep(0.02)
+
+
 class Volume:
     """A fresh image, mounted through the kernel driver while in use."""
 
@@ -54,10 +66,7 @@ class Volume:
     def unmount(self):
         run("umount", self.point)
         Volume.mounted.discard(self)
-        run("losetup", "-d", self.loop)
-        backing = Path("/sys/block") / Path(self.loop).name / "loop/backing_file"
-        while backing.exists():
-            time.sleep(0.02)
+        detach(self.loop)
         self.loop = None
 
     def check(self, scrub=False):
@@ -344,7 +353,7 @@ def unsupported_mount_options(volume):
                 run("umount", volume.point)
                 raise AssertionError(f"unsupported {option} mount succeeded")
     finally:
-        run("losetup", "-d", loop)
+        detach(loop)
     volume.mount()
     for option in ("sync", "dirsync"):
         result = subprocess.run(["mount", "-i", "-o", f"remount,{option}", volume.point], capture_output=True)
@@ -448,7 +457,7 @@ def corrupt_records(volume):
                 run("umount", volume.point)
                 raise AssertionError(f"native driver accepted {case}")
         finally:
-            run("losetup", "-d", loop)
+            detach(loop)
         with volume.image.open("rb") as image:
             assert hashlib.file_digest(image, "sha256").digest() == before, f"{case}: failed mount changed the image"
         print(f"  {case}: rejected without writes or root repair; {checked.stderr.strip()}")
@@ -921,6 +930,30 @@ def main():
     print("all checks passed")
 
 
+def tmpfile_flood(volume, count=160000):
+    """Hold many unnamed files open at once, then close them. Creating them
+    only adds catalog and cleanup pages, draining the metadata workspace, and
+    removing them supersedes those pages faster than release takes them;
+    either overran the workspace bounds before transactions shrank with them
+    (fstests generic/531)."""
+    root = volume.mount()
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    limit = max(hard, count + 64)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))
+    fds = []
+    try:
+        for _ in range(count):
+            fds.append(os.open(root, os.O_TMPFILE | os.O_RDWR, 0o600))
+    finally:
+        for fd in fds:
+            os.close(fd)
+    assert len(fds) == count, len(fds)
+    # Writable: the flood neither faulted the volume nor left it read-only.
+    (root / "after").write_bytes(b"still writable")
+    volume.unmount()
+    print(f"  unnamed file flood: {count} open at once; {volume.check()}")
+
+
 def checks(args, work):
     print("unnamed files and hole punching")
     volume = Volume(args.cli, work, "tmpfile-punch", 256)
@@ -928,6 +961,8 @@ def checks(args, work):
     run(sys.executable, Path(__file__).with_name("tmpfile_and_punch.py"), root)
     volume.unmount()
     volume.check(scrub=True)
+    print("unnamed file flood")
+    tmpfile_flood(Volume(args.cli, work, "tmpfile-flood", 2048))
     print("namespace")
     namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
     print("case names")

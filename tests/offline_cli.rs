@@ -802,3 +802,60 @@ fn cli_keeps_hard_links_through_put_and_get() {
         Path::new("a")
     );
 }
+
+/// A privileged parent passes an opened device as `/dev/fd/0`.
+#[test]
+#[cfg(target_os = "macos")]
+#[ignore = "attaches a disk image with hdiutil"]
+fn cli_reads_a_device_passed_as_an_open_descriptor() {
+    let temp = Temp::new();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    let image = temp.0.join("image");
+    damage_page(&temp, disk_root(&temp).allocation.block);
+    let attach = Command::new("hdiutil")
+        .args([
+            "attach",
+            "-nomount",
+            "-imagekey",
+            "diskimage-class=CRawDiskImage",
+        ])
+        .arg(&image)
+        .output()
+        .unwrap();
+    assert!(
+        attach.status.success(),
+        "{}",
+        String::from_utf8_lossy(&attach.stderr)
+    );
+    let disk = String::from_utf8_lossy(&attach.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    let raw = disk.replace("/dev/disk", "/dev/rdisk");
+    let with_device = |args: &[&str]| {
+        let device = fs::File::open(&raw).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_carryfs"))
+            .current_dir(&temp.0)
+            .args(args)
+            .stdin(device)
+            .output()
+            .unwrap()
+    };
+    let plan = with_device(&["fsck", "--plan", "--bytes", "268435456", "--", "/dev/fd/0"]);
+    let check = with_device(&["check", "--bytes", "268435456", "/dev/fd/0"]);
+    Command::new("hdiutil")
+        .args(["detach", &disk])
+        .output()
+        .unwrap();
+    assert_eq!(
+        plan.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&check.stderr).contains("corrupt"),
+        "check reads the same damaged device"
+    );
+}

@@ -85,10 +85,15 @@ const IN_USE: &str = "the device is in use: unmount or eject it first";
 
 /// Open the raw node a mounted daemon locks, and take the same lock: resolve
 /// symlinks, and read `/dev/diskN` through `/dev/rdiskN`, since each node has
-/// a lock of its own.
+/// a lock of its own. `/dev/fd/N` names a device a privileged parent opened;
+/// macOS cannot canonicalize it, and opening it duplicates that descriptor.
 #[cfg(target_os = "macos")]
 fn open_exclusive(path: &Path, mode: MountMode) -> Result<fs::File> {
-    let path = fs::canonicalize(path)?;
+    let path = if path.starts_with("/dev/fd") {
+        path.to_owned()
+    } else {
+        fs::canonicalize(path)?
+    };
     let path = match (path.parent(), path.file_name().and_then(OsStr::to_str)) {
         (Some(dev), Some(name)) if dev == Path::new("/dev") && name.starts_with("disk") => {
             dev.join(format!("r{name}"))

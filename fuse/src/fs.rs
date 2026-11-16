@@ -61,7 +61,9 @@ use crate::eject_macos::Failure;
 // `stat` skip the lookup round trip. Attributes
 // belong to the inode, and this mount is the only writer; the kernel drops
 // them after its own write, truncate, create, unlink, and rename requests, so
-// a short TTL serves repeated stat calls.
+// a short TTL serves repeated stat calls. FreeBSD does not invalidate the
+// replaced inode's attributes on rename: another hard link would keep a stale
+// link count. Writable FreeBSD mounts therefore give attributes no lifetime.
 //
 // A stored-spelling name lives one hour, writable mounts included: this
 // mount holds the device, and the kernel updates its own entries on every
@@ -473,7 +475,11 @@ impl<D: BlockDevice> CarryFs<D> {
             } else {
                 ENTRY_TTL
             },
-            attr_ttl: ATTR_TTL,
+            attr_ttl: if cfg!(target_os = "freebsd") {
+                NO_TTL
+            } else {
+                ATTR_TTL
+            },
             #[cfg(target_os = "macos")]
             stale,
         };

@@ -87,6 +87,8 @@ recovery, and judges each phase with the userspace `carryfs check` and
 `carryfs scrub`, comparing file contents after remount.
 It also overlaps data writeback with rename, unlink, replacement, and explicit
 mtime changes, then checks that the timestamps survive completion and remount.
+It holds 160,000 unnamed files open and then closes them, which drives the
+metadata workspace toward both of its bounds (fstests generic/531).
 `tests/tmpfile_and_punch.py` checks allocation, unnamed-file publication,
 exclusive temporary files, and hole punching through an active mmap. It also
 runs directly against a Linux FUSE mount:

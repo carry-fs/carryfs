@@ -5,18 +5,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
-struct Temp(PathBuf);
+/// A test's scratch directory, held with the lock that runs these tests one
+/// at a time. Linux refuses an image lease while any other open file refers to
+/// the image, and a child another test thread is spawning briefly holds copies
+/// of every descriptor this process has open, its images included.
+struct Temp(
+    PathBuf,
+    #[expect(dead_code, reason = "held only for its lock")] MutexGuard<'static, ()>,
+);
 impl Temp {
     fn new() -> Self {
+        static SERIAL: Mutex<()> = Mutex::new(());
         static NEXT: AtomicU64 = AtomicU64::new(0);
+        // A failed test poisons the lock; the next one still needs it.
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "carryfs-cli-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
-        Self(path)
+        Self(path, serial)
     }
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_carryfs"))

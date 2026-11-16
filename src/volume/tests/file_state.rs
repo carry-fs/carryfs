@@ -372,6 +372,30 @@ fn hole_punch_preserves_edges_size_and_survives_remount() {
 }
 
 #[test]
+fn hole_punch_updates_times_even_over_holes() {
+    let mut volume = opened();
+    let file = volume.create_file(ROOT, name("sparse")).unwrap();
+    volume.truncate(&file, (4 * UNIT_BYTES) as u64).unwrap();
+    let old = Timestamp::new(1_000_000_000, 0).unwrap();
+    volume
+        .set_attributes(
+            &file,
+            AttributeChange {
+                modification: Some(old),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    volume
+        .punch_hole(&file, UNIT_BYTES as u64, UNIT_BYTES as u64)
+        .unwrap();
+    let after = volume.handle_attributes(&file).unwrap();
+    assert!(after.modification.seconds() > old.seconds());
+    assert!(after.metadata_change.seconds() > old.seconds());
+    volume.close_handle(file).unwrap();
+}
+
+#[test]
 fn preallocation_survives_remount_and_is_consumed_without_exposing_device_bytes() {
     let mut volume = opened();
     let file = volume.create_file(ROOT, name("reserved")).unwrap();

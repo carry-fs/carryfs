@@ -930,6 +930,30 @@ def main():
     print("all checks passed")
 
 
+def tmpfile_flood(volume, count=160000):
+    """Hold many unnamed files open at once, then close them. Creating them
+    only adds catalog and cleanup pages, draining the metadata workspace, and
+    removing them supersedes those pages faster than release takes them;
+    either overran the workspace bounds before transactions shrank with them
+    (fstests generic/531)."""
+    root = volume.mount()
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    limit = max(hard, count + 64)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))
+    fds = []
+    try:
+        for _ in range(count):
+            fds.append(os.open(root, os.O_TMPFILE | os.O_RDWR, 0o600))
+    finally:
+        for fd in fds:
+            os.close(fd)
+    assert len(fds) == count, len(fds)
+    # Writable: the flood neither faulted the volume nor left it read-only.
+    (root / "after").write_bytes(b"still writable")
+    volume.unmount()
+    print(f"  unnamed file flood: {count} open at once; {volume.check()}")
+
+
 def checks(args, work):
     print("unnamed files and hole punching")
     volume = Volume(args.cli, work, "tmpfile-punch", 256)
@@ -945,6 +969,8 @@ def checks(args, work):
     volume.check(scrub=True)
     run(sys.executable, script, volume.mount(), "--verify-kept")
     volume.unmount()
+    print("unnamed file flood")
+    tmpfile_flood(Volume(args.cli, work, "tmpfile-flood", 2048))
     print("namespace")
     namespace(Volume(args.cli, work, "namespace", 1024), args.entries)
     print("case names")

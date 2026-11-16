@@ -1234,6 +1234,8 @@ impl<D: BlockDevice> Volume<D> {
         let unit_bytes = UNIT_BYTES as u64;
         let zeros = vec![0; UNIT_BYTES];
         let mut hint = self.data_hint;
+        // A punch updates the times even where it finds only holes.
+        let mut stamped = false;
         let mut unit = offset / unit_bytes;
         while unit <= (end - 1) / unit_bytes {
             let next = self.read_catalog(|forest, catalog| {
@@ -1354,9 +1356,22 @@ impl<D: BlockDevice> Volume<D> {
                 inode.metadata_change = now;
                 put(transaction, &key, &inode.encode())
             })?;
+            stamped = true;
             unit += 1;
         }
         self.data_hint = hint;
+        if !stamped {
+            self.edit(|transaction| {
+                let key = inode_key(object.0);
+                let mut inode = transaction
+                    .forest
+                    .lookup_with(&transaction.catalog, TreeKind::Catalog, &key, Inode::decode)?
+                    .ok_or(Error::Corrupt("handle target inode is missing"))?;
+                inode.modification = now;
+                inode.metadata_change = now;
+                put(transaction, &key, &inode.encode())
+            })?;
+        }
         Ok(())
     }
 

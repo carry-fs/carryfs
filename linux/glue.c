@@ -1167,6 +1167,12 @@ long carryfs_fallocate(struct file *file, int mode, loff_t offset, loff_t length
 		error = 0;
 		goto out;
 	}
+	/* Growth must respect RLIMIT_FSIZE and the volume's maximum file size. */
+	if (!(mode & FALLOC_FL_KEEP_SIZE) && last > i_size_read(inode)) {
+		error = inode_newsize_ok(inode, last);
+		if (error)
+			goto out;
+	}
 	/* Flush before invalidating, including the preserved boundary bytes. */
 	error = filemap_write_and_wait_range(mapping, first, LLONG_MAX);
 	if (error)

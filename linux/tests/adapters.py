@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Verify default FUSE selection and deliberate native mounts on one image."""
+"""Verify default FUSE selection and deliberate native mounts on one image,
+including hard links each engine makes and the other reads."""
 
 import os
 from pathlib import Path
@@ -35,11 +36,16 @@ def main():
             kind = subprocess.check_output(["findmnt", "-n", "-o", "FSTYPE", "--target", volume.point], text=True).strip()
             assert kind == "fuseblk.carryfs", kind
             (volume.point / "from-fuse").write_bytes(b"fuse")
+            os.link(volume.point / "from-fuse", volume.point / "fuse-link")
             run("umount", volume.point)
             assert daemon.wait(timeout=30) == 0
             run("mount", "-i", "-t", "carryfs", loop, volume.point)
             assert (volume.point / "from-fuse").read_bytes() == b"fuse"
+            linked = os.stat(volume.point / "fuse-link")
+            assert linked.st_ino == os.stat(volume.point / "from-fuse").st_ino
+            assert linked.st_nlink == 2, linked.st_nlink
             (volume.point / "from-native").write_bytes(b"native")
+            os.link(volume.point / "from-native", volume.point / "native-link")
             run("umount", volume.point)
         finally:
             if os.path.ismount(volume.point):
@@ -48,7 +54,7 @@ def main():
                 daemon.terminate()
                 daemon.wait(timeout=30)
             detach(loop)
-        print(f"default helper used FUSE with native loaded; explicit native mount preserved data; {volume.check(scrub=True)}", flush=True)
+        print(f"default helper used FUSE with native loaded; explicit native mount preserved data and links; {volume.check(scrub=True)}", flush=True)
 
 
 if __name__ == "__main__":

@@ -338,3 +338,33 @@ fn cli_keeps_hidden_symlinks_without_hiding_their_targets() {
     );
     temp.pass(&["check", "image"]);
 }
+
+#[test]
+fn cli_keeps_hard_links_through_put_and_get() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = Temp::new();
+    let source = temp.0.join("source");
+    fs::create_dir_all(source.join("sub")).unwrap();
+    fs::write(source.join("a"), b"shared").unwrap();
+    fs::hard_link(source.join("a"), source.join("sub/b")).unwrap();
+    std::os::unix::fs::symlink("a", source.join("s")).unwrap();
+    fs::hard_link(source.join("s"), source.join("sub/s2")).unwrap();
+    let inode = |path: &Path| fs::symlink_metadata(path).unwrap().ino();
+    assert_eq!(inode(&source.join("s")), inode(&source.join("sub/s2")));
+
+    temp.pass(&["mkfs", "image", "268435456"]);
+    temp.pass(&["put", "image", "source", "/backup"]);
+    temp.pass(&["check", "image"]);
+    temp.pass(&["get", "image", "/backup", "recovered"]);
+    let recovered = temp.0.join("recovered");
+    for (first, second) in [("a", "sub/b"), ("s", "sub/s2")] {
+        let (first, second) = (recovered.join(first), recovered.join(second));
+        assert_eq!(inode(&first), inode(&second), "{first:?}");
+        assert_eq!(fs::symlink_metadata(&first).unwrap().nlink(), 2);
+    }
+    assert_eq!(fs::read(recovered.join("sub/b")).unwrap(), b"shared");
+    assert_eq!(
+        fs::read_link(recovered.join("sub/s2")).unwrap(),
+        Path::new("a")
+    );
+}

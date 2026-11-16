@@ -61,7 +61,9 @@ use crate::eject_macos::Failure;
 // `stat` skip the lookup round trip. Attributes
 // belong to the inode, and this mount is the only writer; the kernel drops
 // them after its own write, truncate, create, unlink, and rename requests, so
-// a short TTL serves repeated stat calls.
+// a short TTL serves repeated stat calls. FreeBSD does not invalidate the
+// replaced inode's attributes on rename: another hard link would keep a stale
+// link count. Writable FreeBSD mounts therefore give attributes no lifetime.
 //
 // A stored-spelling name lives one hour, writable mounts included: this
 // mount holds the device, and the kernel updates its own entries on every
@@ -473,7 +475,11 @@ impl<D: BlockDevice> CarryFs<D> {
             } else {
                 ENTRY_TTL
             },
-            attr_ttl: ATTR_TTL,
+            attr_ttl: if cfg!(target_os = "freebsd") {
+                NO_TTL
+            } else {
+                ATTR_TTL
+            },
             #[cfg(target_os = "macos")]
             stale,
         };
@@ -600,9 +606,9 @@ impl<D: BlockDevice> CarryFs<D> {
             crtime: system_time(attributes.creation)?,
             kind: file_type(attributes.kind),
             perm: attributes.mode.bits(),
-            // Link counts are not stored; 1 tells tools such as find not to infer
+            // A directory reports 1, which tells tools such as find not to infer
             // subdirectories. An unlinked object still open reports 0, as fstat expects.
-            nlink: u32::from(!attributes.orphan),
+            nlink: attributes.links,
             uid: self.owner.uid,
             gid: self.owner.gid,
             rdev: 0,
@@ -1668,13 +1674,8 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
     fn link(&self, _req: &Request, ino: INodeNo, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         match self.with(|s| {
             let (object, parent, parsed) = (id(ino)?, id(parent)?, parse(name)?);
-            if !s.volume.attributes(object).map_err(|e| errno(&e))?.orphan {
-                return Err(Errno::EPERM);
-            }
-            with_space(&mut s.volume, |v| {
-                v.link_tmpfile(object, parent, parsed.clone())
-            })
-            .map_err(|e| errno(&e))?;
+            with_space(&mut s.volume, |v| v.link(object, parent, parsed.clone()))
+                .map_err(|e| link_errno(&e))?;
             s.changed_directory(parent);
             Ok((
                 s.entry(self, object)?,
@@ -2243,6 +2244,15 @@ pub(crate) fn errno(error: &Error) -> Errno {
     }
 }
 
+/// The core refuses to link a directory or symlink, and a file past 65,535 names.
+fn link_errno(error: &Error) -> Errno {
+    match error {
+        Error::WrongType => Errno::EPERM,
+        Error::LimitExceeded => Errno::EMLINK,
+        error => errno(error),
+    }
+}
+
 /// Opening only exceeds a limit when the 4,096-handle registry is full, and
 /// only a directory refuses write access.
 fn open_errno(error: &Error) -> Errno {
@@ -2763,7 +2773,20 @@ mod tests {
     #[test]
     #[ignore = "requires a Linux FUSE mount"]
     fn tmpfile_and_allocation_syscalls() {
-        let (image, mut volume) = volume("allocation-syscalls");
+        mounted_script("allocation-syscalls", "tmpfile_and_punch.py");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a Linux FUSE mount"]
+    fn hard_link_syscalls() {
+        mounted_script("hardlink-syscalls", "hardlinks.py");
+    }
+
+    /// Run a `linux/tests` syscall script against a FUSE mount, then check the image.
+    #[cfg(target_os = "linux")]
+    fn mounted_script(tag: &str, script: &str) {
+        let (image, mut volume) = volume(tag);
         volume.set_deferred_checkpoints(true).unwrap();
         let (fs, _) = CarryFs::new(volume, Owner { uid: 0, gid: 0 }, false);
         let state = fs.finisher();
@@ -2772,8 +2795,9 @@ mod tests {
         let session = fuser::Session::new(fs, &point, &fuser::Config::default()).unwrap();
         state.set_notifier(session.notifier()).unwrap();
         let background = session.spawn().unwrap();
-        let script =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../linux/tests/tmpfile_and_punch.py");
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../linux/tests")
+            .join(script);
         let result = std::process::Command::new("python3")
             .arg(script)
             .arg(&point)

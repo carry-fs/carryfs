@@ -128,10 +128,10 @@ impl Inode {
         }
     }
 
-    /// Mark the inode unlinked; the caller holds it locked.
-    pub(crate) fn clear_nlink(&self) {
-        // SAFETY: The inode is referenced; `clear_nlink` updates it.
-        unsafe { bindings::clear_nlink(self.as_ptr()) }
+    /// Drop one link; the caller holds the inode locked.
+    pub(crate) fn drop_nlink(&self) {
+        // SAFETY: The inode is referenced; `drop_nlink` updates it.
+        unsafe { bindings::drop_nlink(self.as_ptr()) }
     }
 
     /// Bump the version, which invalidates negative dentries and listings;

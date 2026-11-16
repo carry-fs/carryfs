@@ -272,6 +272,23 @@ def fixtures():
     page[80:80 + len(records)] = records
     struct.pack_into('<I', page, 64, crc32c(page))
     result['attributes-catalog-leaf'] = (bytes(page), 64)
+    # Root entries "a" and "b" both name file 2, whose inode records one extra
+    # link at offset 88.
+    inode = bytearray(128)
+    struct.pack_into('<BBxxxxxxQQQQ', inode, 0, 1, 0, 1, 0, 0, 0)
+    for offset in (40, 56, 72):
+        struct.pack_into('<qI', inode, offset, 1_700_000_000, 0)
+    struct.pack_into('<I', inode, 88, 1)
+    records = b''.join(struct.pack('<HH', len(key), len(value)) + key + value
+                       for key, value in [(struct.pack('>QB', 1, 2) + name, struct.pack('<QBBH', 2, 1, 0, 1) + name)
+                                          for name in (b'a', b'b')] + [(struct.pack('>QB', 2, 1), bytes(inode))])
+    page = bytearray(4096)
+    page[:8] = b'CFSXPAGE'
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 3, len(records), 0)
+    page[40:56] = UUID
+    page[80:80 + len(records)] = records
+    struct.pack_into('<I', page, 64, crc32c(page))
+    result['link-catalog-leaf'] = (bytes(page), 64)
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
     # Workspace leaf records are runs: first block big-endian, slot count.

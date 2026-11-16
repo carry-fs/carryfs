@@ -44,6 +44,12 @@ impl Name {
         &self.stored
     }
 
+    /// Whether both names collide in one directory: equal comparison keys,
+    /// whatever their spelling.
+    pub fn collides_with(&self, other: &Name) -> bool {
+        self.folded == other.folded
+    }
+
     /// Whether Windows reserves this name, including names with extensions.
     pub fn is_windows_device_name(&self) -> bool {
         profile::is_reserved_device_name(&self.folded)

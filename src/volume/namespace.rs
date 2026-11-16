@@ -4,7 +4,8 @@
 use super::Fault;
 use crate::allocation::Transaction;
 use crate::format::{
-    ATTRIBUTE_HIDDEN, INODE_ATTRIBUTES, INODE_MODE, TreeKind, Validation, validate_symlink_target,
+    ATTRIBUTE_HIDDEN, FEATURE_LINKS, INODE_ATTRIBUTES, INODE_EXTRA_LINKS, INODE_MODE,
+    MAX_EXTRA_LINKS, TreeKind, Validation, extra_links, validate_symlink_target,
 };
 use crate::name::{Name, validate_disk_name};
 use crate::tree::{Forest, u64_le};
@@ -59,10 +60,13 @@ pub(super) struct Inode {
     pub(super) orphan: bool,
     /// Flag bits 1 and 2: whether a symlink Windows made is a directory link.
     pub(super) directory_link: Option<bool>,
+    /// A non-directory's parent is a hint: the directory of its newest entry.
     pub(super) parent: u64,
     pub(super) size: u64,
     pub(super) allocated_blocks: u64,
     pub(super) child_count: u64,
+    /// A file's or symlink's directory entries beyond the first.
+    pub(super) extra_links: u32,
     pub(super) creation: Timestamp,
     pub(super) modification: Timestamp,
     pub(super) metadata_change: Timestamp,
@@ -108,6 +112,7 @@ impl Inode {
             size: u64_le(&value[16..24])?,
             allocated_blocks: u64_le(&value[24..32])?,
             child_count: u64_le(&value[32..40])?,
+            extra_links: extra_links(value),
             creation: decode_timestamp(&value[40..56])?,
             modification: decode_timestamp(&value[56..72])?,
             metadata_change: decode_timestamp(&value[72..88])?,
@@ -136,6 +141,8 @@ impl Inode {
         value[16..24].copy_from_slice(&self.size.to_le_bytes());
         value[24..32].copy_from_slice(&self.allocated_blocks.to_le_bytes());
         value[32..40].copy_from_slice(&self.child_count.to_le_bytes());
+        value[INODE_EXTRA_LINKS..INODE_EXTRA_LINKS + 4]
+            .copy_from_slice(&self.extra_links.to_le_bytes());
         encode_timestamp(&mut value[40..56], self.creation);
         encode_timestamp(&mut value[56..72], self.modification);
         encode_timestamp(&mut value[72..88], self.metadata_change);
@@ -514,6 +521,11 @@ impl<D: BlockDevice> Volume<D> {
                             .checked_mul(4096)
                             .ok_or(Error::Corrupt("allocated bytes overflow"))?,
                         parent: ObjectId(inode.parent),
+                        links: if inode.orphan {
+                            0
+                        } else {
+                            inode.extra_links + 1
+                        },
                         creation: inode.creation,
                         modification: inode.modification,
                         metadata_change: inode.metadata_change,
@@ -665,71 +677,12 @@ impl<D: BlockDevice> Volume<D> {
         Ok((object, handle))
     }
 
-    /// Give an orphaned regular file its single directory entry.
-    /// Existing named files cannot acquire a second link.
-    pub fn link_tmpfile(&mut self, object: ObjectId, parent: ObjectId, name: Name) -> Result<()> {
+    /// Give file or symlink `object` another directory entry. An orphan, such
+    /// as an unnamed temporary file, becomes linked again; a named object
+    /// gains an extra link, and the first one opts the volume into hard links.
+    pub fn link(&mut self, object: ObjectId, parent: ObjectId, name: Name) -> Result<()> {
         let now = Timestamp::now()?;
-        self.edit(|transaction| {
-            let catalog = transaction.catalog.clone();
-            let key = inode_key(object.0);
-            let mut inode = transaction
-                .forest
-                .lookup_with(&catalog, TreeKind::Catalog, &key, Inode::decode)?
-                .ok_or(Error::NotFound)?;
-            if inode.kind != ObjectKind::File || !inode.orphan {
-                return Err(Error::InvalidInput("only an unnamed file can be linked"));
-            }
-            let parent_key = inode_key(parent.0);
-            let mut directory = transaction
-                .forest
-                .lookup_with(&catalog, TreeKind::Catalog, &parent_key, Inode::decode)?
-                .ok_or(Error::NotFound)?;
-            if directory.kind != ObjectKind::Directory {
-                return Err(Error::WrongType);
-            }
-            if directory.orphan {
-                return Err(Error::NotFound);
-            }
-            let entry_key = dirent_key(parent.0, &name.folded);
-            if transaction
-                .forest
-                .lookup(&catalog, TreeKind::Catalog, &entry_key)?
-                .is_some()
-            {
-                return Err(Error::NameCollision);
-            }
-            directory.child_count = directory
-                .child_count
-                .checked_add(1)
-                .ok_or(Error::LimitExceeded)?;
-            directory.modification = now;
-            directory.metadata_change = now;
-            inode.orphan = false;
-            inode.parent = parent.0;
-            inode.metadata_change = now;
-            let entry = DirentValue {
-                target: object.0,
-                kind: ObjectKind::File,
-                stored_name: &name.stored,
-            }
-            .encode()?;
-            let catalog =
-                transaction
-                    .forest
-                    .put(catalog, TreeKind::Catalog, &key, &inode.encode())?;
-            let catalog = transaction.forest.put(
-                catalog,
-                TreeKind::Catalog,
-                &parent_key,
-                &directory.encode(),
-            )?;
-            transaction.catalog =
-                transaction
-                    .forest
-                    .put(catalog, TreeKind::Catalog, &entry_key, &entry)?;
-            transaction.unmark_orphan(object.0)?;
-            Ok(())
-        })?;
+        self.edit(|transaction| link_entry(transaction, object.0, parent.0, &name, now))?;
         self.namespace_epoch = self.namespace_epoch.wrapping_add(1);
         Ok(())
     }
@@ -1092,6 +1045,80 @@ impl<D: BlockDevice> Volume<D> {
     }
 }
 
+fn link_entry<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    object: u64,
+    parent: u64,
+    name: &Name,
+    now: Timestamp,
+) -> Result<()> {
+    let catalog = transaction.catalog.clone();
+    let key = inode_key(object);
+    let mut inode = transaction
+        .forest
+        .lookup_with(&catalog, TreeKind::Catalog, &key, Inode::decode)?
+        .ok_or(Error::NotFound)?;
+    if inode.kind == ObjectKind::Directory {
+        return Err(Error::WrongType);
+    }
+    let parent_key = inode_key(parent);
+    let mut directory = transaction
+        .forest
+        .lookup_with(&catalog, TreeKind::Catalog, &parent_key, Inode::decode)?
+        .ok_or(Error::NotFound)?;
+    if directory.kind != ObjectKind::Directory {
+        return Err(Error::WrongType);
+    }
+    if directory.orphan {
+        return Err(Error::NotFound);
+    }
+    let entry_key = dirent_key(parent, &name.folded);
+    if transaction
+        .forest
+        .lookup(&catalog, TreeKind::Catalog, &entry_key)?
+        .is_some()
+    {
+        return Err(Error::NameCollision);
+    }
+    let relinked = inode.orphan;
+    if relinked {
+        inode.orphan = false;
+    } else if inode.extra_links == MAX_EXTRA_LINKS {
+        return Err(Error::LimitExceeded);
+    } else {
+        inode.extra_links += 1;
+        transaction.forest.features |= FEATURE_LINKS;
+    }
+    directory.child_count = directory
+        .child_count
+        .checked_add(1)
+        .ok_or(Error::LimitExceeded)?;
+    directory.modification = now;
+    directory.metadata_change = now;
+    inode.parent = parent;
+    inode.metadata_change = now;
+    let entry = DirentValue {
+        target: object,
+        kind: inode.kind,
+        stored_name: &name.stored,
+    }
+    .encode()?;
+    let catalog = transaction
+        .forest
+        .put(catalog, TreeKind::Catalog, &key, &inode.encode())?;
+    let catalog =
+        transaction
+            .forest
+            .put(catalog, TreeKind::Catalog, &parent_key, &directory.encode())?;
+    transaction.catalog = transaction
+        .forest
+        .put(catalog, TreeKind::Catalog, &entry_key, &entry)?;
+    if relinked {
+        transaction.unmark_orphan(object)?;
+    }
+    Ok(())
+}
+
 fn remove_entry<D: BlockDevice>(
     transaction: &mut Transaction<'_, D>,
     parent: u64,
@@ -1147,7 +1174,6 @@ fn remove_entry<D: BlockDevice>(
         .ok_or(Error::Corrupt("directory child count underflow"))?;
     parent_inode.modification = now;
     parent_inode.metadata_change = now;
-    target_inode.orphan = true;
     target_inode.metadata_change = now;
 
     let mut catalog = transaction.catalog.clone();
@@ -1161,19 +1187,38 @@ fn remove_entry<D: BlockDevice>(
         &parent_inode.encode(),
     )?;
     transaction.catalog = catalog;
-    // Nothing holds an unpinned small object open, so it goes now, in this
-    // transaction, instead of as an orphan that maintenance removes later.
-    if !pinned.contains(&target) && transaction.remove_small_object(target)? {
-        return Ok(());
+    unlink_object(transaction, target, target_inode, Some(pinned))
+}
+
+/// Drop one of `target`'s entries, already removed from its directory. A file
+/// with extra links loses one; otherwise it becomes an orphan, or, when
+/// `pinned` shows nothing holds it open, a small one goes now.
+fn unlink_object<D: BlockDevice>(
+    transaction: &mut Transaction<'_, D>,
+    target: u64,
+    mut inode: Inode,
+    pinned: Option<&std::collections::BTreeSet<u64>>,
+) -> Result<()> {
+    if inode.extra_links > 0 {
+        inode.extra_links -= 1;
+    } else {
+        // Nothing holds an unpinned small object open, so it goes now, in this
+        // transaction, instead of as an orphan that maintenance removes later.
+        if pinned.is_some_and(|pinned| !pinned.contains(&target))
+            && transaction.remove_small_object(target)?
+        {
+            return Ok(());
+        }
+        inode.orphan = true;
+        transaction.mark_orphan(target)?;
     }
     let catalog = transaction.catalog.clone();
     transaction.catalog = transaction.forest.put(
         catalog,
         TreeKind::Catalog,
-        &target_key,
-        &target_inode.encode(),
+        &inode_key(target),
+        &inode.encode(),
     )?;
-    transaction.mark_orphan(target)?;
     Ok(())
 }
 
@@ -1289,6 +1334,10 @@ fn rename_move<D: BlockDevice>(
             return Err(Error::NameCollision);
         }
         let existing_dirent = DirentValue::decode(existing)?;
+        // Both names are links to one file: POSIX rename changes nothing.
+        if existing_dirent.target == moved {
+            return Ok(());
+        }
         // Any non-directory replaces any non-directory, as POSIX rename allows.
         if (existing_dirent.kind == ObjectKind::Directory) != (moved_kind == ObjectKind::Directory)
         {
@@ -1397,29 +1446,20 @@ fn rename_move<D: BlockDevice>(
             &inode.encode(),
         )?;
     }
+    transaction.catalog = catalog;
     if let Some(target) = replaced_target {
-        let target_key = inode_key(target);
         let mut target_inode = transaction
             .forest
             .lookup_with(
                 &transaction.catalog,
                 TreeKind::Catalog,
-                &target_key,
+                &inode_key(target),
                 Inode::decode,
             )?
             .ok_or(Error::Corrupt("directory entry has no inode"))?;
-        target_inode.orphan = true;
         target_inode.metadata_change = now;
-        catalog = transaction.forest.put(
-            catalog,
-            TreeKind::Catalog,
-            &target_key,
-            &target_inode.encode(),
-        )?;
-        transaction.catalog = catalog;
-        transaction.mark_orphan(target)?;
-    } else {
-        transaction.catalog = catalog;
+        // A replaced destination becomes an orphan even when unpinned.
+        unlink_object(transaction, target, target_inode, None)?;
     }
     Ok(())
 }
@@ -1470,7 +1510,7 @@ fn swap_entries<D: BlockDevice>(
         let dirent = DirentValue::decode(&value)?;
         found.push((dirent.target, dirent.kind, dirent.stored_name.to_vec()));
     }
-    if keys[0] == keys[1] {
+    if keys[0] == keys[1] || found[0].0 == found[1].0 {
         return Ok(());
     }
     let parents = entries.map(|(parent, _)| parent);
@@ -1593,6 +1633,7 @@ fn create_object_in<D: BlockDevice>(
         size: target.len() as u64,
         allocated_blocks: 0,
         child_count: 0,
+        extra_links: 0,
         creation: now,
         modification: now,
         metadata_change: now,
@@ -1656,7 +1697,10 @@ fn make_symlink_in<D: BlockDevice>(
         .ok_or(Error::NotFound)?;
     // An empty file has no extents or checksums, so only the inode changes.
     let empty = match inode.kind {
-        ObjectKind::File => inode.size == 0 && inode.allocated_blocks == 0,
+        // A symlink has exactly one entry, so a linked file cannot become one.
+        ObjectKind::File => {
+            inode.size == 0 && inode.allocated_blocks == 0 && inode.extra_links == 0
+        }
         ObjectKind::Directory => inode.child_count == 0,
         ObjectKind::Symlink => false,
     };

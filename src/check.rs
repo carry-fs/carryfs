@@ -6,7 +6,7 @@ use std::hash::BuildHasherDefault;
 
 use crate::format::{
     BLOCK_BYTES, EXTENT_UNWRITTEN, FEATURE_PREALLOCATION, Page, Root, TreeKind, TreeRef,
-    checksum_slot, decode_page, validate_inode_features,
+    checksum_slot, decode_page, extra_links, link_hash, validate_inode_features,
 };
 use crate::tree::{PageHasher, Record, tree_ref, u64_be, u64_le};
 use crate::{BlockDevice, Error, Result};
@@ -17,7 +17,70 @@ const WINDOW_BLOCKS: u64 = 1 << 28;
 const GROUP: u64 = 16_384;
 // One catalog pass and a one MiB bitmap per window of object IDs.
 const LINK_WINDOW: u64 = 8_388_608;
-const LINK_REASON: &str = "linked inode does not have exactly one directory entry";
+const LINK_REASON: &str = "linked inode's directory entries do not match its links";
+
+/// Entry targets and linked inodes in one window of object IDs. A bit per ID
+/// counts distinct targets, which must equal the linked inodes. A target's
+/// later entries and its inode's extra links meet in one wrapping sum of
+/// `link_hash`, which a miscounted object cannot balance.
+struct Links {
+    window: std::ops::Range<u64>,
+    targets: Vec<u8>,
+    distinct: u64,
+    linked: u64,
+    repeated: u128,
+    extra: u128,
+}
+
+impl Links {
+    fn new(window: std::ops::Range<u64>) -> Self {
+        let bytes = (window.end - window.start).div_ceil(8) as usize;
+        Self {
+            window,
+            targets: vec![0; bytes],
+            distinct: 0,
+            linked: 0,
+            repeated: 0,
+            extra: 0,
+        }
+    }
+
+    /// Count an entry naming `target`; true when it repeats an earlier one.
+    fn entry(&mut self, target: u64) -> bool {
+        if !self.window.contains(&target) {
+            return false;
+        }
+        let bit = target - self.window.start;
+        let byte = &mut self.targets[(bit / 8) as usize];
+        if *byte & (1 << (bit % 8)) == 0 {
+            *byte |= 1 << (bit % 8);
+            self.distinct += 1;
+            false
+        } else {
+            self.repeated = self.repeated.wrapping_add(link_hash(target));
+            true
+        }
+    }
+
+    /// Count a linked non-root inode.
+    fn inode(&mut self, owner: u64, inode: &[u8]) {
+        if !self.window.contains(&owner) {
+            return;
+        }
+        self.linked += 1;
+        let weight = link_hash(owner).wrapping_mul(u128::from(extra_links(inode)));
+        self.extra = self.extra.wrapping_add(weight);
+    }
+
+    fn has_entry(&self, object: u64) -> bool {
+        let bit = object - self.window.start;
+        self.targets[(bit / 8) as usize] & (1 << (bit % 8)) != 0
+    }
+
+    fn balanced(&self) -> bool {
+        self.distinct == self.linked && self.repeated == self.extra
+    }
+}
 
 /// Counts from a complete structural check. File data checksums require scrub.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -374,79 +437,122 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
             return Ok(());
         }
         let parent = u64_le(&inode[8..16])?;
+        // A non-directory's parent is only a hint; its entries prove it is
+        // reachable.
+        if inode[0] != 2 {
+            return if parent < self.root.next_object {
+                Ok(())
+            } else {
+                Err(Error::Corrupt("parent hint exceeds allocated IDs"))
+            };
+        }
         self.ancestry(parent)
     }
 
     // Forward validation proves each directory entry names a linked non-root
-    // inode whose parent is the entry's directory. One pass per window of
-    // object IDs counts those inodes and marks entry targets; equal counts with
-    // no repeated target mean every linked inode has exactly one entry. The
-    // scan also finds the next occupied window, skipping gaps in issued IDs.
+    // inode in a linked directory. One pass per window of object IDs balances
+    // those entries against the inodes' links (see `Links`). The scan also
+    // finds the next occupied window, skipping gaps in issued IDs.
     fn inverse_links(&mut self, start: u64, end: u64) -> Result<Option<u64>> {
-        const REASON: &str = LINK_REASON;
-        let window = start..end;
-        let mut targets = vec![0u8; (end - start).div_ceil(8) as usize];
-        let (mut linked, mut entries) = (0u64, 0u64);
+        let mut links = Links::new(start..end);
         let mut next = None;
         self.walk(
             self.position(self.root.catalog, TreeKind::Catalog),
             &mut 0,
-            &mut |_, page, level, records| {
+            &mut |_, _, level, records| {
                 if level != 0 {
                     return Ok(());
                 }
                 for (key, value) in records {
-                    if key[8] == 1 {
+                    let id = if key[8] == 1 {
                         let owner = u64_be(&key[..8])?;
-                        if owner != 1 && value[1] & 1 == 0 {
-                            if window.contains(&owner) {
-                                linked += 1;
-                            } else if owner >= end {
-                                next = Some(next.map_or(owner, |id: u64| id.min(owner)));
-                            }
+                        if owner == 1 || value[1] & 1 != 0 {
+                            continue;
                         }
+                        links.inode(owner, value);
+                        owner
                     } else if key[8] == 2 {
                         let target = u64_le(&value[..8])?;
-                        if window.contains(&target) {
-                            let bit = target - start;
-                            let byte = &mut targets[(bit / 8) as usize];
-                            if *byte & (1 << (bit % 8)) != 0 {
-                                return Err(Error::Corrupt(REASON).at_block(page));
-                            }
-                            *byte |= 1 << (bit % 8);
-                            entries += 1;
-                        } else if target >= end {
-                            next = Some(next.map_or(target, |id| id.min(target)));
-                        }
+                        links.entry(target);
+                        target
+                    } else {
+                        continue;
+                    };
+                    if id >= end {
+                        next = Some(next.map_or(id, |next: u64| next.min(id)));
                     }
                 }
                 Ok(())
             },
         )?;
-        if linked == entries {
+        if links.balanced() {
             return Ok(next);
         }
-        // Error path only: report the page of the first inode without an entry.
+        self.report_links(&links)
+    }
+
+    // Error path only: report the page of the first inode without an entry,
+    // or else of the first inode whose repeated entries miss its extra links.
+    fn report_links(&mut self, links: &Links) -> Result<Option<u64>> {
         self.walk(
             self.position(self.root.catalog, TreeKind::Catalog),
             &mut 0,
             &mut |_, page, level, records| {
                 for (key, value) in records.iter().filter(|_| level == 0) {
                     let owner = u64_be(&key[..8])?;
-                    let bit = owner.wrapping_sub(start);
                     if key[8] == 1
                         && owner != 1
                         && value[1] & 1 == 0
-                        && window.contains(&owner)
-                        && targets[(bit / 8) as usize] & (1 << (bit % 8)) == 0
+                        && links.window.contains(&owner)
+                        && !links.has_entry(owner)
                     {
-                        return Err(Error::Corrupt(REASON).at_block(page));
+                        return Err(Error::Corrupt(LINK_REASON).at_block(page));
                     }
                 }
                 Ok(())
             },
         )?;
-        Err(Error::Corrupt(REASON))
+        // ponytail: one slot per object with extra links or a repeated entry,
+        // held only on this error path.
+        let mut seen = Links::new(links.window.clone());
+        let mut miscount = std::collections::BTreeMap::<u64, i64>::new();
+        self.walk(
+            self.position(self.root.catalog, TreeKind::Catalog),
+            &mut 0,
+            &mut |_, _, level, records| {
+                for (key, value) in records.iter().filter(|_| level == 0) {
+                    let owner = u64_be(&key[..8])?;
+                    if key[8] == 1 && owner != 1 && value[1] & 1 == 0 && extra_links(value) != 0 {
+                        *miscount.entry(owner).or_default() -= i64::from(extra_links(value));
+                    } else if key[8] == 2 {
+                        let target = u64_le(&value[..8])?;
+                        if seen.entry(target) {
+                            *miscount.entry(target).or_default() += 1;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        let Some(culprit) = miscount
+            .into_iter()
+            .find(|(owner, count)| *count != 0 && links.window.contains(owner))
+            .map(|(owner, _)| owner)
+        else {
+            return Err(Error::Corrupt(LINK_REASON));
+        };
+        let key = catalog_key(culprit, 1, None);
+        self.walk(
+            self.position(self.root.catalog, TreeKind::Catalog),
+            &mut 0,
+            &mut |_, page, level, records| {
+                if level == 0 && records.iter().any(|(record, _)| *record == key) {
+                    return Err(Error::Corrupt(LINK_REASON).at_block(page));
+                }
+                Ok(())
+            },
+        )?;
+        Err(Error::Corrupt(LINK_REASON))
     }
 
     /// `lookup` in the catalog, answered from the leaf being visited when its
@@ -549,15 +655,7 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
         // While every issued ID fits one link window, this walk also does the
         // inverse-link pass, saving a second walk of the catalog.
         let fused = self.root.next_object <= LINK_WINDOW;
-        let mut targets = vec![
-            0u8;
-            if fused {
-                self.root.next_object.div_ceil(8) as usize
-            } else {
-                0
-            }
-        ];
-        let (mut linked, mut entries) = (0u64, 0u64);
+        let mut links = Links::new(0..if fused { self.root.next_object } else { 0 });
         self.walk(
             self.position(self.root.catalog, TreeKind::Catalog),
             &mut 0,
@@ -595,7 +693,9 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                             preallocation: reader.root.features & FEATURE_PREALLOCATION != 0,
                         });
                         count += 1;
-                        linked += u64::from(fused && owner != 1 && value[1] & 1 == 0);
+                        if owner != 1 && value[1] & 1 == 0 {
+                            links.inode(owner, value);
+                        }
                     }
                     let state = state
                         .as_mut()
@@ -607,6 +707,11 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                                 return Err(Error::Corrupt("non-directory has directory entries")
                                     .at_block(page));
                             }
+                            if state.inode[1] & 1 != 0 {
+                                return Err(
+                                    Error::Corrupt("orphaned directory has entries").at_block(page)
+                                );
+                            }
                             crate::name::validate_disk_name(&value[12..], &key[9..])
                                 .map_err(|error| error.at_block(page))?;
                             let target = u64_le(&value[..8])?;
@@ -616,23 +721,17 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                                 );
                             }
                             let target_inode = reader.inode(target)?;
+                            // Only a directory has one entry, matching its parent.
                             if target_inode[0] != value[8]
                                 || target_inode[1] & 1 != 0
-                                || u64_le(&target_inode[8..16])? != owner
+                                || (target_inode[0] == 2 && u64_le(&target_inode[8..16])? != owner)
                             {
                                 return Err(Error::Corrupt(
                                     "directory target type or parent mismatch",
                                 )
                                 .at_block(page));
                             }
-                            if fused {
-                                let byte = &mut targets[(target / 8) as usize];
-                                if *byte & (1 << (target % 8)) != 0 {
-                                    return Err(Error::Corrupt(LINK_REASON).at_block(page));
-                                }
-                                *byte |= 1 << (target % 8);
-                                entries += 1;
-                            }
+                            links.entry(target);
                             state.children += 1;
                         }
                         3 => {
@@ -714,10 +813,13 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
         let state = state.ok_or(Error::Corrupt("catalog is empty"))?;
         state.finish()?;
         self.inode(1)?;
-        if fused && linked == entries {
-            return Ok(count);
+        if fused {
+            return if links.balanced() {
+                Ok(count)
+            } else {
+                self.report_links(&links).map(|_| count)
+            };
         }
-        // Unfused, or a mismatch whose page the second pass reports.
         let mut start = 0;
         loop {
             let end = (start + LINK_WINDOW).min(self.root.next_object);

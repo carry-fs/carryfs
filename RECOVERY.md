@@ -87,11 +87,11 @@ targets, timestamps, permission bits, and hidden attributes. It receives a fresh
 and assigns object IDs during reconstruction. Sparse file contents are retained.
 Unwritten preallocation is not copied.
 
-Without `--report`, the report is `recovered.cfs.recovery.txt`. To choose another
-report path, supply `--report NEW_FILE`. The report is synchronized before the
-image is created and records missing metadata and unreadable file ranges, including
-their recovered paths. Review this report even when the new image passes scrub:
-missing data remains unwritten and reads as zeros in partial files.
+The text report defaults to `recovered.cfs.recovery.txt`; `--report NEW_FILE`
+overrides it. The tool syncs the report before it creates the image. It lists
+missing metadata and unreadable file ranges with their recovered paths. Read it
+even when the new image passes scrub, because missing data stays unwritten and
+reads as zeros in partial files.
 
 To read back and verify destination data after copying and flushing, add
 `--verify-data`:
@@ -107,13 +107,13 @@ Destination data failures produce `verification_failed`, retain both damage
 reports, and exit with status 8. Source damage still produces a partial result
 with status 4 even when all surviving output data verifies successfully.
 
-New-image recovery does not require `--accept-data-loss` because the source is
-preserved. Complete recovery exits with status 1. Partial recovery retains the
-new image and report and exits with status 4. A write or flush failure exits with
+New-image recovery does not need `--accept-data-loss`, because the source stays
+untouched. Complete recovery exits with status 1. Partial recovery keeps the new
+image and report and exits with status 4. A write or flush failure exits with
 status 8 and may leave a partial image. A report without the image recovery
-completion entry records an unfinished attempt. Retry with new output and report
-filenames. The tool reads back and structurally checks the completed image
-through its held device before it reports completion.
+completion entry marks an unfinished attempt. Retry with new output and report
+filenames. Before it reports completion, the tool reads the finished image back
+and checks its structure.
 
 ## Repair the original volume
 
@@ -193,8 +193,12 @@ File data has no redundant copy for repair to use. Checksums detect damaged byte
 restore those bytes from an independent backup. A successful structural repair
 alone does not establish that the filesystem is ready for unrestricted use.
 
-Exit status is 0 for a clean diagnosis or complete export, 1 for a committed
-repair or complete recovery into a new image, 4 for damage, blocked repair, or
-incomplete recovery, 8 for an operational
-failure, and 16 for invalid arguments. Status 1 does not mean every file was
-recovered when `--accept-data-loss` was supplied.
+Exit status:
+
+- 0: clean diagnosis or complete export.
+- 1: committed repair, or complete recovery into a new image.
+- 4: damage, blocked repair, or incomplete recovery.
+- 8: operational failure.
+- 16: invalid arguments.
+
+With `--accept-data-loss`, status 1 does not mean every file was recovered.

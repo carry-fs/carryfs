@@ -833,8 +833,16 @@ fn cli_reads_a_device_passed_as_an_open_descriptor() {
         .unwrap()
         .to_owned();
     let raw = disk.replace("/dev/disk", "/dev/rdisk");
-    let with_device = |args: &[&str]| {
-        let device = fs::File::open(&raw).unwrap();
+    // Like a root-only /dev/rdiskN: the CLI can use the descriptors it is
+    // given but cannot open the node itself.
+    let devices = [fs::File::open(&raw).unwrap(), fs::File::open(&raw).unwrap()];
+    let mode = |bits: u32| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&raw, fs::Permissions::from_mode(bits)).unwrap()
+    };
+    mode(0o000);
+    let [plan, check] = devices;
+    let run = |args: &[&str], device: fs::File| {
         Command::new(env!("CARGO_BIN_EXE_carryfs"))
             .current_dir(&temp.0)
             .args(args)
@@ -842,8 +850,12 @@ fn cli_reads_a_device_passed_as_an_open_descriptor() {
             .output()
             .unwrap()
     };
-    let plan = with_device(&["fsck", "--plan", "--bytes", "268435456", "--", "/dev/fd/0"]);
-    let check = with_device(&["check", "--bytes", "268435456", "/dev/fd/0"]);
+    let plan = run(
+        &["fsck", "--plan", "--bytes", "268435456", "--", "/dev/fd/0"],
+        plan,
+    );
+    let check = run(&["check", "--bytes", "268435456", "/dev/fd/0"], check);
+    mode(0o640);
     Command::new("hdiutil")
         .args(["detach", &disk])
         .output()

@@ -85,15 +85,27 @@ const IN_USE: &str = "the device is in use: unmount or eject it first";
 
 /// Open the raw node a mounted daemon locks, and take the same lock: resolve
 /// symlinks, and read `/dev/diskN` through `/dev/rdiskN`, since each node has
-/// a lock of its own. `/dev/fd/N` names a device a privileged parent opened;
-/// macOS cannot canonicalize it, and opening it duplicates that descriptor.
+/// a lock of its own. `/dev/fd/0` is a device a privileged parent opened and
+/// passed as standard input: use that descriptor, since macOS rechecks the
+/// node's permissions when `/dev/fd/0` is opened again.
 #[cfg(target_os = "macos")]
 fn open_exclusive(path: &Path, mode: MountMode) -> Result<fs::File> {
-    let path = if path.starts_with("/dev/fd") {
-        path.to_owned()
+    let file = if path == Path::new("/dev/fd/0") {
+        use std::os::fd::AsFd;
+        fs::File::from(std::io::stdin().as_fd().try_clone_to_owned()?)
     } else {
-        fs::canonicalize(path)?
+        open_node(path, mode)?
     };
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(IN_USE.into()),
+        Err(fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_node(path: &Path, mode: MountMode) -> Result<fs::File> {
+    let path = fs::canonicalize(path)?;
     let path = match (path.parent(), path.file_name().and_then(OsStr::to_str)) {
         (Some(dev), Some(name)) if dev == Path::new("/dev") && name.starts_with("disk") => {
             dev.join(format!("r{name}"))
@@ -113,11 +125,7 @@ fn open_exclusive(path: &Path, mode: MountMode) -> Result<fs::File> {
         }
         result => result?,
     };
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(fs::TryLockError::WouldBlock) => Err(IN_USE.into()),
-        Err(fs::TryLockError::Error(error)) => Err(error.into()),
-    }
+    Ok(file)
 }
 
 /// Open the device with the kernel's exclusive claim, which a mounted

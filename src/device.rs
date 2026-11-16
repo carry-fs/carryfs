@@ -157,8 +157,6 @@ pub struct ImageDevice {
     mode: MountMode,
     // Only a raw device opened for inspection reads through it.
     chunks: Option<Chunks>,
-    // A raw device node rather than a regular image file.
-    raw: bool,
 }
 
 // A raw device costs a round trip per read, and the checker's metadata reads
@@ -270,7 +268,6 @@ impl ImageDevice {
             geometry,
             mode,
             chunks: (mode == MountMode::ReadOnly).then(Chunks::new),
-            raw: true,
         })
     }
 
@@ -305,7 +302,6 @@ impl ImageDevice {
             geometry,
             mode: MountMode::ReadWrite,
             chunks: None,
-            raw: false,
         })
     }
 
@@ -336,7 +332,6 @@ impl ImageDevice {
             geometry,
             mode,
             chunks: None,
-            raw: false,
         })
     }
 
@@ -468,7 +463,7 @@ impl BlockDevice for ImageDevice {
 
     fn flush_durable(&mut self) -> Result<()> {
         #[cfg(target_os = "macos")]
-        if self.raw {
+        if is_device_file(&self.file)? {
             return flush_macos_device(&self.file)
                 .map_err(|source| Error::io("flush_durable", source));
         }
@@ -732,7 +727,6 @@ mod tests {
             geometry,
             mode: MountMode::ReadOnly,
             chunks: Some(Chunks::new()),
-            raw: false,
         };
         let edge = CHUNK_BYTES as u64;
         let mut offsets = vec![0, 4096, edge - 4096, edge, 3 * edge + 8192, bytes - 4096];

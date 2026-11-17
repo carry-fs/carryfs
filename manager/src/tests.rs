@@ -907,3 +907,31 @@ fn default_sidebar_shows_physical_disks_with_their_user_partitions() {
     });
     assert_eq!(device_rows(&rt.state), vec![(0, 0), (4, 0), (5, 1)]);
 }
+
+#[test]
+fn refresh_after_erase_shows_the_new_mounted_volume() {
+    let before = Device {
+        id: "disk8s1".into(),
+        parent: Some("disk8".into()),
+        name: "LEXAR".into(),
+        bytes: 1 << 30,
+        uuid: Some("PARTITION".into()),
+        filesystem: "exfat".into(),
+        mount: None,
+        whole: false,
+        internal: false,
+        kind: DeviceKind::Physical,
+    };
+    let after = Device {
+        name: "CARROCHKA".into(),
+        filesystem: "carryfs".into(),
+        mount: Some("/Volumes/CARROCHKA".into()),
+        ..before.clone()
+    };
+    let mut rt = runtime();
+    rt.update(|s, _| {
+        s.device = Some(before.clone());
+        s.apply(Ok(Update::Devices(vec![after.clone()])));
+    });
+    assert_eq!(rt.state.device, Some(after));
+}

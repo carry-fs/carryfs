@@ -215,21 +215,22 @@ impl State {
                 self.selected = None;
             }
             Ok(Update::Devices(devices)) => {
+                self.status = "Disks refreshed".into();
                 if let Some(selected) = &self.device {
-                    if !devices
+                    // Take the fresh record: an erase or mount changes format and mount point.
+                    match devices
                         .iter()
-                        .any(|d| d.id == selected.id && d.uuid == selected.uuid)
+                        .find(|d| d.id == selected.id && d.uuid == selected.uuid)
                     {
-                        self.device = None;
-                        self.browser = None;
-                        self.damaged = None;
-                        self.selected = None;
-                        self.status = "The selected disk is no longer connected.".into();
-                    } else {
-                        self.status = "Disks refreshed".into();
+                        Some(fresh) => self.device = Some(fresh.clone()),
+                        None => {
+                            self.device = None;
+                            self.browser = None;
+                            self.damaged = None;
+                            self.selected = None;
+                            self.status = "The selected disk is no longer connected.".into();
+                        }
                     }
-                } else {
-                    self.status = "Disks refreshed".into();
                 }
                 self.devices = devices;
             }

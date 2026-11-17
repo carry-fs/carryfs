@@ -58,7 +58,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component clippy --target aarch64-linux-android
           command -v cargo-ndk || cargo install --locked cargo-ndk --version "$CARGO_NDK_VERSION"
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       - name: Clippy for Android
@@ -88,7 +88,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --target x86_64-linux-android
           command -v cargo-ndk || cargo install --locked cargo-ndk --version "$CARGO_NDK_VERSION"
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" emulator platform-tools "$IMAGE" > /dev/null
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" emulator platform-tools "$IMAGE" > /dev/null
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
       # The tests mount a desktop-made image holding /hello.txt; see android/README.md.

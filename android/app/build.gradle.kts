@@ -16,7 +16,9 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.2.0"
+        // The product version from the root Cargo.toml (VERSIONING.md).
+        versionName = Regex("""\[workspace\.package\]\s*version\s*=\s*"([^"]+)"""")
+            .find(rootDir.resolveSibling("Cargo.toml").readText())!!.groupValues[1]
         ndk { abiFilters += abi }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

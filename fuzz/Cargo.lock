@@ -10,9 +10,10 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "carryfs-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carryfs-ondisk",
+ "libc",
 ]
 
 [[package]]
@@ -26,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "carryfs-ondisk"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "cc"

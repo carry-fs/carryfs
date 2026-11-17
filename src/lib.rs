@@ -28,6 +28,16 @@ mod volume;
 mod workspace;
 
 pub use check::CheckSummary;
+
+/// What `--version` prints: the product version and the format revisions
+/// this build writes and reads (VERSIONING.md).
+pub fn version_line(program: &str) -> String {
+    use carryfs_ondisk::format::{LEGACY_REVISION, REVISION};
+    format!(
+        "{program} {} (format revision {REVISION}; reads revisions {LEGACY_REVISION}-{REVISION})",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 pub use device::{BlockDevice, Geometry, ImageDevice, MountMode};
 pub use error::{Error, Result};
 pub use name::Name;

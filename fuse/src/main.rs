@@ -41,6 +41,10 @@ fn main() -> ExitCode {
         mkfs::main(&args[1..])
     } else {
         match &args[1..] {
+            [flag] if flag == "--version" => {
+                println!("{}", carryfs_core::version_line("carryfs-fuse"));
+                Ok(())
+            }
             [command, device] if command == "probe" => mount::probe(Path::new(device)),
             [command, rest @ ..] if command == "mkfs" => mkfs::main(rest),
             [command, device] if command == "upgrade" => upgrade(Path::new(device)),
@@ -93,6 +97,10 @@ fn main() -> ExitCode {
         platform::helper(&args[1..])
     } else {
         match &args[1..] {
+            [flag] if flag == "--version" => {
+                println!("{}", carryfs_core::version_line("carryfs-fuse"));
+                Ok(())
+            }
             #[cfg(target_os = "freebsd")]
             [command, rest @ ..] if command == "mkfs" => mkfs::main(rest),
             [command, device, directory, options] if command == "serve" => options

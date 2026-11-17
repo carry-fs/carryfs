@@ -53,11 +53,18 @@ function Get-CarryFSVersions {
     }
 }
 
+# The release line an installation stays on: its major version, or 0.MINOR
+# before 1.0, where a minor release may break compatibility.
+function Get-CarryFSLine($Version) {
+    if ($Version.Core.Major -eq 0) { return "0.$($Version.Core.Minor)" }
+    return "$($Version.Core.Major)"
+}
+
 function Select-CarryFSVersion($Versions, $Installed, [switch]$Upgrade) {
     $best = $null
     foreach ($value in $Versions) {
         $candidate = ConvertTo-CarryFSVersion $value
-        if ($Installed -and -not $Upgrade -and $candidate.Core.Major -ne $Installed.Core.Major) { continue }
+        if ($Installed -and -not $Upgrade -and (Get-CarryFSLine $candidate) -ne (Get-CarryFSLine $Installed)) { continue }
         if (-not $best -or (Compare-CarryFSVersion $candidate $best) -gt 0) {
             $best = $candidate
         }

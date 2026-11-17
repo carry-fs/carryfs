@@ -101,6 +101,10 @@ fn main() -> ExitCode {
     {
         return cli::fsck::main(args);
     }
+    if args.first().is_some_and(|arg| arg == "--version") {
+        println!("{}", carryfs_core::version_line("carryfs"));
+        return ExitCode::SUCCESS;
+    }
     if args.first().is_some_and(|arg| arg == "fsck") {
         args.remove(0);
         return cli::fsck::main(args);

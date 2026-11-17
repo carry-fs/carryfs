@@ -33,6 +33,10 @@ fn main() -> ExitCode {
         ["upgrade", volume] => upgrade(volume),
         ["probe", volume] => probe(volume),
         ["service"] => service::run(),
+        ["--version"] => {
+            println!("{}", carryfs_core::version_line("carryfs-windows"));
+            Ok(())
+        }
         ["serve", volume] => serve(volume, None, false),
         ["serve", volume, letter] => serve(volume, Some(letter), false),
         ["serve", volume, letter, "ro"] => serve(volume, Some(letter), true),

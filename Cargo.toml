@@ -1,6 +1,6 @@
 [package]
 name = "carryfs-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0 OR GPL-2.0-only"
@@ -9,6 +9,10 @@ description = "CarryFS image commit engine"
 [workspace]
 members = [".", "ondisk", "fuse", "macos", "windows"]
 exclude = ["fuzz"]
+
+# The product version: every crate, package, and tag shares it (VERSIONING.md).
+[workspace.package]
+version = "0.2.0"
 
 [dependencies]
 carryfs-ondisk = { path = "ondisk", features = ["std"] }

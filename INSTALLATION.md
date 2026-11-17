@@ -149,8 +149,10 @@ Run the install script to install the latest stable release. Both installers
 read the published versions from `https://carryfs.com/releases.txt` and download
 packages from GitHub Releases. The Unix installer does not require `jq`.
 
-An existing installation stays within its current major version. Use
-`--upgrade` on Unix or `-Upgrade` on Windows to allow a newer major version.
+An existing installation stays on its release line: its major version, or
+`0.MINOR` before 1.0, since a 0.x minor release can change the disk format.
+Use `--upgrade` on Unix or `-Upgrade` on Windows to move to a newer line. See
+[VERSIONING.md](VERSIONING.md).
 
 Linux and macOS:
 

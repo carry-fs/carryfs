@@ -153,6 +153,15 @@ printf '%s\\n' "$selected"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, expected + "\n")
 
+    def test_before_1_0_a_minor_release_starts_a_new_line(self):
+        index = "0.1.10\n0.2.0\n0.2.1\n1.3.0\n2.0.0\n"
+        for installed, upgrade, expected in [("0.1.0", 0, "0.1.10"), ("0.2.0", 0, "0.2.1"),
+                                             ("1.0.0", 0, "1.3.0"), ("0.1.0", 1, "2.0.0")]:
+            with self.subTest(installed=installed, upgrade=upgrade):
+                result = self.select(index, installed, upgrade)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected + "\n")
+
     def test_releases_without_a_package_for_this_system_are_skipped(self):
         result = self.select("0.1.0\n0.1.1\n", unpackaged="0.1.0")
         self.assertEqual(result.returncode, 0, result.stderr)

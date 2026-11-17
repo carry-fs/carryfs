@@ -40,7 +40,9 @@ enum Update {
     Report(String),
     Versions(Versions),
     /// First Aid's diagnosis and, for a clean volume that opens, its scrub.
+    /// `opened` is the volume First Aid opened because it wasn't open yet.
     FirstAid {
+        opened: Option<Box<Update>>,
         key: Option<VolumeKey>,
         plan: ScanResult,
         scrub: Option<ScanResult>,
@@ -239,7 +241,15 @@ impl State {
                 self.versions = versions;
                 self.status = "Software versions refreshed.".into();
             }
-            Ok(Update::FirstAid { key, plan, scrub }) => {
+            Ok(Update::FirstAid {
+                opened,
+                key,
+                plan,
+                scrub,
+            }) => {
+                if let Some(update) = opened {
+                    self.apply(Ok(*update));
+                }
                 self.error = !plan.passed || scrub.as_ref().is_some_and(|s| !s.passed);
                 self.status = if self.error {
                     "First Aid found problems.".into()
@@ -454,9 +464,23 @@ impl State {
             return;
         };
         let browser = self.browser.clone();
-        let key = browser.as_ref().map(|b| (b.info.uuid, b.info.generation));
+        let unopened = browser.is_none() && self.damaged.is_none();
         self.run_sheet("First Aid", true, tx, move |cancel| {
-            let plan = ScanResult::new(operation::fsck(source, Fsck::Plan, cancel.clone()));
+            let plan = ScanResult::new(operation::fsck(source.clone(), Fsck::Plan, cancel.clone()));
+            // A volume selected while locked had nowhere to keep the results;
+            // fsck just authorized the device, so open it now.
+            let (browser, opened) = match (browser, source.device.clone()) {
+                (None, Some(device)) if unopened => {
+                    match opened(Browser::open_device(device), source)? {
+                        Update::Browser(b) => {
+                            (Some((*b).clone()), Some(Box::new(Update::Browser(b))))
+                        }
+                        update => (None, Some(Box::new(update))),
+                    }
+                }
+                (browser, _) => (browser, None),
+            };
+            let key = browser.as_ref().map(|b| (b.info.uuid, b.info.generation));
             // Data checksums are verified only when the structure is sound.
             let scrub = match browser {
                 Some(browser) if plan.passed => {
@@ -464,7 +488,12 @@ impl State {
                 }
                 _ => None,
             };
-            Ok(Update::FirstAid { key, plan, scrub })
+            Ok(Update::FirstAid {
+                opened,
+                key,
+                plan,
+                scrub,
+            })
         });
     }
     fn repair(&mut self, tx: &mut Tx) {

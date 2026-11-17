@@ -935,3 +935,24 @@ fn refresh_after_erase_shows_the_new_mounted_volume() {
     });
     assert_eq!(rt.state.device, Some(after));
 }
+
+#[test]
+fn first_aid_on_an_unopened_volume_keeps_its_results() {
+    let fixture = Fixture::new();
+    let browser = Browser::open(fixture.image()).unwrap();
+    let key = (browser.info.uuid, browser.info.generation);
+    let mut rt = runtime();
+    rt.update(|s, _| {
+        s.apply(Ok(Update::FirstAid {
+            opened: Some(Box::new(Update::Browser(Box::new(browser)))),
+            key: Some(key),
+            plan: ScanResult::new(Ok("No problems found.".into())),
+            scrub: Some(ScanResult::new(Ok("File data verified.".into()))),
+        }));
+    });
+    assert!(rt.state.browser.is_some());
+    let health = &rt.state.integrity[&key];
+    assert!(health.plan.as_ref().is_some_and(|p| p.passed));
+    assert!(health.scrub.as_ref().is_some_and(|p| p.passed));
+    assert_eq!(rt.state.status, "First Aid found no problems.");
+}

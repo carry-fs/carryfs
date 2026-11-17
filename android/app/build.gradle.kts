@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Phones are arm64; CI's emulator runs x86_64 (-Pcarryfs.abi=x86_64).
+val abi = providers.gradleProperty("carryfs.abi").getOrElse("arm64-v8a")
+
 android {
     namespace = "com.carryfs.android"
     compileSdk = 35
@@ -14,7 +17,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.2.0"
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += abi }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -34,13 +37,13 @@ kotlin {
 
 // The native library is always built optimized: the storage core is too
 // slow unoptimized to exercise on a device.
-// It runs the `cargo` on PATH, so cargo-ndk and the aarch64-linux-android
-// target must be installed for that toolchain.
+// It runs the `cargo` on PATH, so cargo-ndk and the Rust target for `abi`
+// must be installed for that toolchain.
 val cargoBuild = tasks.register<Exec>("cargoBuild") {
     workingDir = rootDir.resolve("native")
     environment("ANDROID_NDK_HOME", android.ndkDirectory.path)
     commandLine(
-        "cargo", "ndk", "-t", "arm64-v8a", "-P", "26",
+        "cargo", "ndk", "-t", abi, "-P", "26",
         "-o", layout.buildDirectory.dir("rust").get().asFile.path,
         "build", "-p", "carryfs-android", "--release",
     )

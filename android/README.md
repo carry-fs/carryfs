@@ -46,6 +46,9 @@ Then build the APK. The Gradle build compiles the Rust library first.
 ./gradlew assembleDebug
 ```
 
+For an x86_64 emulator, add the `x86_64-linux-android` Rust target and build
+with `-Pcarryfs.abi=x86_64`.
+
 ## Test
 
 The host tests cover USB transport, partition discovery, and file operations

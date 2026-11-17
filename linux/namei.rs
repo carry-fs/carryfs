@@ -15,7 +15,7 @@ use crate::commit;
 use crate::edit::{Disk, Txn};
 use crate::glue;
 use crate::ondisk::format::{
-    extra_links, TreeKind, FEATURE_ATTRIBUTES, FEATURE_LINKS, INODE_EXTRA_LINKS, INODE_MODE,
+    extra_links, TreeKind, INODE_EXTRA_LINKS, INODE_MODE,
     MAINTENANCE_RESERVE, MAX_EXTRA_LINKS, MAX_ID, MODE_RECORDED,
 };
 use crate::tree::{self, le_u64, Tree};
@@ -41,12 +41,6 @@ const CHILDREN: usize = 32;
 const CREATED: usize = 40;
 const MODIFIED: usize = 56;
 const CHANGED: usize = 72;
-
-/// Whether the volume stores modes: root feature bit 0. Without it the mode
-/// field stays zero, as a reader that predates the feature requires.
-pub(crate) fn stores_attributes(state: &State) -> bool {
-    state.root.features & FEATURE_ATTRIBUTES != 0
-}
 
 /// Record `mode`'s nine permission bits in an inode record.
 pub(crate) fn set_mode(record: &mut [u8], mode: u32) {
@@ -308,7 +302,7 @@ fn create_object(
         let mut record = KVec::with_capacity(128 + target.len(), GFP_KERNEL)?;
         record.resize(128, 0, GFP_KERNEL)?;
         record[0] = kind;
-        if let Some(mode) = mode.filter(|_| stores_attributes(state)) {
+        if let Some(mode) = mode {
             set_mode(&mut record, mode.into());
         }
         set_u64(&mut record, PARENT, parent);
@@ -386,7 +380,6 @@ unsafe extern "C" fn link(
                 }
                 record[INODE_EXTRA_LINKS..INODE_EXTRA_LINKS + 4]
                     .copy_from_slice(&(links + 1).to_le_bytes());
-                txn(state).features |= FEATURE_LINKS;
             }
             let time = now();
             record[1] &= !ORPHAN;

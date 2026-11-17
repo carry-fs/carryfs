@@ -141,13 +141,52 @@ def direct_append_error(cli, work):
     print(f"  direct append: writeback error reached write; {volume.check(scrub=True)}", flush=True)
 
 
+def truncate_error(cli, work):
+    """A truncate whose tail rewrite fails leaves the stored size past i_size;
+    a later writeback of the file must not store i_size over the full tail
+    unit (fstests generic/476)."""
+    volume = Volume(cli, work, "truncate-error", 256)
+    device = Device(volume.image, f"carryfs-truncate-error-{os.getpid()}")
+    mounted = False
+    try:
+        run("mount", "-i", "-t", "carryfs", device.path, volume.point)
+        mounted = True
+        path = volume.point / "file"
+        path.write_bytes(os.urandom(2 * 65536))
+        os.sync()
+        # Writes fail and reads pass, so the tail rewrite's data write fails
+        # while the edits before it stay in memory.
+        device.replace(f"0 {device.sectors} flakey {device.loop} 0 0 180 1 error_writes")
+        try:
+            os.truncate(path, 100_000)
+        except OSError as error:
+            assert error.errno == errno.EIO, error
+        else:
+            raise AssertionError("truncate hid its tail rewrite's write error")
+        finally:
+            device.replace(device.linear())
+        with open(path, "r+b") as f:
+            f.write(b"x")
+            os.fsync(f.fileno())
+        run("umount", volume.point)
+        mounted = False
+    finally:
+        if mounted:
+            device.replace(device.linear())
+            run("umount", volume.point)
+        device.close()
+    print(f"  truncate error: later writeback kept the stored size; {volume.check()}", flush=True)
+
+
 def main():
     cli = Path(__file__).resolve().parents[2] / "target/release/carryfs"
     run("modprobe", "dm_mod")
+    run("modprobe", "dm_flakey")
     with tempfile.TemporaryDirectory(prefix="carryfs-faults-") as directory:
         for phase in ("metadata", "root-a", "root-b"):
             publication_error(cli, Path(directory), phase)
         direct_append_error(cli, Path(directory))
+        truncate_error(cli, Path(directory))
 
 
 if __name__ == "__main__":

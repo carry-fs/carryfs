@@ -33,6 +33,10 @@ fn main() -> ExitCode {
         ["upgrade", volume] => upgrade(volume),
         ["probe", volume] => probe(volume),
         ["service"] => service::run(),
+        ["--version"] => {
+            println!("{}", carryfs_core::version_line("carryfs-windows"));
+            Ok(())
+        }
         ["serve", volume] => serve(volume, None, false),
         ["serve", volume, letter] => serve(volume, Some(letter), false),
         ["serve", volume, letter, "ro"] => serve(volume, Some(letter), true),
@@ -132,7 +136,7 @@ fn wipe(volume_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Let the volume store modes and the hidden attribute. CarryFS 0.1.0 cannot
+/// Let a volume CarryFS 0.1.0 formatted take writes. CarryFS 0.1.0 cannot
 /// mount it afterwards. Owning the partition fails while the service has it
 /// mounted.
 #[cfg(windows)]
@@ -140,15 +144,13 @@ fn upgrade(volume_path: &str) -> Result<()> {
     use carryfs_core::Volume;
 
     let disk = open_owned(volume_path, "upgrade")?;
-    let mut volume = Volume::open(disk).map_err(|e| format!("{volume_path}: {e}"))?;
-    let changed = volume.upgrade().map_err(|e| format!("upgrade: {e}"))?;
-    volume.eject().map_err(|e| format!("eject: {e}"))?;
+    let changed = Volume::upgrade(disk).map_err(|e| format!("{volume_path}: {e}"))?;
     println!(
         "{volume_path}: {}",
         if changed {
-            "now stores permissions and the hidden attribute; CarryFS 0.1.0 can no longer mount it"
+            "upgraded; CarryFS 0.1.0 can no longer mount it"
         } else {
-            "already stores permissions and the hidden attribute"
+            "already up to date"
         }
     );
     Ok(())

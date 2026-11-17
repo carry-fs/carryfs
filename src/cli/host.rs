@@ -151,9 +151,6 @@ pub(super) struct Sink {
     // to restore once its entries exist. Completed branches are dropped when
     // traversal returns to a shallower path.
     directories: Vec<(File, Option<(u32, bool)>)>,
-    /// Restore stored modes: only from a volume that stores them. Otherwise
-    /// extracted entries keep the private modes they are created with.
-    modes: bool,
     /// Created entries whose objects have other names, by path, so a later
     /// link reaches only the object extraction wrote.
     held: HashMap<Vec<Vec<u8>>, Held>,
@@ -200,7 +197,7 @@ fn path_key(path: &[Name]) -> Vec<Vec<u8>> {
 }
 
 impl Sink {
-    pub(super) fn new(path: &Path, modes: bool) -> Result<Self> {
+    pub(super) fn new(path: &Path) -> Result<Self> {
         let name = component(
             path.file_name()
                 .ok_or(Error::InvalidInput("destination needs a new name"))?,
@@ -233,7 +230,6 @@ impl Sink {
             parent,
             name,
             directories: Vec::new(),
-            modes,
             held: HashMap::new(),
         })
     }
@@ -254,7 +250,7 @@ impl Sink {
     }
 
     fn stored(&self, attributes: &Attributes) -> Option<(u32, bool)> {
-        (self.modes && attributes.kind != ObjectKind::Symlink)
+        (attributes.kind != ObjectKind::Symlink)
             .then(|| (u32::from(attributes.mode.bits()), attributes.hidden))
     }
 
@@ -335,7 +331,7 @@ impl ExtractionSink for Sink {
         target: &[u8],
         attributes: &Attributes,
     ) -> Result<()> {
-        let hidden = self.modes && attributes.hidden;
+        let hidden = attributes.hidden;
         let hold = attributes.links > 1 && self.held.len() < MAX_HELD;
         let (parent, name) = self.entry(path)?;
         let target =
@@ -473,14 +469,14 @@ mod tests {
         let temp = Temp::new();
         let source = temp.0.join("source");
         std::fs::write(&source, b"source bytes").unwrap();
-        assert!(Sink::new(&source, false).is_err());
+        assert!(Sink::new(&source).is_err());
         let alias = temp.0.join("hardlink");
         std::fs::hard_link(&source, &alias).unwrap();
-        assert!(Sink::new(&alias, false).is_err());
+        assert!(Sink::new(&alias).is_err());
         symlink(&source, temp.0.join("symlink")).unwrap();
-        assert!(Sink::new(&temp.0.join("symlink"), false).is_err());
+        assert!(Sink::new(&temp.0.join("symlink")).is_err());
         symlink(&temp.0, temp.0.join("parent-link")).unwrap();
-        assert!(Sink::new(&temp.0.join("parent-link/new"), false).is_err());
+        assert!(Sink::new(&temp.0.join("parent-link/new")).is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
     }
 
@@ -492,7 +488,7 @@ mod tests {
         let outside = temp.0.join("outside");
         std::fs::create_dir(&parent).unwrap();
         std::fs::create_dir(&outside).unwrap();
-        let mut sink = Sink::new(&parent.join("output"), false).unwrap();
+        let mut sink = Sink::new(&parent.join("output")).unwrap();
         std::fs::rename(&parent, &held).unwrap();
         symlink(&outside, &parent).unwrap();
         sink.create_directory(&[], &attributes()).unwrap();
@@ -514,7 +510,7 @@ mod tests {
         let temp = Temp::new();
         let root = temp.0.join("output");
         let held = temp.0.join("held");
-        let mut sink = Sink::new(&root, false).unwrap();
+        let mut sink = Sink::new(&root).unwrap();
         sink.create_directory(&[], &attributes()).unwrap();
         let first = [Name::parse("first").unwrap()];
         let second = [Name::parse("second").unwrap()];
@@ -541,7 +537,7 @@ mod tests {
         };
         let temp = Temp::new();
         let root = temp.0.join("output");
-        let mut sink = Sink::new(&root, false).unwrap();
+        let mut sink = Sink::new(&root).unwrap();
         sink.create_directory(&[], &attributes()).unwrap();
         let name = |text: &str| [Name::parse(text).unwrap()];
         sink.create_file(&name("first"), &linked)
@@ -569,11 +565,11 @@ mod tests {
     fn extraction_refuses_entries_inserted_after_preflight() {
         let temp = Temp::new();
         let output = temp.0.join("output");
-        let mut sink = Sink::new(&output, false).unwrap();
+        let mut sink = Sink::new(&output).unwrap();
         std::fs::write(&output, b"late entry").unwrap();
         assert!(sink.create_file(&[], &attributes()).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), b"late entry");
-        let mut sink = Sink::new(&temp.0.join("tree"), false).unwrap();
+        let mut sink = Sink::new(&temp.0.join("tree")).unwrap();
         sink.create_directory(&[], &attributes()).unwrap();
         symlink(&output, temp.0.join("tree/data")).unwrap();
         assert!(

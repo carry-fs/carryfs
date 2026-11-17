@@ -28,6 +28,11 @@ $installed = ConvertTo-CarryFSVersion '0.1.0'
 Assert ((Select-CarryFSVersion $versions $installed).Text -eq '0.1.10') 'Default selection crossed a major version'
 Assert ((Select-CarryFSVersion $versions $installed -Upgrade).Text -eq '1.0.0') 'Upgrade did not select the newest major'
 Must-Fail { Select-CarryFSVersion @('1.0.0') $installed } 'No published stable release'
+# Before 1.0 a minor release starts a new line; after it, a major release does.
+$versions = @('0.1.10', '0.2.0', '0.2.1', '1.3.0', '2.0.0')
+Assert ((Select-CarryFSVersion $versions $installed).Text -eq '0.1.10') 'Default selection crossed a 0.x minor version'
+Assert ((Select-CarryFSVersion $versions (ConvertTo-CarryFSVersion '0.2.0')).Text -eq '0.2.1') 'Default selection left the 0.2 line'
+Assert ((Select-CarryFSVersion $versions (ConvertTo-CarryFSVersion '1.0.0')).Text -eq '1.3.0') 'Default selection left major 1'
 $script:index = ''
 Must-Fail { Select-CarryFSVersion @(Get-CarryFSVersions) $null } 'No published stable release'
 foreach ($invalid in @('<html>unavailable</html>', '0.1.1-rc.1', 'v0.1.1', '01.1.1', ' 0.1.1')) {

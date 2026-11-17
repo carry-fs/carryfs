@@ -241,11 +241,6 @@ impl Pending {
         self.allocated.len()
     }
 
-    /// Root feature bits the batch will publish, including any its operations enabled.
-    pub(crate) fn features(&self) -> u64 {
-        self.forest.features()
-    }
-
     /// Run a read-only operation against the batch's catalog, so it sees edits
     /// no published root holds yet. It gets a read budget of its own, and the
     /// batch is checked before anything moves, so a read cannot lose it.
@@ -531,9 +526,6 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
     // A replacing write may borrow up to one maximum data batch from the
     // reserve: its retired blocks repay it after both roots are mirrored.
     fn data_floor(&self) -> u64 {
-        if self.forest.base.features & crate::format::FEATURE_PREALLOCATION == 0 {
-            return RESERVE;
-        }
         let retired: u64 = self.retired_data.iter().map(|range| range.count).sum();
         RESERVE
             - retired
@@ -1148,7 +1140,6 @@ impl<'a, D: BlockDevice> Transaction<'a, D> {
         }
         let mut root = self.forest.base.clone();
         root.generation = self.forest.generation;
-        root.features = self.forest.features;
         root.catalog = self.forest.resolve(&self.catalog, &assignments)?;
         root.allocation = self.forest.resolve(&allocation, &assignments)?;
         root.cleanup = self.forest.resolve(&cleanup, &assignments)?;
@@ -1793,13 +1784,11 @@ mod tests {
             Err(Error::NoSpace)
         ));
 
+        // Nothing retired repays a borrowed block.
         let mut transaction = Transaction::new(&mut device, &base).unwrap();
-        let runs = transaction
+        transaction
             .allocate_data(raw_free - RESERVE + 1, 0)
             .unwrap();
-        for &(start, count) in &runs {
-            transaction.retire_data(start, count);
-        }
         assert!(matches!(transaction.seal(false), Err(Error::NoSpace)));
         assert!(device.media.borrow().events.is_empty());
         assert_eq!(selected(&device), base);

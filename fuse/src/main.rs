@@ -41,6 +41,10 @@ fn main() -> ExitCode {
         mkfs::main(&args[1..])
     } else {
         match &args[1..] {
+            [flag] if flag == "--version" => {
+                println!("{}", carryfs_core::version_line("carryfs-fuse"));
+                Ok(())
+            }
             [command, device] if command == "probe" => mount::probe(Path::new(device)),
             [command, rest @ ..] if command == "mkfs" => mkfs::main(rest),
             [command, device] if command == "upgrade" => upgrade(Path::new(device)),
@@ -93,6 +97,10 @@ fn main() -> ExitCode {
         platform::helper(&args[1..])
     } else {
         match &args[1..] {
+            [flag] if flag == "--version" => {
+                println!("{}", carryfs_core::version_line("carryfs-fuse"));
+                Ok(())
+            }
             #[cfg(target_os = "freebsd")]
             [command, rest @ ..] if command == "mkfs" => mkfs::main(rest),
             [command, device, directory, options] if command == "serve" => options
@@ -115,8 +123,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Let the volume on `path` store modes and the hidden attribute. Adapters
-/// older than this feature cannot mount it afterwards.
+/// Let a volume CarryFS 0.1.0 formatted on `path` take writes. CarryFS 0.1.0
+/// cannot mount it afterwards.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn upgrade(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use carryfs_core::{MountMode, Volume};
@@ -141,16 +149,14 @@ fn upgrade(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
             result => result?,
         }
     };
-    let mut volume = Volume::open(device::Disk::open(path, MountMode::ReadWrite)?)?;
-    let changed = volume.upgrade()?;
-    volume.eject()?;
+    let changed = Volume::upgrade(device::Disk::open(path, MountMode::ReadWrite)?)?;
     println!(
         "{}: {}",
         path.display(),
         if changed {
-            "now stores permissions and the hidden attribute; CarryFS 0.1.0 can no longer mount it"
+            "upgraded; CarryFS 0.1.0 can no longer mount it"
         } else {
-            "already stores permissions and the hidden attribute"
+            "already up to date"
         }
     );
     Ok(())

@@ -28,7 +28,7 @@ use crate::namei::{
 use crate::ondisk::crc::{DataUnitCrc, UNIT_BYTES};
 use crate::ondisk::format::{
     checksum_slot, compact_group, set_checksum_slot, TreeKind, BLOCK_BYTES, CHECKSUM_GROUP_BYTES,
-    MAINTENANCE_RESERVE, EXTENT_UNWRITTEN, FEATURE_PREALLOCATION,
+    MAINTENANCE_RESERVE, EXTENT_UNWRITTEN,
 };
 use crate::tree::{self, be_u64, le_u64, Tree};
 use crate::vfs::{Folio, Inode};
@@ -357,23 +357,18 @@ impl<'a> Writer<'a> {
         // reserve kept for metadata edits rather than lose accepted data.
         // The stored partial tail it rewrites when a file grew has no
         // reservation of its own; the headroom reservations leave covers
-        // it. Preallocation-enabled volumes fund replacing writes from the
-        // reserve only up to the number of blocks they retire.
-        let keep = if truncate { HEADROOM } else { MAINTENANCE_RESERVE };
+        // it. Replacing writes are funded from the reserve only up to the
+        // number of blocks they retire.
         let spare = |state: &State, needed: u64| -> Result<bool> {
             let free = reserve::available_to(state, object, units.iter().map(|unit| unit.index));
-            let feature = state.txn.as_ref().map_or(state.root.features, |txn| txn.features);
             let mut credit = 0;
-            let keep = if feature & FEATURE_PREALLOCATION != 0 { MAINTENANCE_RESERVE } else { keep };
-            if feature & FEATURE_PREALLOCATION != 0 {
-                // Only written blocks are retired; unwritten ones are filled in place.
-                for unit in units {
-                    let (first, end) = (unit.index * UNIT_BLOCKS, unit.index * UNIT_BLOCKS + unit_blocks(inode.size(), unit.index));
-                    let unwritten: u64 = unwritten_runs(sb, state, object, first, end)?.iter().map(|(_, _, count)| *count).sum();
-                    credit += mapped_blocks(sb, state, object, first, end)?.checked_sub(unwritten).ok_or(EIO)?;
-                }
+            // Only written blocks are retired; unwritten ones are filled in place.
+            for unit in units {
+                let (first, end) = (unit.index * UNIT_BLOCKS, unit.index * UNIT_BLOCKS + unit_blocks(inode.size(), unit.index));
+                let unwritten: u64 = unwritten_runs(sb, state, object, first, end)?.iter().map(|(_, _, count)| *count).sum();
+                credit += mapped_blocks(sb, state, object, first, end)?.checked_sub(unwritten).ok_or(EIO)?;
             }
-            Ok(needed == 0 || free >= needed + keep.saturating_sub(credit.min(needed)))
+            Ok(needed == 0 || free >= needed + MAINTENANCE_RESERVE.saturating_sub(credit.min(needed)))
         };
         let mut state = volume::of(sb).lock();
         // A prior batch may be consuming these same unwritten mappings.
@@ -1424,7 +1419,6 @@ unsafe extern "C" fn carryfs_preallocate(raw: *mut bindings::inode, offset: u64,
                 if reserve::available(state) < wanted + HEADROOM { return Err(ENOSPC); }
                 let mut record = read_record(sb, state, inode.object())?;
                 let allocated = le_u64(&record, ALLOCATED) + wanted;
-                txn(state).features |= FEATURE_PREALLOCATION;
                 let mut index = 0;
                 while index < present.len() {
                     if present[index] { index += 1; continue; }

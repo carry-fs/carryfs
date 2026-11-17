@@ -149,8 +149,10 @@ Run the install script to install the latest stable release. Both installers
 read the published versions from `https://carryfs.com/releases.txt` and download
 packages from GitHub Releases. The Unix installer does not require `jq`.
 
-An existing installation stays within its current major version. Use
-`--upgrade` on Unix or `-Upgrade` on Windows to allow a newer major version.
+An existing installation stays on its release line: its major version, or
+`0.MINOR` before 1.0, since a 0.x minor release can change the disk format.
+Use `--upgrade` on Unix or `-Upgrade` on Windows to move to a newer line. See
+[VERSIONING.md](VERSIONING.md).
 
 Linux and macOS:
 
@@ -322,37 +324,32 @@ after an interruption. Checksums detect damage but do not repair files;
 CarryFS has no self-healing. Restore damaged files from an independent backup.
 For metadata damage, use [offline diagnosis, repair, and recovery](RECOVERY.md).
 
-A volume upgraded with `carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE`
-on Linux, macOS, and FreeBSD, or `carryfs-windows upgrade VOLUME` on Windows, stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden
+A volume stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden
 attribute. Linux, macOS, and FreeBSD show and enforce the permission bits for
 the account that mounted the volume; Windows shows a file without the owner
 write bit as read-only, and setting read-only there clears the write bits.
 Hidden maps to Finder's hidden flag and to Windows' hidden attribute; FreeBSD's
 FUSE drops file flags, so `chflags hidden` has no effect there. Windows also
 shows macOS's own bookkeeping files, such as `.DS_Store` and `._name`, as
-hidden. CarryFS 0.1.0 cannot mount an upgraded volume, so update CarryFS on
-every computer that uses the volume before upgrading it. Without the upgrade,
-files read as `0644` and directories as `0755`. For images,
-`carryfs mkfs --attributes` creates one with the feature, `carryfs put` and
-`carryfs get` keep modes, and `carryfs attr IMAGE /PATH [mode=OCTAL]
-[hidden=yes|no]` shows or changes them.
+hidden. For images, `carryfs put` and `carryfs get` keep modes, and
+`carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no]` shows or changes them.
 
-The first successful request to preallocate space upgrades a volume
-automatically: Linux `fallocate`, macOS `F_PREALLOCATE`, or a Windows
-allocation size given at create or set later. Preallocated space reads as
-zeros until written. The upgrade stays after the space is used or released.
-CarryFS 0.1.0 cannot mount a volume upgraded this way, so update CarryFS on
-every computer that uses the volume before running software that preallocates
-files, such as download managers, torrent clients, databases, and virtual
-machine images.
+A volume formatted by CarryFS 0.1.0 mounts only read-only until upgraded with
+`carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE` on Linux, macOS, and
+FreeBSD, or `carryfs-windows upgrade VOLUME` on Windows. Upgrading takes a
+moment and rewrites no files. CarryFS 0.1.0 cannot mount an upgraded volume or
+one a newer CarryFS formatted, so update CarryFS on every computer that uses
+the volume before upgrading it.
+
+Linux `fallocate`, macOS `F_PREALLOCATE`, and a Windows allocation size given
+at create or set later reserve space. Preallocated space reads as zeros until
+written.
 
 Files and symlinks can have hard links: `ln` on Linux, macOS, and FreeBSD, up
 to 65,535 names each. Directories cannot be hard linked.
 Windows opens, renames, and deletes the names but cannot create new ones.
 `carryfs put` and `carryfs get` keep the hard links inside the copied tree;
-if the destination cannot link, `get` writes a separate copy. The first
-hard link upgrades a volume automatically, like preallocation, and versions
-of CarryFS without hard links cannot mount it afterwards.
+if the destination cannot link, `get` writes a separate copy.
 
 CarryFS does not store owners, setuid, setgid or sticky bits, ACLs, extended
 attributes, resource forks, or alternate data streams, and it is not a

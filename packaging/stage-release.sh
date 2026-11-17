@@ -10,6 +10,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 platform=$1 out=$2
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+bundle_version=$(awk '/CFBundleShortVersionString/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print }' \
+    fuse/packaging/carryfs.fs/Contents/Info.plist)
+[ "$bundle_version" = "$version" ] || {
+    echo "Info.plist says $bundle_version but Cargo.toml says $version; bump both (VERSIONING.md)" >&2
+    exit 1
+}
 target=${CARGO_TARGET_DIR:-target}/release
 mkdir -p "$out"
 case $platform in

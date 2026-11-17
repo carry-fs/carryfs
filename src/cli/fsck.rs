@@ -328,7 +328,7 @@ fn recover(
     output: &Path,
     report: &mut File,
 ) -> Result<carryfs_core::ExtractionSummary> {
-    let mut sink = super::host::Sink::new(output, true)?;
+    let mut sink = super::host::Sink::new(output)?;
     let mut report_error = Ok(());
     let summary = repair.recover_to(&mut sink, &mut |finding| {
         if report_error.is_ok() {

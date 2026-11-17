@@ -34,10 +34,8 @@ fn links_share_contents_and_survive_until_the_last_name_goes() {
     let dir = volume.create_directory(ROOT, name("dir")).unwrap();
     let file = write_file(&mut volume, ROOT, "a", b"shared");
     assert_eq!(links(&mut volume, file), 1);
-    assert!(!volume.supports_links());
 
     volume.link(file, dir, name("b")).unwrap();
-    assert!(volume.supports_links());
     assert_eq!(volume.lookup(dir, &name("B")).unwrap(), file);
     assert_eq!(links(&mut volume, file), 2);
     assert_eq!(volume.attributes(file).unwrap().parent, dir);
@@ -61,29 +59,12 @@ fn links_share_contents_and_survive_until_the_last_name_goes() {
     checked(&volume);
     let image = volume.into_model_image();
     let mut reopened = Volume::open(FaultDevice::new(image, MountMode::ReadWrite)).unwrap();
-    assert!(reopened.supports_links());
     assert_eq!(read_file(&mut reopened, ROOT, "a"), b"SHARED");
 
     reopened.remove(ROOT, &name("a"), RemoveKind::File).unwrap();
     assert!(matches!(reopened.attributes(file), Err(Error::NotFound)));
     reopened.sync().unwrap();
     checked(&reopened);
-}
-
-#[test]
-fn deferred_link_is_visible_in_the_feature_query() {
-    let mut volume = opened();
-    let file = write_file(&mut volume, ROOT, "a", b"shared");
-    volume.set_deferred_checkpoints(true).unwrap();
-    // A refused link in the batch is rewound with the bit it would set.
-    assert!(matches!(
-        volume.link(file, ROOT, name("A")),
-        Err(Error::NameCollision)
-    ));
-    assert!(!volume.supports_links());
-    volume.link(file, ROOT, name("b")).unwrap();
-    assert_eq!(volume.attributes(file).unwrap().links, 2);
-    assert!(volume.supports_links());
 }
 
 #[test]
@@ -164,7 +145,6 @@ fn directories_never_link_and_failed_links_leave_the_volume_unchanged() {
     ));
     volume.sync().unwrap();
     assert_eq!(durable(&volume), before);
-    assert!(!volume.supports_links());
 
     // A file with another name cannot become a symlink.
     volume.link(file, ROOT, name("g")).unwrap();
@@ -182,7 +162,6 @@ fn symlinks_link_like_files() {
     let dir = volume.create_directory(ROOT, name("dir")).unwrap();
     let symlink = volume.create_symlink(ROOT, name("s"), b"../t").unwrap();
     volume.link(symlink, dir, name("s2")).unwrap();
-    assert!(volume.supports_links());
     let entry = volume.lookup_entry(dir, &name("s2")).unwrap();
     assert_eq!((entry.object, entry.kind), (symlink, ObjectKind::Symlink));
     assert_eq!(links(&mut volume, symlink), 2);
@@ -332,8 +311,7 @@ fn a_link_past_the_cap_is_refused() {
     checked(&volume);
 }
 
-/// Every cut of a link's output leaves the old state or the new one, with the
-/// feature bit published together with the second entry.
+/// Every cut of a link's output leaves the old state or the new one.
 #[test]
 fn link_and_unlink_output_cuts_recover_old_or_new() {
     let mut volume = opened();
@@ -351,13 +329,12 @@ fn link_and_unlink_output_cuts_recover_old_or_new() {
     let mut complete = Volume::open(FaultDevice::new(base.clone(), MountMode::ReadWrite)).unwrap();
     link(&mut complete).unwrap();
     let linked = complete.into_model_image();
-    for (base, operation, linked_before) in [
+    for (base, operation) in [
         (
             base,
             &link as &dyn Fn(&mut Volume<FaultDevice>) -> Result<()>,
-            false,
         ),
-        (linked, &unlink, true),
+        (linked, &unlink),
     ] {
         let mut probe = Volume::open(FaultDevice::new(base.clone(), MountMode::ReadWrite)).unwrap();
         let media = probe.device.as_ref().unwrap().media.clone();
@@ -386,7 +363,6 @@ fn link_and_unlink_output_cuts_recover_old_or_new() {
                 let b = reader.lookup(ROOT, &name("b")).ok();
                 let names = usize::from(a.is_some()) + usize::from(b.is_some());
                 assert_eq!(reader.attributes(file).unwrap().links as usize, names);
-                assert_eq!(reader.supports_links(), linked_before || names == 2);
                 assert_eq!(
                     read_file(&mut reader, ROOT, if a.is_some() { "a" } else { "b" }),
                     b"atomic"

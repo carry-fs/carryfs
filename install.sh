@@ -172,15 +172,22 @@ select_release() {
         tag=v$requested
     else
         download "$release_index" "$work/versions"
-        major=
-        if [ -n "$installed" ] && [ "$upgrade" = 0 ]; then major=${installed%%.*}; fi
-        tag=$(awk -v major="$major" -v unpackaged="$unpackaged_through" '
+        # Stay on the installed release line: its major version, or 0.MINOR
+        # before 1.0, where a minor release may break compatibility.
+        line=
+        if [ -n "$installed" ] && [ "$upgrade" = 0 ]; then
+            case $installed in
+                0.*) line=${installed%.*} ;;
+                *) line=${installed%%.*} ;;
+            esac
+        fi
+        tag=$(awk -v line="$line" -v unpackaged="$unpackaged_through" '
             BEGIN { split(unpackaged, u, ".") }
             { sub(/\r$/, "") }
             $0 == "" { next }
             $0 !~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { exit 1 }
             { split($0,n,".") }
-            major != "" && n[1] != major { next }
+            line != "" && (n[1] == "0" ? n[1] "." n[2] : n[1]) != line { next }
             unpackaged != "" && (n[1]+0<u[1]+0 || (n[1]+0==u[1]+0 && (n[2]+0<u[2]+0 || (n[2]+0==u[2]+0 && n[3]+0<=u[3]+0)))) { next }
             !best || n[1]+0>a || (n[1]+0==a && n[2]+0>b) || (n[1]+0==a && n[2]+0==b && n[3]+0>c) {
                 best=$0; a=n[1]+0; b=n[2]+0; c=n[3]+0

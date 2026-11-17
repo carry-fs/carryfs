@@ -156,57 +156,43 @@ def exercise(m):
           "rename and truncate keep the mode")
 
 
-def exercise_plain(m):
-    a, p = m.adapter, m.point
-    status, _ = m.user(OWNER, "touch $MNT/a", umask="077")
-    check(a, status == 0 and mode(p / "a") == 0o644, "without the feature a new file reads 0644")
-    status, _ = m.user(OWNER, "chmod 644 $MNT/a")
-    check(a, status == 0, "a chmod that changes nothing succeeds")
-    status, _ = m.user(OWNER, "chmod 600 $MNT/a")
-    check(a, status != 0 and mode(p / "a") == 0o644, "a chmod that changes the mode fails")
-
-
 def main():
     adapters = sys.argv[1:] or ["fuse", "kernel"]
     work = Path(tempfile.mkdtemp(prefix="carryfs-permissions-", dir="/var/tmp"))
     os.chmod(work, 0o755)
     transcripts = {}
-    for upgrade, exercised in [(True, exercise), (False, exercise_plain)]:
-        listings = {}
-        for writer in adapters:
-            folder = work / f"{writer}-{'upgraded' if upgrade else 'plain'}"
-            point = folder / "mnt"
-            point.mkdir(parents=True)
-            os.chmod(folder, 0o755)
-            image = folder / "disk.img"
-            run(CLI, "mkfs", image, str(256 << 20), stdout=subprocess.DEVNULL)
-            if upgrade:
-                run(CLI, "upgrade", image, stdout=subprocess.DEVNULL)
-            m = Mount(writer, image, point)
+    listings = {}
+    for writer in adapters:
+        folder = work / writer
+        point = folder / "mnt"
+        point.mkdir(parents=True)
+        os.chmod(folder, 0o755)
+        image = folder / "disk.img"
+        run(CLI, "mkfs", image, str(256 << 20), stdout=subprocess.DEVNULL)
+        m = Mount(writer, image, point)
+        try:
+            exercise(m)
+        finally:
+            m.close()
+        transcripts[writer] = m.transcript
+        run(CLI, "check", image, stdout=subprocess.DEVNULL)
+        for reader in adapters:
+            m = Mount(reader, image, point)
             try:
-                exercised(m)
+                listings[writer, reader] = listing(point)
             finally:
                 m.close()
-            transcripts[writer, upgrade] = m.transcript
-            run(CLI, "check", image, stdout=subprocess.DEVNULL)
-            for reader in adapters:
-                m = Mount(reader, image, point)
-                try:
-                    listings[writer, reader] = listing(point)
-                finally:
-                    m.close()
-        if len(adapters) > 1:
-            first, *rest = adapters
-            for other in rest:
-                theirs, ours = transcripts[first, upgrade], transcripts[other, upgrade]
-                for step, (left, right) in enumerate(zip(theirs, ours)):
-                    check("both", left == right, f"step {step} agrees: {left}" if left == right
-                          else f"step {step} differs:\n  {first}: {left}\n  {other}: {right}")
-                check("both", len(theirs) == len(ours), "the same number of steps")
-        expected = next(iter(listings.values()))
-        for (writer, reader), found in listings.items():
-            check(f"{writer}->{reader}", found == expected,
-                  f"{'upgraded' if upgrade else 'plain'} volume lists the same, {len(found)} objects")
+    if len(adapters) > 1:
+        first, *rest = adapters
+        for other in rest:
+            theirs, ours = transcripts[first], transcripts[other]
+            for step, (left, right) in enumerate(zip(theirs, ours)):
+                check("both", left == right, f"step {step} agrees: {left}" if left == right
+                      else f"step {step} differs:\n  {first}: {left}\n  {other}: {right}")
+            check("both", len(theirs) == len(ours), "the same number of steps")
+    expected = next(iter(listings.values()))
+    for (writer, reader), found in listings.items():
+        check(f"{writer}->{reader}", found == expected, f"volume lists the same, {len(found)} objects")
     print("PASS:", work)
 
 

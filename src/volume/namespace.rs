@@ -4,8 +4,8 @@
 use super::Fault;
 use crate::allocation::Transaction;
 use crate::format::{
-    ATTRIBUTE_HIDDEN, FEATURE_LINKS, INODE_ATTRIBUTES, INODE_EXTRA_LINKS, INODE_MODE,
-    MAX_EXTRA_LINKS, TreeKind, Validation, extra_links, validate_symlink_target,
+    ATTRIBUTE_HIDDEN, INODE_ATTRIBUTES, INODE_EXTRA_LINKS, INODE_MODE, MAX_EXTRA_LINKS, TreeKind,
+    Validation, extra_links, validate_symlink_target,
 };
 use crate::name::{Name, validate_disk_name};
 use crate::tree::{Forest, u64_le};
@@ -642,12 +642,6 @@ impl<D: BlockDevice> Volume<D> {
         new: NewAttributes,
     ) -> Result<ObjectId> {
         let now = Timestamp::now()?;
-        // Without the feature the fields stay zero, as a 0.1.0 reader requires.
-        let new = if self.stores_attributes() {
-            new
-        } else {
-            NewAttributes::default()
-        };
         let object = self.edit(|transaction| {
             create_in(transaction, parent, name.clone(), kind, target, new, now)
         })?;
@@ -664,11 +658,6 @@ impl<D: BlockDevice> Volume<D> {
         if !self.handles.has_room() {
             return Err(Error::LimitExceeded);
         }
-        let new = if self.stores_attributes() {
-            new
-        } else {
-            NewAttributes::default()
-        };
         let now = Timestamp::now()?;
         let object = self.edit(|transaction| {
             create_object_in(transaction, parent, None, ObjectKind::File, &[], new, now)
@@ -940,15 +929,9 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Change timestamps, mode and hidden state in one inode rewrite. Always
     /// bumps the metadata-change time. A mode for a symlink is dropped: a
-    /// symlink stores none. A mode or hidden state on a volume that does not
-    /// store attributes is `InvalidInput`; check `stores_attributes` first.
+    /// symlink stores none.
     pub fn set_attributes(&mut self, handle: &Handle, change: AttributeChange) -> Result<()> {
         let object = self.handles.validate(handle)?;
-        if (change.mode.is_some() || change.hidden.is_some()) && !self.stores_attributes() {
-            return Err(Error::InvalidInput(
-                "volume does not store modes or attributes",
-            ));
-        }
         let now = Timestamp::now()?;
         self.edit(|transaction| {
             let key = inode_key(object.0);
@@ -1087,7 +1070,6 @@ fn link_entry<D: BlockDevice>(
         return Err(Error::LimitExceeded);
     } else {
         inode.extra_links += 1;
-        transaction.forest.features |= FEATURE_LINKS;
     }
     directory.child_count = directory
         .child_count

@@ -1,24 +1,47 @@
-# CarryFS 0.1.0
+# CarryFS 0.2.0
 
 CarryFS is an open-source filesystem for sharing data drives across macOS,
-Linux, and Windows. This is the first release available through the default
-installation commands.
+Linux, Windows, and FreeBSD. This release adds Unix permissions, hard links,
+and preallocation, and moves the disk format to revision 2.
 
 CarryFS remains in public beta. Keep independent backups and do not store the
-only copy of important data on a CarryFS volume. Disk format revision 1 is not
-frozen; a future format change may require copying files elsewhere and
+only copy of important data on a CarryFS volume. Disk format revision 2 is not
+frozen. A future format change may require copying files elsewhere and
 reformatting the partition.
 
-## Included
+## New in 0.2.0
 
-- A shared Rust engine with copy-on-write storage and checksums for file data
-  and metadata.
-- Linux FUSE and macFUSE adapters, a Windows WinFsp adapter and automount
-  service, and tools for formatting and checking volumes.
-- A command-line tool for creating images, copying files into and out of
-  them, checking filesystem structure, and scrubbing stored file data.
-- Release packages and installers that verify downloads against SHA-256
-  checksums and ask for confirmation before installing.
+- Volumes store each object's Unix permission bits and a hidden attribute.
+  Linux, macOS, and FreeBSD enforce the permission bits for the account that
+  mounted the volume. Windows shows a file without the owner write bit as
+  read-only.
+- Files and symlinks can have up to 65,535 names through `ln`. Windows opens,
+  renames, and deletes them but cannot create new ones.
+- Linux `fallocate`, macOS `F_PREALLOCATE`, and Windows allocation sizes
+  reserve space, and Linux can punch holes. Linux and FUSE support unnamed
+  temporary files (`O_TMPFILE`).
+- FreeBSD 14 and 15 packages, using the base system's FUSE.
+- `fsck.carryfs` diagnoses damaged volumes, repairs them in place, or
+  recovers their files to a new image (see RECOVERY.md).
+- `carryfs --version`, `carryfs-fuse --version`, and
+  `carryfs-windows --version` print the release and the format revisions it
+  reads and writes.
+
+## Compatibility
+
+- New volumes use disk format revision 2. CarryFS 0.1.0 cannot mount them.
+  Update CarryFS on every computer that shares a drive before formatting new
+  volumes or upgrading old ones.
+- CarryFS 0.2.0 reads volumes that 0.1.0 formatted, but mounts them only
+  read-only. To write to one, run `carryfs-fuse upgrade DEVICE` on Linux,
+  macOS, or FreeBSD, `carryfs-windows upgrade VOLUME` on Windows, or
+  `carryfs upgrade IMAGE` for an image. The upgrade writes one root record and
+  no file data. Afterwards CarryFS 0.1.0 cannot mount the volume. The Windows
+  service does not mount a 0.1.0 volume until it is upgraded.
+- `carryfs mkfs` no longer accepts `--attributes`. Every new image stores
+  permissions.
+- The installers keep a 0.1 installation on 0.1 releases. Run the installer
+  with `--upgrade`, or `-Upgrade` on Windows, to move to 0.2.
 
 ## Requirements
 
@@ -27,9 +50,11 @@ reformatting the partition.
 - macOS: 15.6 or later on Apple Silicon, with macFUSE 5.4 or later.
 - Windows: Windows 10 or later on x86-64, with 64-bit PowerShell 5.1 or later
   and WinFsp 2.1 or later.
+- FreeBSD: 15.1 or 14.5 on amd64 or arm64, with the base system's `fusefs`
+  module loaded.
 
 Install the framework for your platform first. Follow the
-[installation guide](https://github.com/carry-fs/carryfs/blob/v0.1.0/INSTALLATION.md)
+[installation guide](https://github.com/carry-fs/carryfs/blob/v0.2.0/INSTALLATION.md)
 for setup, exact-version installation, and uninstall instructions.
 
 Linux and macOS:
@@ -49,11 +74,12 @@ irm https://carryfs.com/install.ps1 | iex
 Checksums detect corruption but do not repair damaged files. CarryFS has no
 self-healing. Boot volumes and server workloads are outside its scope.
 
-CarryFS does not preserve platform-specific permissions, ACLs, extended
-attributes, resource forks, or alternate data streams. Copying a directory
-tree is not a complete system backup. Encryption, compression, snapshots,
-deduplication, RAID, and hard links are outside the current scope.
+CarryFS stores Unix permission bits but not owners, setuid, setgid, or sticky
+bits, ACLs, extended attributes, resource forks, or alternate data streams.
+Anyone holding the drive can mount it as themselves. Copying a directory tree
+is not a complete system backup. Encryption, compression, snapshots,
+deduplication, and RAID are outside the current scope.
 
-See the [formatting guide](https://github.com/carry-fs/carryfs/blob/v0.1.0/FORMATTING.md)
+See the [formatting guide](https://github.com/carry-fs/carryfs/blob/v0.2.0/FORMATTING.md)
 before preparing a disk. Report problems with your operating system, CarryFS
 version, storage device, and the operation that failed.

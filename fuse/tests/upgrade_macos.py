@@ -47,7 +47,7 @@ def main():
             run("umount", point)
             assert daemon.wait(timeout=60) == 0
             run(fuse, "upgrade", device)
-            assert b"already stores" in run(fuse, "upgrade", device).stdout
+            assert b"already up to date" in run(fuse, "upgrade", device).stdout
             run(cli, "check", "--bytes", 256 << 20, device)
     finally:
         if os.path.ismount(point):

@@ -204,17 +204,15 @@ fn open_writable(image: &Path) -> Result<ImageDevice> {
     return Ok(ImageDevice::open(image, MountMode::ReadWrite)?);
 }
 
-/// Let the image store modes and the hidden attribute.
+/// Let an image CarryFS 0.1.0 formatted take writes.
 pub(super) fn upgrade(image: &Path) -> Result<()> {
-    let mut volume = Volume::open(open_writable(image)?)?;
-    let changed = volume.upgrade()?;
-    volume.eject()?;
+    let changed = Volume::upgrade(open_writable(image)?)?;
     println!(
         "{}",
         if changed {
-            "Image now stores permissions and the hidden attribute; CarryFS 0.1.0 can no longer open it"
+            "Image upgraded; CarryFS 0.1.0 can no longer open it"
         } else {
-            "Image already stores permissions and the hidden attribute"
+            "Image is already up to date"
         }
     );
     Ok(())
@@ -229,7 +227,7 @@ pub(super) fn get(
 ) -> Result<()> {
     let mut volume = Volume::open(open_read_only(image, device_bytes)?)?;
     let object = resolve(&mut volume, &names(source)?)?;
-    let mut sink = host::Sink::new(output, volume.stores_attributes())?;
+    let mut sink = host::Sink::new(output)?;
     let summary = volume.extract_to(object, &mut sink, &mut report)?;
     sink.finish()?;
     volume.eject()?;
@@ -248,8 +246,7 @@ pub(super) fn get(_: &Path, _: Option<u64>, _: &OsStr, _: &Path) -> Result<()> {
     Err("secure extraction is implemented only on Linux, macOS, and FreeBSD".into())
 }
 
-/// The mode and, on macOS, the Finder hidden flag of a host object. A volume
-/// that does not store attributes ignores them.
+/// The mode and, on macOS, the Finder hidden flag of a host object.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn host_attributes(metadata: &fs::Metadata) -> NewAttributes {
     use std::os::unix::fs::PermissionsExt;
@@ -295,12 +292,6 @@ pub(super) fn attr(image: &Path, path: &OsStr, changes: &[OsString]) -> Result<(
     let mut volume = Volume::open(device)?;
     let object = resolve(&mut volume, &path)?;
     if change != AttributeChange::default() {
-        if !volume.stores_attributes() {
-            return Err(
-                "the image does not store modes or the hidden attribute; run carryfs upgrade first"
-                    .into(),
-            );
-        }
         let handle = volume.retain_object(object)?;
         let result = volume.set_attributes(&handle, change);
         volume.close_handle(handle)?;
@@ -428,7 +419,7 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
                     let target = fs::read_link(&source)?;
                     let object =
                         volume.create_symlink(parent, name, target.as_os_str().as_bytes())?;
-                    if volume.stores_attributes() && host_attributes(&metadata).hidden {
+                    if host_attributes(&metadata).hidden {
                         let handle = volume.retain_object(object)?;
                         let result = volume.set_attributes(
                             &handle,

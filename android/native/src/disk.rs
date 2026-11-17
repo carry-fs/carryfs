@@ -81,6 +81,10 @@ pub type SharedDisk = Arc<Mutex<dyn Sectors>>;
 /// pages one by one caps writes near 2 MB/s.
 const COALESCE_BYTES: usize = 1 << 20;
 
+/// Recent reads kept for exact repeats: apps often read one file through two handles.
+const RECENT_READS: usize = 8;
+const RECENT_READ_BYTES: usize = 64 << 10;
+
 /// A byte range of a disk that holds a CarryFS volume.
 #[derive(Clone)]
 pub struct Partition {
@@ -91,6 +95,8 @@ pub struct Partition {
     /// Consecutive writes not yet sent, starting at `pending_at`.
     pending: Vec<u8>,
     pending_at: u64,
+    /// Recent reads by offset, oldest first. Any write clears them.
+    recent: Vec<(u64, Vec<u8>)>,
 }
 
 impl Partition {
@@ -114,6 +120,7 @@ impl Partition {
             },
             pending: Vec::new(),
             pending_at: 0,
+            recent: Vec::new(),
         }
     }
 
@@ -172,12 +179,27 @@ impl BlockDevice for Partition {
 
     fn read_exact_at(&mut self, offset: u64, out: &mut [u8]) -> Result<()> {
         let at = self.range(offset, out.len())?;
+        if let Some((_, data)) = self
+            .recent
+            .iter()
+            .find(|(start, data)| *start == offset && data.len() == out.len())
+        {
+            out.copy_from_slice(data);
+            return Ok(());
+        }
         if self.pending_overlaps(offset, out.len()) {
             self.send()?;
         }
         self.disk()?
             .read_at(at, out)
-            .map_err(usb_error("read disk"))
+            .map_err(usb_error("read disk"))?;
+        if out.len() <= RECENT_READ_BYTES {
+            if self.recent.len() == RECENT_READS {
+                self.recent.remove(0);
+            }
+            self.recent.push((offset, out.to_vec()));
+        }
+        Ok(())
     }
 
     fn write_all_at(&mut self, offset: u64, data: &[u8]) -> Result<()> {
@@ -185,6 +207,7 @@ impl BlockDevice for Partition {
             return Err(Error::ReadOnly);
         }
         self.range(offset, data.len())?;
+        self.recent.clear();
         let follows = offset == self.pending_at + self.pending.len() as u64;
         if !follows || self.pending.len() + data.len() > COALESCE_BYTES {
             self.send()?;
@@ -347,6 +370,28 @@ pub(crate) mod tests {
         assert_eq!(writes(), run + 1);
         partition.flush_durable().unwrap();
         assert_eq!((writes(), media.lock().unwrap().flushes), (run + 2, 1));
+    }
+
+    #[test]
+    fn repeated_reads_reach_the_disk_once_until_a_write() {
+        let usb = FakeUsb::new(512, 64 * MIB);
+        let media = usb.media.clone();
+        let disk: SharedDisk = Arc::new(Mutex::new(Disk::open(usb).unwrap()));
+        let mut partition = Partition::new(&disk, MIB, 32 * MIB);
+        partition.write_all_at(0, &[1; 8192]).unwrap();
+        partition.flush_durable().unwrap();
+        let reads = || media.lock().unwrap().reads;
+
+        let mut out = [0; 4096];
+        let before = reads();
+        for _ in 0..3 {
+            partition.read_exact_at(4096, &mut out).unwrap();
+        }
+        assert_eq!((out, reads() - before), ([1; 4096], 1));
+
+        partition.write_all_at(4096, &[2; 4096]).unwrap();
+        partition.read_exact_at(4096, &mut out).unwrap();
+        assert_eq!((out, reads() - before), ([2; 4096], 2));
     }
 
     #[test]

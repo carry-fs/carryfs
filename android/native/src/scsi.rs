@@ -378,6 +378,8 @@ pub(crate) mod fake {
         pub flushes: usize,
         /// WRITE commands received.
         pub writes: usize,
+        /// READ commands received.
+        pub reads: usize,
         /// Reject SYNCHRONIZE CACHE as an unknown command, as some flash drives do.
         pub no_cache: bool,
         /// Commands left to fail with UNIT ATTENTION.
@@ -399,6 +401,7 @@ pub(crate) mod fake {
                     sectors: HashMap::new(),
                     flushes: 0,
                     writes: 0,
+                    reads: 0,
                     no_cache: false,
                     attentions: 1,
                 })),
@@ -464,6 +467,7 @@ pub(crate) mod fake {
                     data_in(cap)
                 }
                 0x28 | 0x88 => {
+                    media.reads += 1;
                     let (lba, count) = range(cdb);
                     assert_eq!(count * bs, len);
                     let mut data = Vec::with_capacity(len);

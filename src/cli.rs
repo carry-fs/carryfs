@@ -183,14 +183,21 @@ fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
     Ok(std::fs::File::open(path)?)
 }
 
-pub(super) fn scrub(image: &Path, device_bytes: Option<u64>) -> Result<()> {
+pub(super) fn scrub(image: &Path, device_bytes: Option<u64>, progress: bool) -> Result<()> {
     let mut volume = Volume::open(open_read_only(image, device_bytes)?)?;
     // Findings carry the original cause; avoid logging the terminal error twice.
     let mut reported = false;
-    let summary = volume.scrub(&mut |finding| {
-        reported = true;
-        report(finding)
-    });
+    let summary = volume.scrub_with_progress(
+        &mut |finding| {
+            reported = true;
+            report(finding)
+        },
+        &mut |bytes| {
+            if progress {
+                eprintln!("progress {bytes}");
+            }
+        },
+    );
     let summary = summary.map_err(|error| -> Box<dyn std::error::Error> {
         if reported {
             "scrub stopped; see reported failures".into()

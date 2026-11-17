@@ -6,6 +6,11 @@ use carryfs_core::{ImageDevice, Volume};
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = env::args_os().skip(1).collect();
+    // `scrub --progress` reports verified bytes on stderr for a front end.
+    let progress = args.len() > 2 && args[0] == "scrub" && args[1] == "--progress";
+    if progress {
+        args.remove(1);
+    }
     // `--bytes N` after a read-only command opens a raw device of N bytes,
     // whose length macOS does not report through the file system.
     let device_bytes = match args.as_slice() {
@@ -53,7 +58,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             println!("File data checksums were not scrubbed.");
         }
-        [command, image] if command == "scrub" => cli::scrub(Path::new(image), device_bytes)?,
+        [command, image] if command == "scrub" => {
+            cli::scrub(Path::new(image), device_bytes, progress)?
+        }
         [command, image] if command == "upgrade" => cli::upgrade(Path::new(image))?,
         [command, image, path, changes @ ..] if command == "attr" => {
             cli::attr(Path::new(image), path, changes)?
@@ -65,7 +72,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli::get(Path::new(image), device_bytes, source, Path::new(destination))?;
         }
         _ => return Err(
-            "usage: carryfs fsck [OPTIONS] IMAGE | carryfs mkfs [--attributes] NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no] | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
+            "usage: carryfs fsck [OPTIONS] IMAGE | carryfs mkfs [--attributes] NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub [--progress] IMAGE | carryfs upgrade IMAGE | carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no] | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
                 .into(),
         ),
     }

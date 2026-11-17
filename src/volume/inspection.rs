@@ -80,6 +80,8 @@ struct FileScan<'a> {
     report: &'a mut dyn FnMut(Finding<'_>),
     counts: &'a mut UnitCounts,
     reuse_cache: bool,
+    /// Told the file's verified bytes so far, after each checksum group.
+    progress: Option<&'a mut dyn FnMut(u64)>,
 }
 
 type UnitWriter<'a> = dyn FnMut(u64, &[u8]) -> Result<()> + 'a;
@@ -166,10 +168,20 @@ impl<D: BlockDevice> Volume<D> {
     /// is read-only and held exclusively, so a cached page cannot change under
     /// the scan.
     pub fn scrub(&mut self, report: &mut dyn FnMut(Finding<'_>)) -> Result<CheckSummary> {
+        self.scrub_with_progress(report, &mut |_| {})
+    }
+
+    /// [`Volume::scrub`], telling `progress` the file data bytes verified so
+    /// far, at most 16 MiB apart. Unreadable ranges and holes don't count.
+    pub fn scrub_with_progress(
+        &mut self,
+        report: &mut dyn FnMut(Finding<'_>),
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<CheckSummary> {
         self.cache = crate::tree::Cache::default();
         let summary = self.check_with_report(report)?;
         self.inspection_metadata_cache = true;
-        let result = self.scrub_data(summary, report);
+        let result = self.scrub_data(summary, report, progress);
         self.inspection_metadata_cache = false;
         self.cache = crate::tree::Cache::default();
         result
@@ -179,7 +191,9 @@ impl<D: BlockDevice> Volume<D> {
         &mut self,
         mut summary: CheckSummary,
         report: &mut dyn FnMut(Finding<'_>),
+        progress: &mut dyn FnMut(u64),
     ) -> Result<CheckSummary> {
+        let mut verified = 0_u64;
         let mut start = inode_key(1);
         loop {
             let record = self
@@ -198,6 +212,7 @@ impl<D: BlockDevice> Volume<D> {
             let Some((object, inode)) = record else { break };
             if inode.kind == ObjectKind::File {
                 let mut counts = UnitCounts::default();
+                let mut file_progress = |bytes| progress(verified + bytes);
                 self.inspect_file(
                     object,
                     inode.size,
@@ -207,10 +222,12 @@ impl<D: BlockDevice> Volume<D> {
                         report,
                         counts: &mut counts,
                         reuse_cache: true,
+                        progress: Some(&mut file_progress),
                     },
                 )
                 .map_err(ExtractionError::into_error)
                 .inspect_err(|error| metadata_finding(report, Some(object), &[], error))?;
+                verified += counts.bytes;
                 summary.inspected_files += 1;
                 summary.verified_units += counts.verified;
                 summary.unreadable_ranges += counts.unreadable;
@@ -306,6 +323,9 @@ impl<D: BlockDevice> Volume<D> {
                 break;
             };
             destination?;
+            if let Some(progress) = scan.progress.as_mut() {
+                progress(scan.counts.bytes);
+            }
             start = key;
             start.push(0);
         }
@@ -331,6 +351,7 @@ impl<D: BlockDevice> Volume<D> {
                 report,
                 counts: &mut counts,
                 reuse_cache: false,
+                progress: None,
             },
         )
         .map_err(ExtractionError::into_error)?;
@@ -412,6 +433,7 @@ impl<D: BlockDevice> Volume<D> {
                                         report,
                                         counts: &mut counts,
                                         reuse_cache: false,
+                                        progress: None,
                                     },
                                 );
                                 summary.verified_bytes += counts.bytes;

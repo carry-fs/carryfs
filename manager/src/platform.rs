@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::{
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -230,6 +230,43 @@ pub fn discover() -> Result<Vec<Device>> {
     {
         Err("System-device discovery is currently available on macOS. Image files work on this platform.".into())
     }
+}
+
+/// Calls `changed` on a background thread whenever a disk appears, disappears,
+/// mounts, or unmounts. An orphaned `diskutil activity` exits on its next write.
+#[cfg(target_os = "macos")]
+pub fn watch(changed: impl Fn() + Send + 'static) -> Result<()> {
+    let mut child = Command::new("/usr/sbin/diskutil")
+        .arg("activity")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = child.stdout.take().ok_or("Cannot read disk activity")?;
+    std::thread::spawn(move || {
+        // The disks already present are listed first, up to the first idle mark.
+        let mut idle = false;
+        for line in BufReader::new(stdout)
+            .lines()
+            .map_while(std::result::Result::ok)
+        {
+            idle |= line.starts_with("***DAIdle");
+            if idle && disk_event(&line) {
+                changed();
+            }
+        }
+        let status = child.wait();
+        eprintln!("CarryFS Manager: disk watching stopped ({status:?}); use Refresh");
+    });
+    Ok(())
+}
+fn disk_event(line: &str) -> bool {
+    [
+        "***DiskAppeared ('",
+        "***DiskDisappeared ('",
+        "***DiskDescriptionChanged ('",
+    ]
+    .iter()
+    .any(|event| line.starts_with(event))
 }
 
 pub fn details(device: &Device) -> Result<Device> {
@@ -494,6 +531,25 @@ mod tests {
         assert_eq!(devices[3].parent.as_deref(), Some("disk3"));
     }
     #[test]
+    fn disk_events_ignore_approvals_and_diskless_volumes() {
+        assert!(disk_event(
+            "***DiskAppeared ('disk5', DAVolumePath = '<null>') Time=1"
+        ));
+        assert!(disk_event(
+            "***DiskDisappeared ('disk5s1', DAVolumeKind = 'exfat') Time=1"
+        ));
+        assert!(disk_event(
+            "***DiskDescriptionChanged ('disk5s1', DAVolumePath = '<null>') Time=1"
+        ));
+        assert!(!disk_event(
+            "***DiskMountApproval ('disk5s1', DAVolumeKind = 'exfat') Time=1"
+        ));
+        assert!(!disk_event(
+            "***DiskAppeared ((no BSD name), DAVolumeKind = 'autofs') Time=1"
+        ));
+        assert!(!disk_event("***DAIdle (no DADiskRef) Time=1"));
+    }
+    #[test]
     fn versions_sort_numerically_and_do_not_accept_shell_input() {
         assert!(version("0.10.0") > version("0.9.9"));
         assert_eq!(version("1.2.3;whoami"), None);
@@ -537,6 +593,31 @@ mod live_tests {
             "Reidentified {} disks and volumes through diskutil metadata only",
             devices.len()
         );
+    }
+    #[test]
+    #[ignore = "Attaches a throwaway disk image to this Mac"]
+    fn attaching_a_disk_is_noticed() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        watch(move || tx.send(()).unwrap_or_default()).unwrap();
+        let image = std::env::temp_dir().join(format!("carryfs-watch-{}.img", std::process::id()));
+        fs::File::create(&image).unwrap().set_len(8 << 20).unwrap();
+        // Give the watcher time to list the present disks before attaching.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let attached = output(
+            Command::new("/usr/bin/hdiutil")
+                .args(["attach", "-nomount"])
+                .arg(&image),
+        )
+        .unwrap();
+        let disk = String::from_utf8_lossy(&attached)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned();
+        let noticed = rx.recv_timeout(std::time::Duration::from_secs(10));
+        output(Command::new("/usr/bin/hdiutil").args(["detach", &disk])).unwrap();
+        fs::remove_file(&image).unwrap();
+        noticed.expect("No disk event after attaching an image");
     }
 }
 

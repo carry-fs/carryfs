@@ -698,7 +698,7 @@ fn main() {
             return;
         }
     }
-    rune::run(AppSpec {
+    let app = rune::App::new(AppSpec {
         min_size: Some((960.0, 640.0)),
         scenes: &[
             ("overview", capture_sources),
@@ -726,6 +726,23 @@ fn main() {
         poll: Some(poll),
         ..AppSpec::new("CarryFS Manager", (1180.0, 780.0), State::default, view)
     });
+    #[cfg(target_os = "macos")]
+    {
+        let handle = app.handle();
+        let watched = platform::watch(move || {
+            handle.update(|s, tx| {
+                if s.pending.is_none() {
+                    s.discover(tx);
+                } else {
+                    s.refresh = true;
+                }
+            })
+        });
+        if let Err(error) = watched {
+            eprintln!("CarryFS Manager: cannot watch disks, use Refresh: {error}");
+        }
+    }
+    app.run();
 }
 #[cfg(test)]
 mod tests;

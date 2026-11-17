@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The CarryFS cube, from assets/logo-light.svg, with strokes thickened for small sizes. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M256,48 L398.68,130 L256,212 L113.32,130 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M256,248 L306.46,219 L306.46,409 L256,438 Z" />
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="28"
+        android:strokeLineJoin="miter"
+        android:pathData="M256,48 L430,148 L430,338 L256,438 L82,338 L82,148 Z M82,148 L256,248 L430,148 M256,248 L256,438" />
+</vector>

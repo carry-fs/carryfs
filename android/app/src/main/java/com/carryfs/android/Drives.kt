@@ -62,10 +62,12 @@ object Drives {
         if (input == null || output == null) throw IOException("USB drive has no bulk endpoints")
         val usb = context.getSystemService(UsbManager::class.java)
         val connection = usb.openDevice(device) ?: throw IOException("Cannot open the USB drive")
-        val drive = Drive(key, device.productName ?: device.deviceName, emptyList(), connection, iface)
+        val drive = Drive(key, device.displayName(), emptyList(), connection, iface)
         try {
             // Forcing detaches the kernel driver, unmounting any FAT volume Android mounted.
             if (!connection.claimInterface(iface, true)) throw IOException("Cannot claim the USB drive")
+            // A UAS-capable drive may be left in its UAS setting; Bulk-Only Transport is setting 0.
+            if (!connection.setInterface(iface)) throw IOException("Cannot select the drive's mass-storage mode")
             val volumes = Native.mountUsb(key, connection.fileDescriptor, iface.id, input.address, output.address)
             if (volumes.isEmpty()) throw IOException("No CarryFS volume on ${drive.name}")
             drives[key] = Drive(key, drive.name, volumes.toList(), connection, iface)
@@ -128,3 +130,7 @@ fun Intent.usbDevice(): UsbDevice? = if (Build.VERSION.SDK_INT >= 33) {
     @Suppress("DEPRECATION")
     getParcelableExtra(UsbManager.EXTRA_DEVICE)
 }
+
+/** A name to show: the product, else the maker, else the device path. Some enclosures report blanks. */
+fun UsbDevice.displayName(): String =
+    listOfNotNull(productName, manufacturerName).map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: deviceName

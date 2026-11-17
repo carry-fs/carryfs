@@ -55,8 +55,8 @@ class MainActivity : Activity() {
     private var busy = false
     /** Volumes whose capacity bar has already played its fill. */
     private val filled = mutableSetOf<Long>()
-    /** The volume label of each USB drive seen mounted, so an ejected drive keeps its name. */
-    private val labels = mutableMapOf<Long, String>()
+    /** Volume labels of USB drives seen mounted, by device number and name. */
+    private val labels = mutableMapOf<String, String>()
 
     private val usb by lazy { getSystemService(UsbManager::class.java) }
     private val testImage by lazy { File(filesDir, "test.img") }
@@ -72,7 +72,7 @@ class MainActivity : Activity() {
             if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                 mount(device)
             } else {
-                status = Status("USB access to ${device.productName} was denied.", R.color.error)
+                status = Status("USB access to ${device.displayName()} was denied.", R.color.error)
                 render()
             }
         }
@@ -186,7 +186,7 @@ class MainActivity : Activity() {
         val legacy = runCatching { Native.needsUpgrade(volume) }.getOrDefault(false)
         val readOnly = runCatching { Native.readOnly(volume) }.getOrDefault(true)
 
-        if (drive.usb && number == null) labels[drive.key] = name
+        if (drive.usb && number == null) labels["${drive.key}/${drive.name}"] = name
         list.addView(heading(name, 40f), margins(top = 24))
         val source = if (drive.usb) null else "DISK IMAGE"
         val meta = listOfNotNull(drive.name, source, number?.let { "VOLUME $it" }).joinToString(" · ")
@@ -227,8 +227,8 @@ class MainActivity : Activity() {
 
     /** A mass-storage device the app hasn't mounted yet. */
     private fun plugged(device: UsbDevice) {
-        val name = device.productName ?: device.deviceName
-        val label = labels[device.deviceId.toLong()]
+        val name = device.displayName()
+        val label = labels["${device.deviceId}/$name"]
         list.addView(heading(label ?: name, if (label != null) 40f else 28f), margins(top = 24))
         list.addView(mono(if (label != null) name.uppercase() else "USB MASS STORAGE"), margins(top = 4))
         list.addView(statusLine(Status("Not mounted. Safe to unplug", R.color.safe)), margins(top = 16))
@@ -328,7 +328,7 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(notifications) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(notifications), 0)
         }
-        perform("Mounting ${device.productName}…", "Couldn't mount ${device.productName}", "Unplug the drive, plug it back in, and try again.") {
+        perform("Mounting ${device.displayName()}…", "Couldn't mount ${device.displayName()}", "Unplug the drive, plug it back in, and try again.") {
             Drives.mount(this, device)
             null
         }

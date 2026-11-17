@@ -609,8 +609,8 @@ fn toolbar(s: &State, k: &Kit) -> El {
         let source = s.source().is_some();
         let device = s.device.as_ref();
         let mounted = device.is_some_and(|d| d.mount.is_some());
-        let erasable = device.is_some_and(|d| d.external_partition() && d.mount.is_none());
-        let changeable = device.is_some_and(|d| !d.protected() && d.carryfs() && !d.whole);
+        let erasable = device.is_some_and(|d| d.erasable() && d.mount.is_none());
+        let changeable = device.is_some_and(|d| !d.protected() && !d.whole && d.uuid.is_some());
         let ejectable = device.is_some_and(|d| !d.protected() && d.uuid.is_some());
         bar = bar
             .child(tool(
@@ -635,7 +635,7 @@ fn toolbar(s: &State, k: &Kit) -> El {
                 if mounted {
                     "Unmount the partition to erase it."
                 } else {
-                    "Erase an external partition as CarryFS."
+                    "Erase an external disk or partition as CarryFS."
                 },
                 |s, _| s.ask(SheetKind::Erase),
             ))
@@ -654,7 +654,7 @@ fn toolbar(s: &State, k: &Kit) -> El {
                 if mounted { "Unmount" } else { "Mount" },
                 "mount",
                 idle && changeable,
-                "Mount or unmount the CarryFS volume.",
+                "Mount or unmount the volume.",
                 |s, tx| {
                     let action = if s.device.as_ref().is_some_and(|d| d.mount.is_some()) {
                         DeviceAction::Unmount
@@ -1075,9 +1075,15 @@ fn overview(s: &State, k: &Kit) -> El {
             callout(
                 k,
                 false,
-                "Select a volume",
-                "This is a whole disk. Select one of its volumes to work with it.".into(),
-                vec![],
+                "Whole disk",
+                "Select one of its volumes to work with it, or erase the disk to replace every partition on it with one CarryFS partition.".into(),
+                vec![
+                    Button::new("Erase Disk…")
+                        .disabled(busy || !d.erasable())
+                        .on_press(|s: &mut State| s.ask(SheetKind::Erase))
+                        .build(k)
+                        .key("erase-disk-callout"),
+                ],
             )
         } else if let Some(mount) = &d.mount {
             let path = mount.clone();
@@ -1124,7 +1130,7 @@ fn overview(s: &State, k: &Kit) -> El {
                 "To use this partition with CarryFS, erase it. Erasing deletes everything on it.".into(),
                 vec![
                     Button::new("Erase…")
-                        .disabled(busy || !d.external_partition())
+                        .disabled(busy || !d.erasable())
                         .on_press(|s: &mut State| s.ask(SheetKind::Erase))
                         .build(k)
                         .key("erase-callout"),
@@ -1859,9 +1865,15 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 let valid = carryfs_core::VolumeLabel::parse(s.erase_name.text.trim()).is_ok();
                 (
                     format!("Erase “{name}”?"),
-                    format!(
-                        "Erasing “{name}” permanently deletes all data stored on it. You can't undo this."
-                    ),
+                    if device.is_some_and(|d| d.whole) {
+                        format!(
+                            "Erasing “{name}” replaces every partition on it with one CarryFS partition and permanently deletes all their data. You can't undo this."
+                        )
+                    } else {
+                        format!(
+                            "Erasing “{name}” permanently deletes all data stored on it. You can't undo this."
+                        )
+                    },
                     col()
                         .w_full()
                         .gap(14.0)
@@ -1878,7 +1890,11 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                             vec![
                                 ("Format", "CarryFS".into()),
                                 (
-                                    "Partition",
+                                    if device.is_some_and(|d| d.whole) {
+                                        "Disk"
+                                    } else {
+                                        "Partition"
+                                    },
                                     device.map_or_else(String::new, |d| {
                                         format!("{} · {}", d.id, bytes(d.bytes))
                                     }),

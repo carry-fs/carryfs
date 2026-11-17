@@ -376,6 +376,26 @@ fn erasing_needs_a_valid_name_and_internal_disks_are_protected() {
     );
     click(&mut rt, "cancel-sheet");
     assert!(rt.state.sheet.is_none());
+    // A mounted foreign partition can be unmounted, but not erased in place.
+    rt.update(|s, _| s.device.as_mut().unwrap().mount = Some("/Volumes/Fixture".into()));
+    rt.frame(0.01);
+    assert!(rt.state.device.as_ref().unwrap().erasable());
+    click(&mut rt, "erase");
+    assert!(rt.state.sheet.is_none());
+    rt.update(|s, _| {
+        let d = s.device.as_mut().unwrap();
+        (d.id, d.parent, d.uuid, d.whole, d.mount) = ("disk8".into(), None, None, true, None);
+    });
+    rt.frame(0.01);
+    click(&mut rt, "erase-disk-callout");
+    assert!(
+        rt.state
+            .sheet
+            .as_ref()
+            .is_some_and(|s| s.kind == SheetKind::Erase),
+        "A whole external disk can be erased"
+    );
+    click(&mut rt, "cancel-sheet");
     rt.update(|s, _| s.device.as_mut().unwrap().internal = true);
     rt.frame(0.01);
     click(&mut rt, "erase");

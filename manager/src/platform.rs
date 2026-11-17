@@ -39,6 +39,11 @@ impl Device {
             && self.uuid.is_some()
             && !self.filesystem.to_ascii_lowercase().contains("apfs")
     }
+    /// An external physical disk, or a partition on one.
+    pub fn erasable(&self) -> bool {
+        self.external_partition()
+            || (self.whole && !self.protected() && self.kind == DeviceKind::Physical)
+    }
     /// Physical disks, internal ones included, and their user partitions;
     /// containers, system volumes, and disk images stay hidden.
     pub fn visible_by_default(&self) -> bool {
@@ -309,10 +314,8 @@ pub fn act(device: &Device, action: DeviceAction) -> Result<String> {
         return Err("This source is protected or has no stable reported identity.".into());
     }
     let verb = match action {
-        DeviceAction::Mount if !fresh.whole && fresh.carryfs() && fresh.mount.is_none() => "mount",
-        DeviceAction::Unmount if !fresh.whole && fresh.carryfs() && fresh.mount.is_some() => {
-            "unmount"
-        }
+        DeviceAction::Mount if !fresh.whole && fresh.mount.is_none() => "mount",
+        DeviceAction::Unmount if !fresh.whole && fresh.mount.is_some() => "unmount",
         DeviceAction::Eject if fresh.kind == DeviceKind::Physical || fresh.parent.is_some() => {
             "eject"
         }
@@ -414,26 +417,30 @@ pub fn install(version_name: &str) -> Result<String> {
     Err("Installing from the manager is currently available on macOS.".into())
 }
 
-/// Erase an unmounted external partition as CarryFS named `name`. Disk
-/// Arbitration runs the installed formatter; no administrator approval needed.
+/// Erase an unmounted external partition, or a whole external disk into one
+/// GPT partition, as CarryFS named `name`. Disk Arbitration runs the installed
+/// formatter; no administrator approval needed.
 pub fn erase(device: &Device, name: &str) -> Result<String> {
     let fresh = details(device)?;
-    if !fresh.external_partition() || fresh.mount.is_some() {
-        return Err("Erasing requires an unmounted external physical partition.".into());
+    if !fresh.erasable() || fresh.mount.is_some() {
+        return Err(
+            "Erasing requires an external physical disk or an unmounted partition on one.".into(),
+        );
     }
     carryfs_core::VolumeLabel::parse(name).map_err(|e| format!("Invalid name: {e}"))?;
     if !Path::new("/Library/Filesystems/carryfs.fs/Contents/Resources/newfs_carryfs").is_file() {
         return Err("Install CarryFS from Software before erasing a partition.".into());
     }
+    let args: &[&str] = if fresh.whole {
+        // diskutil unmounts the disk's volumes itself.
+        &["eraseDisk", "CarryFS", name, "GPT", &fresh.id]
+    } else {
+        &["eraseVolume", "CarryFS", name, &fresh.id]
+    };
     Ok(
-        String::from_utf8_lossy(&output(Command::new("/usr/sbin/diskutil").args([
-            "eraseVolume",
-            "CarryFS",
-            name,
-            &fresh.id,
-        ]))?)
-        .trim()
-        .to_owned(),
+        String::from_utf8_lossy(&output(Command::new("/usr/sbin/diskutil").args(args))?)
+            .trim()
+            .to_owned(),
     )
 }
 

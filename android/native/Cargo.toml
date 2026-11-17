@@ -1,0 +1,25 @@
+[package]
+name = "carryfs-android"
+version.workspace = true
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0 OR GPL-2.0-only"
+description = "CarryFS Android adapter: USB mass storage and the JNI surface of the app"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]
+carryfs-core = { path = "../.." }
+jni = "0.21.1"
+libc = "0.2"
+
+[dev-dependencies]
+carryfs-ondisk = { path = "../../ondisk", features = ["std"] }

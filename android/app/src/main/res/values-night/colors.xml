@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ground">#0F0F0F</color>
+    <color name="ink">#F2F2F2</color>
+    <color name="on_ink">#0F0F0F</color>
+    <color name="muted">#9A9A9A</color>
+    <color name="tonal">#222222</color>
+    <color name="hairline">#2A2A2A</color>
+    <color name="error">#FF6B5E</color>
+</resources>

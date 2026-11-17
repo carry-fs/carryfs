@@ -14,7 +14,7 @@ If you'd rather not run the installer, [install by hand](#install-by-hand).
 | 1 | Linux, x86-64 | FUSE |
 | 1 | Windows\*, x86-64 | WinFsp |
 | 2 | FreeBSD\*\* 14.5 and 15.1, amd64 and arm64 | fusefs |
-| Planned | Android | |
+| 2 | Android\*\*\* 8 and later, arm64 | [CarryFS app](android/README.md) |
 
 Tier 0 runs with the native driver for the best performance.
 
@@ -23,12 +23,14 @@ real hardware.
 
 Tier 2 has the core features and best-effort performance.
 
-Android is planned and has no adapter yet.
-
 \*Windows can't create new [hard links](#limits-and-data-safety).
 
 \*\*FreeBSD is tested only in virtual machines and can't set the
 [hidden flag](#limits-and-data-safety).
+
+\*\*\*Android has no release package yet; build the app from source. It shows
+files only through the Files app and the file picker, and can't format or
+repair volumes. See its [limits](android/README.md#limits).
 
 ## Requirements
 

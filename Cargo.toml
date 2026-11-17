@@ -7,7 +7,7 @@ license = "Apache-2.0 OR GPL-2.0-only"
 description = "CarryFS image commit engine"
 
 [workspace]
-members = [".", "ondisk", "fuse", "macos", "windows"]
+members = [".", "ondisk", "fuse", "macos", "windows", "android/native"]
 exclude = ["fuzz", "manager"]
 
 # The product version: every crate, package, and tag shares it (VERSIONING.md).

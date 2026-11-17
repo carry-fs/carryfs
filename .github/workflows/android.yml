@@ -1,0 +1,121 @@
+name: android
+
+# Builds the Android app and runs its instrumented tests on an emulator when
+# the app or the storage core it embeds changes. The native adapter's host
+# tests already run in ci.yml with the rest of the workspace.
+
+on:
+  push:
+    paths:
+      - android/**
+      - src/**
+      - ondisk/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/android.yml
+  pull_request:
+    paths:
+      - android/**
+      - src/**
+      - ondisk/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/android.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NDK_VERSION: 30.0.16248370
+  CARGO_NDK_VERSION: 4.1.2
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-ndk
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            target
+          key: android-build-${{ hashFiles('Cargo.lock', 'android/**/*.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Toolchains
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --target aarch64-linux-android
+          command -v cargo-ndk || cargo install --locked cargo-ndk --version "$CARGO_NDK_VERSION"
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      - name: Clippy for Android
+        run: cargo ndk -t arm64-v8a -P 26 clippy --locked -p carryfs-android --all-targets -- -D warnings
+      - name: Build
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+
+  emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      IMAGE: system-images;android-35;google_apis;x86_64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-ndk
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            target
+          key: android-emulator-${{ hashFiles('Cargo.lock', 'android/**/*.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Toolchains
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-linux-android
+          command -v cargo-ndk || cargo install --locked cargo-ndk --version "$CARGO_NDK_VERSION"
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" emulator platform-tools "$IMAGE" > /dev/null
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+      # The tests mount a desktop-made image holding /hello.txt; see android/README.md.
+      - name: Test image
+        run: |
+          cargo build --release --locked -p carryfs-core --bin carryfs
+          printf 'hello from a desktop\n' > hello.txt
+          target/release/carryfs mkfs test.img 268435456
+          target/release/carryfs put test.img hello.txt /hello.txt
+      - name: Emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          # avdmanager and the emulator otherwise disagree on where AVDs live.
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n ci -k "$IMAGE"
+          "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect &
+          timeout 600 adb wait-for-device
+          timeout 600 sh -c 'until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 5; done'
+      - name: Instrumented tests
+        working-directory: android
+        run: |
+          ./gradlew --no-daemon -Pcarryfs.abi=x86_64 installDebug installDebugAndroidTest
+          adb push ../test.img /data/local/tmp/test.img
+          adb shell "run-as com.carryfs.android sh -c 'mkdir -p files && cp /data/local/tmp/test.img files/'"
+          # am instrument exits 0 on failures too; its summary line is the result.
+          adb shell am instrument -w com.carryfs.android.test/androidx.test.runner.AndroidJUnitRunner | tee instrument.log
+          grep -q '^OK (' instrument.log

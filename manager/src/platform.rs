@@ -39,16 +39,20 @@ impl Device {
             && self.uuid.is_some()
             && !self.filesystem.to_ascii_lowercase().contains("apfs")
     }
-    pub fn visible_by_default(&self, all: &[Device]) -> bool {
+    /// Physical disks, internal ones included, and their user partitions;
+    /// containers, system volumes, and disk images stay hidden.
+    pub fn visible_by_default(&self) -> bool {
         if self.carryfs() {
             return true;
         }
-        if self.protected() || self.kind == DeviceKind::Virtual {
+        if self.kind == DeviceKind::Virtual {
             return false;
         }
         if self.whole {
-            return self.kind != DeviceKind::Virtual
-                && !all.iter().any(|d| d.parent.as_deref() == Some(&self.id));
+            return self.parent.is_none();
+        }
+        if self.protected() {
+            return false;
         }
         let fs = self.filesystem.to_ascii_lowercase();
         !fs.contains("efi") && !fs.contains("apple_apfs") && !fs.contains("partition_scheme")

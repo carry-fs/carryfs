@@ -501,6 +501,10 @@ fn device_hierarchy_expands_in_order_and_collapses_all_descendants() {
     rt.frame(0.01);
     click(&mut rt, "show-system");
     assert_eq!(device_rows(&rt.state), vec![(0, 0), (4, 0)]);
+    // The rows were already shown; let them slide aside for the expand buttons.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
     click(&mut rt, "expand-disk0");
     click(&mut rt, "expand-disk1");
     click(&mut rt, "expand-disk2");
@@ -830,4 +834,56 @@ fn a_clean_volume_with_hard_links_rebuilds_into_a_new_verified_image() {
             .any(|e| e.item.name.stored() == b"readme.txt" && e.attrs.links == 2)
     );
     assert_eq!(before, hash(&fixture.image()), "The source stays read-only");
+}
+
+#[test]
+fn default_sidebar_shows_physical_disks_with_their_user_partitions() {
+    let device = |id: &str, parent: Option<&str>, fs: &str, internal, kind| Device {
+        id: id.into(),
+        parent: parent.map(Into::into),
+        name: id.into(),
+        bytes: 1 << 30,
+        uuid: Some(id.into()),
+        filesystem: fs.into(),
+        mount: None,
+        whole: parent.is_none() || id == "disk3",
+        internal,
+        kind,
+    };
+    let mut rt = runtime();
+    rt.update(|s, _| {
+        s.devices = vec![
+            device(
+                "disk0",
+                None,
+                "GUID_partition_scheme",
+                true,
+                DeviceKind::Unknown,
+            ),
+            device(
+                "disk0s2",
+                Some("disk0"),
+                "Apple_APFS",
+                true,
+                DeviceKind::Unknown,
+            ),
+            device("disk3", Some("disk0s2"), "apfs", true, DeviceKind::Virtual),
+            device("disk3s1", Some("disk3"), "apfs", true, DeviceKind::Virtual),
+            device(
+                "disk4",
+                None,
+                "GUID_partition_scheme",
+                false,
+                DeviceKind::Physical,
+            ),
+            device(
+                "disk4s1",
+                Some("disk4"),
+                "exfat",
+                false,
+                DeviceKind::Unknown,
+            ),
+        ];
+    });
+    assert_eq!(device_rows(&rt.state), vec![(0, 0), (4, 0), (5, 1)]);
 }

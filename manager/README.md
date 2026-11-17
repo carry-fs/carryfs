@@ -1,6 +1,6 @@
 # CarryFS Manager
 
-A native macOS app for CarryFS disks and disk images, laid out like Disk Utility. The sidebar lists external disks and opened disk images; **Show all disks** adds internal and virtual storage as an expandable disk, container, and volume hierarchy. The toolbar holds the disk tasks: **First Aid**, **Erase**, **Recover**, **Mount**/**Unmount**, **Eject**, and **Unlock**. The selected disk shows its capacity, a used/reserved/available bar, First Aid results, its details, and its format features, with **Files** and **History** beside **Overview**. **Software Update** at the bottom of the sidebar installs and updates CarryFS. No task opens Terminal.
+A native macOS app for CarryFS disks and disk images, laid out like Disk Utility. The sidebar lists physical disks with their partitions, and opened disk images; **Show all disks** adds system volumes and virtual storage as an expandable disk, container, and volume hierarchy. The toolbar holds the disk tasks: **First Aid**, **Erase**, **Recover**, **Mount**/**Unmount**, **Eject**, and **Unlock**. The selected disk shows its capacity, a used/reserved/available bar, First Aid results, its details, and its format features, with **Files** and **History** beside **Overview**. **Software Update** at the bottom of the sidebar installs and updates CarryFS. No task opens Terminal.
 
 ## Run
 

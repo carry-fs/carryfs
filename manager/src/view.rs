@@ -180,13 +180,26 @@ fn scrolled(body: El, k: &Kit) -> El {
 
 pub(crate) fn device_rows(s: &State) -> Vec<(usize, usize)> {
     if !s.show_system {
-        return s
-            .devices
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.visible_by_default(&s.devices))
-            .map(|(i, _)| (i, 0))
-            .collect();
+        let shown = |d: &Device| d.visible_by_default();
+        let mut rows = Vec::new();
+        for (i, d) in s.devices.iter().enumerate() {
+            let parent_shown = s
+                .devices
+                .iter()
+                .any(|p| Some(&p.id) == d.parent.as_ref() && shown(p));
+            if !shown(d) || parent_shown {
+                continue;
+            }
+            rows.push((i, 0));
+            rows.extend(
+                s.devices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.parent.as_deref() == Some(&d.id) && shown(c))
+                    .map(|(c, _)| (c, 1)),
+            );
+        }
+        return rows;
     }
     fn append(s: &State, index: usize, depth: usize, rows: &mut Vec<(usize, usize)>) {
         if rows.iter().any(|(i, _)| *i == index) {
@@ -332,6 +345,16 @@ fn sidebar(s: &State, k: &Kit) -> El {
                     DeviceKind::Unknown => "Kind not reported",
                 }
             )
+        } else if device.whole {
+            format!(
+                "{} · {}",
+                bytes(device.bytes),
+                if device.internal {
+                    "Internal"
+                } else {
+                    "External"
+                }
+            )
         } else {
             format!(
                 "{} · {}{}",
@@ -458,7 +481,7 @@ fn sidebar(s: &State, k: &Kit) -> El {
         .child(rule(k))
         .child(
             Button::new(if s.show_system {
-                "Show only external disks"
+                "Hide system storage"
             } else {
                 "Show all disks"
             })

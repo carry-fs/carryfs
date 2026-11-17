@@ -17,7 +17,8 @@ use kernel::sync::{new_condvar, new_mutex, CondVar, Mutex, MutexGuard};
 use crate::edit::Txn;
 use crate::glue;
 use crate::ondisk::format::{
-    self, Root, TreeKind, TreeRef, BLOCK_BYTES, MAINTENANCE_RESERVE, RESERVED_TOTAL_BLOCKS,
+    self, Root, TreeKind, TreeRef, BLOCK_BYTES, LEGACY_REVISION, MAINTENANCE_RESERVE,
+    RESERVED_TOTAL_BLOCKS,
 };
 use crate::tree::{Block, Tree};
 use crate::vfs::SuperBlock;
@@ -558,6 +559,12 @@ unsafe fn fill_super(sb: *mut bindings::super_block, uid: u32, gid: u32, silent:
         }
         errno(error)
     })?;
+    if writable && root.revision == LEGACY_REVISION {
+        if !silent {
+            pr_err!("CarryFS 0.1.0 formatted this volume; mount it read-only or upgrade it\n");
+        }
+        return Err(EROFS);
+    }
     let flights = KVec::with_capacity(CLAIMS, GFP_KERNEL)?;
     // SAFETY: Its work runs only once queued, after mounting.
     let background = unsafe { glue::carryfs_background_new(sb) };

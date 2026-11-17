@@ -287,8 +287,6 @@ fn unnamed_files_are_pinned_published_and_reclaimed() {
     assert_eq!(volume.lookup(ROOT, &name("published")).unwrap(), object);
     assert!(!volume.attributes(object).unwrap().orphan);
     assert_eq!(volume.attributes(object).unwrap().links, 1);
-    // Relinking an unnamed file does not opt the volume into hard links.
-    assert!(!volume.supports_links());
     volume.close_handle(handle).unwrap();
     drain(&mut volume);
     checked(&volume);

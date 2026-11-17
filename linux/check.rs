@@ -3,7 +3,7 @@
 //! Read-only mount validation, before root repair or allocation.
 
 use crate::ondisk::format::{
-    self, checksum_slot, extra_links, link_hash, TreeKind, TreeRef, FEATURE_PREALLOCATION,
+    self, checksum_slot, extra_links, link_hash, TreeKind, TreeRef,
 };
 use crate::namei::DIRECTORY;
 use crate::tree::{self, be_u64, le_u64, Link, Tree};
@@ -143,7 +143,6 @@ fn ownership(sb: *mut super_block, state: &State) -> Result {
                     return Ok(());
                 }
                 for (key, value) in view.records() {
-                    if kind == TreeKind::Catalog { format::validate_inode_features(key, value, root.features, format::Validation::Disk).map_err(crate::errno)?; }
                     if kind == TreeKind::Catalog && key.get(8) == Some(&tree::EXTENT) {
                         bits.extent(
                             le_u64(value, 0),
@@ -171,7 +170,6 @@ fn ownership(sb: *mut super_block, state: &State) -> Result {
                                     bits.page(me.block, root.blocks)?;
                                     if page.level == 0 {
                                         for (key, entry) in page.records() {
-                                            format::validate_inode_features(key, entry, root.features, format::Validation::Disk).map_err(crate::errno)?;
                                             if be_u64(key, 0) != owner
                                                 || !(value[8]..=value[9]).contains(&key[8])
                                             {
@@ -263,15 +261,11 @@ struct Object {
     children: u64,
     blocks: u64,
     end: u64,
-    preallocation: bool,
 }
 impl Object {
     fn finish(&self) -> Result {
         if self.children != le_u64(&self.inode, 32) || self.blocks != le_u64(&self.inode, 24) {
             return Err(bad("inode child or allocation count mismatch"));
-        }
-        if !self.preallocation && self.end != le_u64(&self.inode, 16).div_ceil(4096) && self.end % 16 != 0 {
-            return Err(bad("backed tail is not unit aligned"));
         }
         Ok(())
     }
@@ -283,7 +277,6 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
     // no second walk. A directory's objects mostly follow one another.
     let mut rooted = 1;
     catalog.scan(&[], &mut |key, value| {
-        format::validate_inode_features(key, value, state.root.features, format::Validation::Disk).map_err(crate::errno)?;
         let owner = be_u64(key, 0);
         if owner >= state.root.next_object {
             return Err(bad("object exceeds allocated IDs"));
@@ -302,16 +295,6 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
             }
             let mut inode = KVec::new();
             tree::append(&mut inode, value)?;
-            if format::validate_inode_features(
-                key,
-                &inode,
-                state.root.features,
-                format::Validation::Disk,
-            )
-            .is_err()
-            {
-                return Err(bad("inode field without its root feature"));
-            }
             let mut orphan = [3; 9];
             orphan[1..].copy_from_slice(&owner.to_be_bytes());
             let marker = Tree::new(sb, state, TreeKind::Cleanup)
@@ -353,7 +336,6 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                 children: 0,
                 blocks: 0,
                 end: 0,
-                preallocation: state.root.features & FEATURE_PREALLOCATION != 0,
             });
         }
         let current = object.as_mut().ok_or(EIO)?;
@@ -389,7 +371,6 @@ fn catalog(sb: *mut super_block, state: &State) -> Result {
                 let count = le_u64(value, 8) & u64::from(u32::MAX);
                 if logical < current.end
                     || (le_u64(value, 8) >> 32 == 0 && logical + count > size.div_ceil(4096))
-                    || (state.root.features & FEATURE_PREALLOCATION == 0 && logical > current.end && (current.end % 16 != 0 || logical % 16 != 0))
                 {
                     return Err(bad("extent overlap, gap inside unit, or EOF overrun"));
                 }

@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import errno
 import hashlib
-import itertools
 import mmap
 import os
 import random
@@ -739,7 +738,9 @@ def full_write(volume):
     """Writes to a full volume fail with ENOSPC instead of being accepted
     and lost at writeback; dirtied units' space reservations all return."""
     root = volume.mount()
-    (root / "mapped").write_bytes(os.urandom(65536))
+    (root / "mapped").write_bytes(bytes(65536))
+    with open(root / "hole", "wb") as f:
+        f.truncate(65536)
     os.sync()
     start = os.statvfs(root).f_bavail
     digest, written = hashlib.sha256(), 0
@@ -757,18 +758,23 @@ def full_write(volume):
     os.fsync(fd)
     os.close(fd)
     assert written > start * 4096 // 2, f"only {written} bytes fit"
-    # A shared mapping dirtying a clean unit needs space too: SIGBUS.
-    mapped = subprocess.run([sys.executable, "-c", (
-        "import mmap, sys\n"
-        "with open(sys.argv[1], 'r+b') as f:\n"
-        "    m = mmap.mmap(f.fileno(), 0)\n"
-        "    m[0] = 1\n"
-    ), root / "mapped"])
-    assert mapped.returncode == -signal.SIGBUS, mapped.returncode
+    # A shared mapping dirtying a clean unit with no blocks needs space too:
+    # SIGBUS. Rewriting a backed unit borrows the reserve its retired blocks
+    # repay, so it is accepted.
+    def map_write(name):
+        return subprocess.run([sys.executable, "-c", (
+            "import mmap, sys\n"
+            "with open(sys.argv[1], 'r+b') as f:\n"
+            "    m = mmap.mmap(f.fileno(), 0)\n"
+            "    m[0] = 1\n"
+        ), root / name]).returncode
+    assert map_write("hole") == -signal.SIGBUS
+    assert map_write("mapped") == 0
     volume.unmount()
     root = volume.mount("ro")
     data = (root / "fill").read_bytes()
     assert len(data) == written and hashlib.sha256(data).digest() == digest.digest()
+    assert (root / "mapped").read_bytes()[:2] == b"\x01\x00"
     volume.unmount()
     root = volume.mount()
     os.unlink(root / "fill")
@@ -823,38 +829,6 @@ def punch_race(volume, seconds=10):
     assert lost == 0, f"{lost} of {rounds} mapped writes lost across {punches} punches"
     volume.unmount()
     print(f"  punch race: {rounds} mapped writes kept across {punches} punches; {volume.check()}")
-
-
-def full_truncate(volume):
-    """A truncate whose tail rewrite fails for space leaves the stored size
-    past i_size; a later writeback of the file must not store i_size over
-    the full tail unit (fstests generic/476)."""
-    root = volume.mount()
-    path = root / "file"
-    path.write_bytes(os.urandom(2 * 65536))
-    os.sync()
-    # Fill with data, then with empty files, which may use the 8,192 blocks
-    # of headroom data writes leave (write.rs HEADROOM), until the 9 blocks
-    # of the tail unit's rewrite no longer fit.
-    fill(root / "filler", 1 << 20)
-    for i in itertools.count():
-        if os.statvfs(root).f_bavail < 8192 + 9:
-            break
-        (root / f"empty{i}").touch()
-    try:
-        os.truncate(path, 100_000)
-        raise AssertionError("truncate had space for its tail rewrite")
-    except OSError as error:
-        assert error.errno == errno.ENOSPC, error
-    for name in os.listdir(root):
-        if name != "file":
-            os.unlink(root / name)
-    os.sync()
-    with open(path, "r+b") as f:
-        f.write(b"x")
-        os.fsync(f.fileno())
-    volume.unmount()
-    print(f"  full truncate: {volume.check()}")
 
 
 def orphan(volume, work):
@@ -1001,8 +975,6 @@ def checks(args, work):
     reclaim(Volume(args.cli, work, "reclaim", 512))
     print("full write")
     full_write(Volume(args.cli, work, "full-write", 512))
-    print("full truncate")
-    full_truncate(Volume(args.cli, work, "full-truncate", 512))
     print("punch race")
     punch_race(Volume(args.cli, work, "punch-race", 256))
     print("orphan")

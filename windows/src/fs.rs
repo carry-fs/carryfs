@@ -589,22 +589,20 @@ impl<D: BlockDevice> CarryFs<D> {
                 with_space(&mut s.volume, |v| v.truncate(&open.handle, 0))
                     .map_err(|e| status(&e))?;
             }
-            if s.volume.stores_attributes() {
-                let current = s
-                    .volume
-                    .handle_attributes(&open.handle)
+            let current = s
+                .volume
+                .handle_attributes(&open.handle)
+                .map_err(|e| status(&e))?;
+            let name = last_component(open.path.as_deref().unwrap_or_default());
+            let hidden =
+                file_attributes & FILE_ATTRIBUTE_HIDDEN != 0 || (!replace && current.hidden);
+            let read_only = file_attributes & FILE_ATTRIBUTE_READONLY != 0
+                || (!replace && !current.mode.owner_writable());
+            let change = attribute_change(&current, name, hidden, read_only);
+            if change != AttributeChange::default() {
+                s.volume
+                    .set_attributes(&open.handle, change)
                     .map_err(|e| status(&e))?;
-                let name = last_component(open.path.as_deref().unwrap_or_default());
-                let hidden =
-                    file_attributes & FILE_ATTRIBUTE_HIDDEN != 0 || (!replace && current.hidden);
-                let read_only = file_attributes & FILE_ATTRIBUTE_READONLY != 0
-                    || (!replace && !current.mode.owner_writable());
-                let change = attribute_change(&current, name, hidden, read_only);
-                if change != AttributeChange::default() {
-                    s.volume
-                        .set_attributes(&open.handle, change)
-                        .map_err(|e| status(&e))?;
-                }
             }
             s.publish_if_write_through(context)?;
             s.info(context)
@@ -757,21 +755,20 @@ impl<D: BlockDevice> CarryFs<D> {
     ) -> Reply<FileInfo> {
         self.change(|s| {
             let open = get(&s.open, context)?;
-            let mut change =
-                if s.volume.stores_attributes() && file_attributes != INVALID_FILE_ATTRIBUTES {
-                    let current = s
-                        .volume
-                        .handle_attributes(&open.handle)
-                        .map_err(|e| status(&e))?;
-                    attribute_change(
-                        &current,
-                        last_component(open.path.as_deref().unwrap_or_default()),
-                        file_attributes & FILE_ATTRIBUTE_HIDDEN != 0,
-                        file_attributes & FILE_ATTRIBUTE_READONLY != 0,
-                    )
-                } else {
-                    AttributeChange::default()
-                };
+            let mut change = if file_attributes != INVALID_FILE_ATTRIBUTES {
+                let current = s
+                    .volume
+                    .handle_attributes(&open.handle)
+                    .map_err(|e| status(&e))?;
+                attribute_change(
+                    &current,
+                    last_component(open.path.as_deref().unwrap_or_default()),
+                    file_attributes & FILE_ATTRIBUTE_HIDDEN != 0,
+                    file_attributes & FILE_ATTRIBUTE_READONLY != 0,
+                )
+            } else {
+                AttributeChange::default()
+            };
             change.creation = (creation != 0).then(|| timestamp(creation)).transpose()?;
             change.modification = (last_write != 0)
                 .then(|| timestamp(last_write))
@@ -1909,7 +1906,7 @@ pub fn status(error: &Error) -> NtStatus {
         Error::NameCollision => STATUS_OBJECT_NAME_COLLISION,
         Error::WrongType => STATUS_NOT_A_DIRECTORY,
         Error::DirectoryNotEmpty => STATUS_DIRECTORY_NOT_EMPTY,
-        Error::ReadOnly => STATUS_MEDIA_WRITE_PROTECTED,
+        Error::ReadOnly | Error::NeedsUpgrade => STATUS_MEDIA_WRITE_PROTECTED,
         Error::NoSpace => STATUS_DISK_FULL,
         Error::LimitExceeded => STATUS_FILE_TOO_LARGE,
         // Windows reports over-long components as invalid names too.
@@ -3411,16 +3408,6 @@ mod tests {
         fs.close(context);
     }
 
-    fn mount_upgraded(tag: &str) -> (Image, CarryFs<ImageDevice>) {
-        let path =
-            std::env::temp_dir().join(format!("carryfs-windows-{tag}-{}.img", std::process::id()));
-        let image = Image(path);
-        let device = ImageDevice::create_new(&image.0, 256 << 20).unwrap();
-        let mut volume = Volume::format(device).unwrap();
-        assert!(volume.upgrade().unwrap());
-        (image, CarryFs::new(volume, false).unwrap())
-    }
-
     fn attributes(fs: &CarryFs<ImageDevice>, context: u64) -> u32 {
         fs.file_info(context).unwrap().file_attributes
     }
@@ -3445,7 +3432,7 @@ mod tests {
 
     #[test]
     fn read_only_and_hidden_follow_the_stored_mode_and_flag() {
-        let (_image, fs) = mount_upgraded("attributes");
+        let (_image, fs) = mount("attributes");
         let (file, info, _) = fs.create(&w("\\f"), false, false, 0, 0).unwrap();
         assert_eq!(info.file_attributes, FILE_ATTRIBUTE_NORMAL);
 
@@ -3498,7 +3485,7 @@ mod tests {
 
     #[test]
     fn overwrite_replaces_or_adds_hidden_and_read_only() {
-        let (_image, fs) = mount_upgraded("overwrite");
+        let (_image, fs) = mount("overwrite");
         let (file, _, _) = fs
             .create(&w("\\f"), false, false, FILE_ATTRIBUTE_HIDDEN, 0)
             .unwrap();
@@ -3514,83 +3501,63 @@ mod tests {
     }
 
     #[test]
-    fn a_volume_without_the_feature_accepts_attributes_and_stores_none() {
-        let (_image, fs) = mount("no-attributes");
-        let both = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN;
-        let (file, info, _) = fs.create(&w("\\f"), false, false, both, 0).unwrap();
-        assert_eq!(info.file_attributes, FILE_ATTRIBUTE_NORMAL);
-        fs.set_basic_info(file, both, 0, 0).unwrap();
-        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
-        fs.overwrite(file, both, true, 0).unwrap();
-        assert_eq!(attributes(&fs, file), FILE_ATTRIBUTE_NORMAL);
-        fs.cleanup(file, None, 0);
-        fs.close(file);
-    }
-
-    #[test]
-    fn macos_own_names_are_hidden_by_name_on_every_volume() {
-        for upgraded in [false, true] {
-            let (_image, fs) = if upgraded {
-                mount_upgraded("macos-names")
+    fn macos_own_names_are_hidden_by_name() {
+        let (_image, fs) = mount("macos-names");
+        for (path, directory) in [
+            ("\\.DS_Store", false),
+            ("\\._notes.txt", false),
+            ("\\.TRASHES", true),
+            ("\\.Spotlight-V100", true),
+            ("\\.fseventsd", true),
+        ] {
+            let path = w(path);
+            let (context, info, _) = fs.create(&path, directory, false, 0, 0).unwrap();
+            let kind = if directory {
+                FILE_ATTRIBUTE_DIRECTORY
             } else {
-                mount("macos-names")
+                0
             };
-            for (path, directory) in [
-                ("\\.DS_Store", false),
-                ("\\._notes.txt", false),
-                ("\\.TRASHES", true),
-                ("\\.Spotlight-V100", true),
-                ("\\.fseventsd", true),
-            ] {
-                let path = w(path);
-                let (context, info, _) = fs.create(&path, directory, false, 0, 0).unwrap();
-                let kind = if directory {
-                    FILE_ATTRIBUTE_DIRECTORY
-                } else {
-                    0
-                };
-                assert_eq!(info.file_attributes, kind | FILE_ATTRIBUTE_HIDDEN);
-                // Clearing hidden stores nothing and changes nothing shown.
-                fs.set_basic_info(context, FILE_ATTRIBUTE_NORMAL, 0, 0)
-                    .unwrap();
-                assert_eq!(attributes(&fs, context), kind | FILE_ATTRIBUTE_HIDDEN);
-                fs.cleanup(context, None, 0);
-                fs.close(context);
-                assert_eq!(
-                    fs.attributes_by_name(&path).unwrap(),
-                    kind | FILE_ATTRIBUTE_HIDDEN
-                );
-                let (context, _, _) = fs.open(&path, false, false).unwrap();
-                assert_eq!(attributes(&fs, context), kind | FILE_ATTRIBUTE_HIDDEN);
-                fs.cleanup(context, None, 0);
-                fs.close(context);
-            }
-            let (root, _, _) = fs.open(&w("\\"), false, false).unwrap();
-            let mut listed = Vec::new();
-            fs.read_directory(root, None, |name, info| {
-                listed.push((String::from_utf16(name).unwrap(), info.file_attributes));
-                true
-            })
-            .unwrap();
-            fs.close(root);
-            assert!(
-                listed
-                    .iter()
-                    .all(|(_, attributes)| attributes & FILE_ATTRIBUTE_HIDDEN != 0),
-                "{listed:?}"
-            );
-
-            // Renamed to another name, the file shows again: nothing was stored.
-            let (context, _, _) = fs.open(&w("\\.DS_Store"), false, false).unwrap();
-            fs.rename(&w("\\.DS_Store"), &w("\\visible"), false)
+            assert_eq!(info.file_attributes, kind | FILE_ATTRIBUTE_HIDDEN);
+            // Clearing hidden stores nothing and changes nothing shown.
+            fs.set_basic_info(context, FILE_ATTRIBUTE_NORMAL, 0, 0)
                 .unwrap();
-            assert_eq!(attributes(&fs, context), FILE_ATTRIBUTE_NORMAL);
+            assert_eq!(attributes(&fs, context), kind | FILE_ATTRIBUTE_HIDDEN);
+            fs.cleanup(context, None, 0);
             fs.close(context);
             assert_eq!(
-                fs.attributes_by_name(&w("\\visible")).unwrap(),
-                FILE_ATTRIBUTE_NORMAL
+                fs.attributes_by_name(&path).unwrap(),
+                kind | FILE_ATTRIBUTE_HIDDEN
             );
+            let (context, _, _) = fs.open(&path, false, false).unwrap();
+            assert_eq!(attributes(&fs, context), kind | FILE_ATTRIBUTE_HIDDEN);
+            fs.cleanup(context, None, 0);
+            fs.close(context);
         }
+        let (root, _, _) = fs.open(&w("\\"), false, false).unwrap();
+        let mut listed = Vec::new();
+        fs.read_directory(root, None, |name, info| {
+            listed.push((String::from_utf16(name).unwrap(), info.file_attributes));
+            true
+        })
+        .unwrap();
+        fs.close(root);
+        assert!(
+            listed
+                .iter()
+                .all(|(_, attributes)| attributes & FILE_ATTRIBUTE_HIDDEN != 0),
+            "{listed:?}"
+        );
+
+        // Renamed to another name, the file shows again: nothing was stored.
+        let (context, _, _) = fs.open(&w("\\.DS_Store"), false, false).unwrap();
+        fs.rename(&w("\\.DS_Store"), &w("\\visible"), false)
+            .unwrap();
+        assert_eq!(attributes(&fs, context), FILE_ATTRIBUTE_NORMAL);
+        fs.close(context);
+        assert_eq!(
+            fs.attributes_by_name(&w("\\visible")).unwrap(),
+            FILE_ATTRIBUTE_NORMAL
+        );
     }
     #[test]
     fn allocation_requests_reserve_without_extending_and_last_cleanup_releases_the_tail() {

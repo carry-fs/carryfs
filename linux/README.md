@@ -55,22 +55,22 @@ driver explicitly with `-i`, which skips the helper. The driver requires 4 KiB
 kernel pages and rejects `sync` and `dirsync` mounts because namespace changes
 do not yet publish synchronously. It accepts `uid=` and `gid=`, defaulting to the
 mounting user, as vfat and exfat do; files report mode 644, directories 755.
-`ro` mounts read-only and never writes, not even root mirroring.
+`ro` mounts read-only and never writes, not even root mirroring. A volume
+CarryFS 0.1.0 formatted mounts only with `ro` until `carryfs-fuse upgrade`
+runs on it.
 
 ## Allocation and unnamed files
 
 The driver implements `fallocate` allocation, `FALLOC_FL_KEEP_SIZE`, and
 `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`. Other allocation modes return
-`EOPNOTSUPP`. Reservations use unwritten extents behind root feature bit 1;
-older adapters reject a volume once this feature is published.
+`EOPNOTSUPP`. Reservations use unwritten extents.
 
 `O_TMPFILE` creates a pinned orphan without a directory entry. `linkat` may
 publish it under one name, unless it was opened with `O_EXCL`. Last close
 reclaims an unnamed file.
 
 `link(2)` gives a file or symlink up to 65,535 names; directories fail with
-`EPERM`. The first link of a named file sets root feature bit 2 in
-its own transaction. `tests/hardlinks.py` checks link counts, renames between
+`EPERM`. `tests/hardlinks.py` checks link counts, renames between
 names of one file, and removal under an open descriptor, on this driver or a
 Linux FUSE mount.
 
@@ -119,7 +119,9 @@ cc -D_GNU_SOURCE -O2 build/fstests/src/log-writes/replay-log.c \
 The VM also runs `tests/faults.py`, which uses device-mapper to fail metadata,
 root A, and root B writes separately. It checks the failed publication's root
 generations, repeated fsync errors after device recovery, and successful
-reopen. These cases do not inject flush-only errors or simulate torn writes.
+reopen. A dm-flakey device that fails only writes also fails a truncate's tail
+rewrite, so a later writeback must keep the stored size (fstests generic/476).
+These cases do not inject flush-only errors or simulate torn writes.
 
 Run `python3 linux/tests/flush.py` from the repository root to test flush-only
 errors. It boots a separate VM with three QEMU blkdebug devices that fail the
@@ -377,8 +379,7 @@ volumes. These remaining differences produce images the userspace checker accept
 - **Reclamation batches are larger.** Up to 64 records and 65,536 blocks per
   commit, above FORMAT.md's initial 1,024-block budget.
 - **Unstored attributes.** Access times are not stored. Changes to the
-  owner fail with `EPERM`, as do mode changes on a volume without
-  `carryfs upgrade`. Setuid, setgid and sticky bits are dropped. The volume
+  owner fail with `EPERM`. Setuid, setgid and sticky bits are dropped. The volume
   label is not exposed.
 - **Cgroup I/O accounting.** Writeback does not preserve cgroup ownership
   across writers. fstests generic/563 exposes this limit.

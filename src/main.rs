@@ -25,10 +25,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => None,
     };
     match args.as_slice() {
-        [command, path, bytes] if command == "mkfs" => mkfs(path, bytes, false)?,
-        [command, flag, path, bytes] if command == "mkfs" && flag == "--attributes" => {
-            mkfs(path, bytes, true)?
-        }
+        [command, path, bytes] if command == "mkfs" => mkfs(path, bytes)?,
         [command, path] if command == "dump" => {
             let device = cli::open_read_only(Path::new(path), device_bytes)?;
             let mut volume = Volume::open(device)?;
@@ -65,29 +62,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cli::get(Path::new(image), device_bytes, source, Path::new(destination))?;
         }
         _ => return Err(
-            "usage: carryfs fsck [OPTIONS] IMAGE | carryfs mkfs [--attributes] NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no] | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
+            "usage: carryfs fsck [OPTIONS] IMAGE | carryfs mkfs NEW_IMAGE BYTE_COUNT | carryfs dump IMAGE | carryfs check IMAGE | carryfs scrub IMAGE | carryfs upgrade IMAGE | carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no] | carryfs put IMAGE HOST_SOURCE /DESTINATION | carryfs get IMAGE /SOURCE HOST_DESTINATION; dump, check, scrub and get accept --bytes N before IMAGE to read a raw device of N bytes"
                 .into(),
         ),
     }
     Ok(())
 }
 
-/// Create an image; with `attributes`, one that stores modes and the hidden
-/// attribute from the start.
-fn mkfs(
-    path: &OsString,
-    bytes: &OsString,
-    attributes: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn mkfs(path: &OsString, bytes: &OsString) -> Result<(), Box<dyn std::error::Error>> {
     let bytes: u64 = bytes
         .to_str()
         .ok_or("image size must be a byte count")?
         .parse()?;
     let device = ImageDevice::create_new(Path::new(path), bytes)?;
     let mut volume = Volume::format(device)?;
-    if attributes {
-        volume.upgrade()?;
-    }
     let info = volume.info()?;
     volume.eject()?;
     println!(

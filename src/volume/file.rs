@@ -1188,7 +1188,6 @@ impl<D: BlockDevice> Volume<D> {
         if self.attributes(object)?.kind != ObjectKind::File {
             return Err(Error::WrongType);
         }
-        self.enable_preallocation()?;
         let now = Timestamp::now()?;
         let mut hint = self.data_hint;
         self.edit(|transaction| {

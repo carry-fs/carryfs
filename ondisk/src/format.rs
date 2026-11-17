@@ -9,9 +9,14 @@ use super::error::{Error, Result};
 /// Allocation unit and metadata page size.
 pub const BLOCK_BYTES: usize = 4096;
 
-/// Format revision of roots and every page (FORMAT.md). Any other revision is
-/// rejected as unsupported.
-pub const REVISION: u16 = 1;
+/// Format revision this implementation writes (FORMAT.md). Inodes may record
+/// a mode and attributes, extents may be unwritten, and files may have more
+/// than one name.
+pub const REVISION: u16 = 2;
+/// Revision CarryFS 0.1.0 wrote, without those three. Its roots open read-only
+/// until upgraded, and its pages stay valid under a revision 2 root. Any other
+/// revision is rejected as unsupported.
+pub const LEGACY_REVISION: u16 = 1;
 /// Magic bytes at the start of each root.
 pub const ROOT_MAGIC: &[u8; 8] = b"CFSXROOT";
 const PAGE_MAGIC: &[u8; 8] = b"CFSXPAGE";
@@ -40,16 +45,8 @@ pub const MAINTENANCE_RESERVE: u64 = 16_384;
 /// any adapter reads on all of them.
 pub const MAX_SYMLINK_TARGET: usize = 1_023;
 
-/// Root feature bit 0: inodes may record a mode and attributes.
-pub const FEATURE_ATTRIBUTES: u64 = 1;
-/// Root feature bit 1: extent flags may record storage that reads as zeros until first written.
-pub const FEATURE_PREALLOCATION: u64 = 2;
-/// Root feature bit 2: a regular file or symlink may have more than one directory entry.
-pub const FEATURE_LINKS: u64 = 4;
 /// This extent owns blocks whose device contents are not file data.
 pub const EXTENT_UNWRITTEN: u32 = 1;
-/// Feature bits understood by this implementation.
-pub const KNOWN_FEATURES: u64 = FEATURE_ATTRIBUTES | FEATURE_PREALLOCATION | FEATURE_LINKS;
 
 /// Inode offset of extra links: a file's or symlink's entries beyond the first.
 pub const INODE_EXTRA_LINKS: usize = 88;
@@ -102,8 +99,8 @@ pub struct Root {
     pub label: Option<Label>,
     /// Volume identity, changed on every format.
     pub uuid: [u8; 16],
-    /// Feature bits, a subset of `KNOWN_FEATURES`.
-    pub features: u64,
+    /// `REVISION`, or `LEGACY_REVISION` for a volume not yet upgraded.
+    pub revision: u16,
     /// Publication generation.
     pub generation: u64,
     /// Device length in blocks.
@@ -550,8 +547,8 @@ fn validate_root_fields(root: &Root, slot: u64, blocks: u64, mode: Validation) -
     validate_blocks(blocks, mode)?;
     validate_root_slot(slot, blocks, mode)?;
     validate_uuid(&root.uuid, mode)?;
-    if root.features & !KNOWN_FEATURES != 0 {
-        return Err(violation(mode, "unknown root feature bits"));
+    if root.revision != REVISION && root.revision != LEGACY_REVISION {
+        return Err(violation(mode, "unsupported root revision"));
     }
     if root.generation == 0 || root.blocks != blocks {
         return Err(violation(mode, "invalid root generation or geometry"));
@@ -610,9 +607,11 @@ impl Root {
             return Err(Error::Corrupt("root magic"));
         }
 
-        if read_u32_le(bytes, 8, "root revision")? != u32::from(REVISION) {
-            return Err(Error::UnsupportedFormat);
-        }
+        let revision = read_u32_le(bytes, 8, "root revision")?;
+        let revision = match u16::try_from(revision) {
+            Ok(revision @ (REVISION | LEGACY_REVISION)) => revision,
+            _ => return Err(Error::UnsupportedFormat),
+        };
         if read_u32_le(bytes, 12, "root record bytes")? != BLOCK_BYTES as u32
             || read_u32_le(bytes, 16, "root allocation bytes")? != ALLOCATION_BYTES
             || read_u32_le(bytes, 20, "root checksum-unit bytes")? != (UNIT_BYTES as u32)
@@ -653,7 +652,7 @@ impl Root {
         let maintenance_reserve = read_u64_le(bytes, 144, "root maintenance reserve")?;
         let next_job = read_u64_le(bytes, 152, "root next job")?;
 
-        if feature_bits & !KNOWN_FEATURES != 0 || filename_profile != 2 || state_flags != 0 {
+        if feature_bits != 0 || filename_profile != 2 || state_flags != 0 {
             return Err(Error::UnsupportedFormat);
         }
         if self_block != slot || device_blocks != blocks {
@@ -667,7 +666,7 @@ impl Root {
         let root = Root {
             label,
             uuid,
-            features: feature_bits,
+            revision,
             generation,
             blocks: device_blocks,
             catalog,
@@ -692,7 +691,7 @@ impl Root {
 
         page.fill(0);
         page[0..8].copy_from_slice(ROOT_MAGIC);
-        put_u32_le(page, 8, u32::from(REVISION));
+        put_u32_le(page, 8, u32::from(self.revision));
         put_u32_le(page, 12, BLOCK_BYTES as u32);
         put_u32_le(page, 16, ALLOCATION_BYTES);
         put_u32_le(page, 20, UNIT_BYTES as u32);
@@ -705,7 +704,6 @@ impl Root {
         put_ref(page, 96, self.cleanup);
         put_u64_le(page, 112, self.next_object);
         put_u64_le(page, 120, self.free_blocks);
-        put_u64_le(page, 128, self.features);
         put_u32_le(page, 136, 2);
         put_u32_le(page, 140, 0);
         put_u64_le(page, 144, MAINTENANCE_RESERVE);
@@ -1128,15 +1126,13 @@ fn validate_cleanup_key_value(
 }
 
 /// The data blocks one leaf record accounts for, after the checks
-/// `encode_records` makes of each record in a leaf. `features` are the root's:
-/// without `FEATURE_ATTRIBUTES` an inode must not record a mode or attributes.
+/// `encode_records` makes of each record in a leaf.
 pub fn leaf_record_blocks(
     kind: TreeKind,
     key: &[u8],
     value: &[u8],
     blocks: u64,
     generation: u64,
-    features: u64,
 ) -> Result<u64> {
     if !(1..=1024).contains(&key.len()) {
         return Err(Error::InvalidInput("invalid record key length"));
@@ -1144,41 +1140,7 @@ pub fn leaf_record_blocks(
     if 4 + key.len() + value.len() > MAX_RECORD_BYTES {
         return Err(Error::InvalidInput("record is too large"));
     }
-    let data = validate_leaf_record(kind, key, value, blocks, generation, Validation::Input)?;
-    if kind == TreeKind::Catalog {
-        validate_inode_features(key, value, features, Validation::Input)?;
-    }
-    Ok(data)
-}
-
-/// Check fields gated by root features: inode attributes, extra links and
-/// unwritten extent flags. `key` and `value` are an otherwise validated
-/// catalog record.
-pub fn validate_inode_features(
-    key: &[u8],
-    value: &[u8],
-    features: u64,
-    mode: Validation,
-) -> Result<()> {
-    if key.get(8) == Some(&3)
-        && features & FEATURE_PREALLOCATION == 0
-        && value.get(12..16).is_some_and(|flags| !all_zero(flags))
-    {
-        return Err(violation(mode, "unwritten extent without the root feature"));
-    }
-    if key.get(8) == Some(&1)
-        && features & FEATURE_ATTRIBUTES == 0
-        && !all_zero(&value[INODE_MODE..INODE_ATTRIBUTES + 1])
-    {
-        return Err(violation(
-            mode,
-            "inode records a mode or attributes without the root feature",
-        ));
-    }
-    if key.get(8) == Some(&1) && features & FEATURE_LINKS == 0 && extra_links(value) != 0 {
-        return Err(violation(mode, "extra links without the root feature"));
-    }
-    Ok(())
+    validate_leaf_record(kind, key, value, blocks, generation, Validation::Input)
 }
 
 fn validate_leaf_record(
@@ -1424,7 +1386,10 @@ fn validate_page_header(
     if bytes[0..8] != *PAGE_MAGIC {
         return Err(Error::Corrupt("page magic"));
     }
-    if read_u16_le(bytes, 8, "page revision")? != REVISION {
+    if !matches!(
+        read_u16_le(bytes, 8, "page revision")?,
+        REVISION | LEGACY_REVISION
+    ) {
         return Err(Error::UnsupportedFormat);
     }
     if read_u16_le(bytes, 10, "page flags")? != 0 {

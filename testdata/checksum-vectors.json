@@ -1,7 +1,8 @@
 {
-  "revision": 1,
+  "revision": 2,
   "root_revisions": [
-    1
+    1,
+    2
   ],
   "uuid_hex": "00112233445566778899aabbccddeeff",
   "fixtures": [
@@ -9,33 +10,40 @@
       "name": "root-a",
       "file": "vectors/root-a.bin",
       "crc_offset": 4092,
-      "crc32c": "0707543f",
-      "sha256": "d6986b3967c34056549088644cecedf9e674c76a250c9a0ee00f5170767df9c5"
+      "crc32c": "85e28657",
+      "sha256": "165e5adfa51ae0a41a3ca529d8d4f309cc2a5810bd699ca9e1698e1cf6338cb4"
     },
     {
       "name": "root-b",
       "file": "vectors/root-b.bin",
       "crc_offset": 4092,
-      "crc32c": "1e533baa",
-      "sha256": "ab3270d0b13ff5e81008bc765f5cbecbd0d440465eec059bc88cdeb7caf6ab85"
+      "crc32c": "9cb6e9c2",
+      "sha256": "725eb441ca46c1352c4c24ad8f9033dec94ed5c54dde304ec186b09b09415ffa"
     },
     {
       "name": "labeled-root-a",
       "file": "vectors/labeled-root-a.bin",
       "crc_offset": 4092,
-      "crc32c": "50860664",
-      "sha256": "51de32966422359385d1e4bf206b90b3aec329c8aaca497c318f9d55184822ac"
+      "crc32c": "d263d40c",
+      "sha256": "bc9c8a3b0e5a43cd384a288e19706cedf3d237d171ef83e665e21580627c6e3e"
     },
     {
-      "name": "attributes-root-a",
-      "file": "vectors/attributes-root-a.bin",
+      "name": "legacy-root-a",
+      "file": "vectors/legacy-root-a.bin",
       "crc_offset": 4092,
-      "crc32c": "adb42b23",
-      "sha256": "9cfe2390adc6db46a5f47a8a5b59016591e5447bdedea95ed955b883804694f5"
+      "crc32c": "0707543f",
+      "sha256": "d6986b3967c34056549088644cecedf9e674c76a250c9a0ee00f5170767df9c5"
     },
     {
       "name": "empty-catalog-leaf",
       "file": "vectors/empty-catalog-leaf.bin",
+      "crc_offset": 64,
+      "crc32c": "95dee0bf",
+      "sha256": "6f0eb210a5a484eb5613176d2c61d16662ac969caa7b811540865490727b5688"
+    },
+    {
+      "name": "legacy-catalog-leaf",
+      "file": "vectors/legacy-catalog-leaf.bin",
       "crc_offset": 64,
       "crc32c": "173b32d7",
       "sha256": "616e48e08df87a0209724c7bd9549020e9bbded09b0afe717f823ae541176b85"
@@ -44,43 +52,43 @@
       "name": "extent-catalog-leaf",
       "file": "vectors/extent-catalog-leaf.bin",
       "crc_offset": 64,
-      "crc32c": "74406021",
-      "sha256": "899ff0d25a5a9305830210978586483c16338bfccc45afefb13636d5870bc604"
+      "crc32c": "f6a5b249",
+      "sha256": "e62b629eb331558dbcaf20f894411cde3bd07fb891fe26253d0c39a9351c9725"
     },
     {
       "name": "checksum-catalog-leaf",
       "file": "vectors/checksum-catalog-leaf.bin",
       "crc_offset": 64,
-      "crc32c": "0df7ded5",
-      "sha256": "7f7544ee238d689218ffc5c861b2a84fe3ee850651298e149458c34f6fb57a0b"
+      "crc32c": "8f120cbd",
+      "sha256": "f1a232f80677ee3aa1cbd9214435d8122e13a76ef1f75b2e866b1e1db872579b"
     },
     {
       "name": "symlink-catalog-leaf",
       "file": "vectors/symlink-catalog-leaf.bin",
       "crc_offset": 64,
-      "crc32c": "2fc2bd93",
-      "sha256": "dbbc1d09879b6482579c48e323359b8da840758054b7b3e511be7cf7f8e22f00"
+      "crc32c": "ad276ffb",
+      "sha256": "6f2a173eb7dfdd0e446069bdaaef05fc527e8e2aa2648bf9c016bcb412ecbe59"
     },
     {
       "name": "attributes-catalog-leaf",
       "file": "vectors/attributes-catalog-leaf.bin",
       "crc_offset": 64,
-      "crc32c": "33f41c05",
-      "sha256": "4e86bd0e948db9a1d77092892f73e124fac6d7a6fbd5f1fd1d744385b2d6cafb"
+      "crc32c": "b111ce6d",
+      "sha256": "d3cf1627bb69bced58b581197b24077d8ba8e9c4cd90c5d8f87b9a1caf0a635b"
     },
     {
       "name": "link-catalog-leaf",
       "file": "vectors/link-catalog-leaf.bin",
       "crc_offset": 64,
-      "crc32c": "0200ca24",
-      "sha256": "a8f75abb508f01addbcfa2fac4a96617a8fd49c27d177b21d19745a77d92627a"
+      "crc32c": "80e5184c",
+      "sha256": "379277550d551af8dce6e2db20710bcccbd9251450997d31a6ba7fdead04ec6b"
     },
     {
       "name": "workspace-leaf",
       "file": "vectors/workspace-leaf.bin",
       "crc_offset": 64,
-      "crc32c": "00f71e1d",
-      "sha256": "ca467cb405753c3cbfa52ee37a148b2dc21d2f5be393e97732575bc0062151b6"
+      "crc32c": "8212cc75",
+      "sha256": "0274f3fa7f20a09cf682d31857a54a1ba6e5f3b84f8aafe1d9d090e030321ce8"
     }
   ],
   "data_units": [

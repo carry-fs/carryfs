@@ -168,10 +168,7 @@ pub(crate) fn reserve(
     for unit in units {
         if state.reservations.holds(object, *unit) { continue; }
         let first = *unit * UNIT_BLOCKS;
-        let features = state.txn.as_ref().map_or(state.root.features, |txn| txn.features);
-        let reserved = if features & crate::ondisk::format::FEATURE_PREALLOCATION != 0 {
-            write::mapped_blocks(sb, state, object, first, first + UNIT_BLOCKS)?
-        } else { 0 };
+        let reserved = write::mapped_blocks(sb, state, object, first, first + UNIT_BLOCKS)?;
         let blocks = UNIT_BLOCKS - reserved;
         wanted.push((*unit, blocks), GFP_KERNEL)?;
         needed += blocks;

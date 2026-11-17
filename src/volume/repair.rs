@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::format::{
     BLOCK_BYTES, EXTENT_UNWRITTEN, Page, Root, TreeKind, TreeRef, UNIT_BYTES, checksum_slot,
     compact_group, decode_page, encode_node, expand_group, leaf_data_blocks, reserved_group_blocks,
-    set_checksum_slot, validate_inode_features,
+    set_checksum_slot,
 };
 use crate::tree::{Record, tree_ref, u64_be, u64_le};
 use crate::{BlockDevice, Error, Geometry, MountMode, Name, Result};
@@ -143,9 +143,6 @@ impl Scan {
             }
             if decoded.level == 0 {
                 for (key, value) in decoded.records {
-                    if kind == TreeKind::Catalog {
-                        validate_inode_features(key, value, root.features)?;
-                    }
                     self.records.insert(key.to_vec(), value.to_vec());
                 }
             } else {
@@ -615,9 +612,6 @@ impl<D: BlockDevice> Repair<D> {
             Some(label) => Volume::format_with_label(destination, label)?,
             None => Volume::format(destination)?,
         };
-        if source.stores_attributes() {
-            target.upgrade()?;
-        }
         let mut summary = ExtractionSummary {
             complete: !self.plan.data_loss,
             ..Default::default()
@@ -915,7 +909,6 @@ fn restore_image_attributes<D: BlockDevice>(
     object: ObjectId,
     attributes: Attributes,
 ) -> Result<()> {
-    let stores_attributes = volume.stores_attributes();
     volume.edit(|transaction| {
         let key = inode_key(object.0);
         let mut inode = transaction
@@ -926,16 +919,14 @@ fn restore_image_attributes<D: BlockDevice>(
         inode.modification = attributes.modification;
         inode.metadata_change = attributes.metadata_change;
         inode.directory_link = attributes.directory_link;
-        if stores_attributes {
-            if inode.kind != ObjectKind::Symlink {
-                inode.mode = attributes.mode.encode();
-            }
-            inode.attributes = if attributes.hidden {
-                crate::format::ATTRIBUTE_HIDDEN
-            } else {
-                0
-            };
+        if inode.kind != ObjectKind::Symlink {
+            inode.mode = attributes.mode.encode();
         }
+        inode.attributes = if attributes.hidden {
+            crate::format::ATTRIBUTE_HIDDEN
+        } else {
+            0
+        };
         transaction.catalog = transaction.forest.put(
             transaction.catalog.clone(),
             TreeKind::Catalog,

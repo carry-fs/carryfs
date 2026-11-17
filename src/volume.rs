@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::format::{
-    BLOCK_BYTES, FEATURE_ATTRIBUTES, FEATURE_PREALLOCATION, Page, ROOT_MAGIC, Root, TreeKind,
-    TreeRef, decode_page, encode_leaf,
+    BLOCK_BYTES, LEGACY_REVISION, Page, REVISION, ROOT_MAGIC, Root, TreeKind, TreeRef, decode_page,
+    encode_leaf,
 };
 use crate::{BlockDevice, Error, Geometry, MountMode, Result};
 
@@ -59,7 +59,8 @@ impl VolumeLabel {
 /// Root-record information. This is not a structural check of the filesystem.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VolumeInfo {
-    /// Format revision of the roots, always 1.
+    /// Format revision of the roots: 2, or 1 until a volume CarryFS 0.1.0
+    /// formatted is upgraded.
     pub revision: u32,
     /// Persistent user-chosen label, absent on unnamed volumes.
     pub label: Option<VolumeLabel>,
@@ -497,12 +498,19 @@ impl<D: BlockDevice> Volume<D> {
         uuid[6] = (uuid[6] & 0x0f) | 0x40;
         uuid[8] = (uuid[8] & 0x3f) | 0x80;
         let now = Timestamp::now()?;
-        Self::format_labeled_at(device, uuid, now.seconds, now.nanos, label)
+        Self::format_labeled_at(device, uuid, now.seconds, now.nanos, label, REVISION)
     }
 
     #[cfg(any(test, feature = "fuzzing"))]
     fn format_at(device: D, uuid: [u8; 16], seconds: i64, nanos: u32) -> Result<Self> {
-        Self::format_labeled_at(device, uuid, seconds, nanos, None)
+        Self::format_labeled_at(device, uuid, seconds, nanos, None, REVISION)
+    }
+
+    /// A volume with a CarryFS 0.1.0 root, to test `upgrade`. Its pages are
+    /// revision 2, which a revision 2 reader accepts under either root.
+    #[cfg(test)]
+    fn format_legacy_at(device: D, uuid: [u8; 16], seconds: i64, nanos: u32) -> Result<Self> {
+        Self::format_labeled_at(device, uuid, seconds, nanos, None, LEGACY_REVISION)
     }
 
     fn format_labeled_at(
@@ -511,6 +519,7 @@ impl<D: BlockDevice> Volume<D> {
         seconds: i64,
         nanos: u32,
         label: Option<VolumeLabel>,
+        revision: u16,
     ) -> Result<Self> {
         if device.mode() != MountMode::ReadWrite {
             return Err(Error::ReadOnly);
@@ -528,6 +537,7 @@ impl<D: BlockDevice> Volume<D> {
         }
         let (mut root, writes) = bootstrap(geometry, uuid, seconds, nanos)?;
         root.label = label;
+        root.revision = revision;
         let mount = next_mount();
         let mut volume = Self {
             device: Some(device),
@@ -552,7 +562,12 @@ impl<D: BlockDevice> Volume<D> {
     /// Select the newest valid root and validate its three tree-root pages.
     /// Writable open checks the complete forest, then finishes interrupted mirroring.
     /// Tree damage under the selected root never causes fallback to an older root.
-    pub fn open(mut device: D) -> Result<Self> {
+    /// A volume CarryFS 0.1.0 formatted opens writable only through `upgrade`.
+    pub fn open(device: D) -> Result<Self> {
+        Self::open_revision(device, false)
+    }
+
+    fn open_revision(mut device: D, legacy_writable: bool) -> Result<Self> {
         let geometry = device.geometry()?;
         geometry.validate()?;
         let root_b = geometry.blocks() - 257;
@@ -563,6 +578,12 @@ impl<D: BlockDevice> Volume<D> {
         let a = supported_root(Root::decode(&a.0[..], ROOT_A, geometry))?;
         let b = supported_root(Root::decode(&b.0[..], root_b, geometry))?;
         let selected = select_root(a.as_ref(), b.as_ref())?.clone();
+        if device.mode() == MountMode::ReadWrite
+            && selected.revision == LEGACY_REVISION
+            && !legacy_writable
+        {
+            return Err(Error::NeedsUpgrade);
+        }
         validate_root_pages(&mut device, geometry, &selected)?;
         let mut cache = crate::tree::Cache::default();
         if device.mode() == MountMode::ReadWrite {
@@ -660,7 +681,7 @@ impl<D: BlockDevice> Volume<D> {
             .as_ref()
             .ok_or(Error::InvalidInput("volume is not published"))?;
         Ok(VolumeInfo {
-            revision: u32::from(crate::format::REVISION),
+            revision: u32::from(root.revision),
             label: root.label.clone(),
             uuid: root.uuid,
             generation: root.generation,
@@ -691,67 +712,28 @@ impl<D: BlockDevice> Volume<D> {
         self.sync_publication()
     }
 
-    /// Whether this volume stores modes and the hidden attribute. Without
-    /// it, every object reads with its type's default mode, not hidden, and
-    /// a change to either is refused with `InvalidInput`.
-    pub fn stores_attributes(&self) -> bool {
-        self.root
-            .as_ref()
-            .is_some_and(|root| root.features & FEATURE_ATTRIBUTES != 0)
-    }
-
-    /// Let this volume store modes and the hidden attribute. Publishes one
-    /// root and rewrites no inode. Returns `false` when the volume already
-    /// had the feature. Adapters older than this feature refuse to mount the
-    /// volume afterwards.
-    pub fn upgrade(&mut self) -> Result<bool> {
-        self.writable()?;
-        if self.stores_attributes() {
-            return Ok(false);
-        }
-        self.seal_batch()?;
-        let mut next = self
+    /// Let a volume CarryFS 0.1.0 formatted take writes. Publishes one
+    /// revision 2 root and rewrites no page. Returns `false` when the volume
+    /// was already at revision 2. CarryFS 0.1.0 refuses the volume afterwards.
+    pub fn upgrade(device: D) -> Result<bool> {
+        let mut volume = Self::open_revision(device, true)?;
+        volume.writable()?;
+        let mut next = volume
             .root
             .clone()
             .ok_or(Error::InvalidInput("volume is not published"))?;
-        next.generation = next
-            .generation
-            .checked_add(1)
-            .ok_or(Error::InvalidInput("generation exhausted"))?;
-        next.features |= FEATURE_ATTRIBUTES;
-        self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
-        self.sync_publication()?;
-        Ok(true)
-    }
-
-    /// Whether a file on this volume has ever had a second directory entry.
-    /// An accepted link still in the open batch counts.
-    pub fn supports_links(&self) -> bool {
-        let batch = self.batch.as_ref().map_or(0, |batch| batch.features());
-        let root = self.root.as_ref().map_or(0, |root| root.features);
-        (root | batch) & crate::format::FEATURE_LINKS != 0
-    }
-
-    /// Whether unwritten allocations are enabled on this volume.
-    pub fn supports_preallocation(&self) -> bool {
-        self.root
-            .as_ref()
-            .is_some_and(|root| root.features & FEATURE_PREALLOCATION != 0)
-    }
-
-    /// Enable unwritten allocations. Older adapters refuse this volume afterwards.
-    /// A successful preallocation request opts the volume into this feature.
-    pub fn enable_preallocation(&mut self) -> Result<()> {
-        self.writable()?;
-        if self.supports_preallocation() {
-            return Ok(());
+        let changed = next.revision != REVISION;
+        if changed {
+            next.revision = REVISION;
+            next.generation = next
+                .generation
+                .checked_add(1)
+                .ok_or(Error::InvalidInput("generation exhausted"))?;
+            volume.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
+            volume.sync_publication()?;
         }
-        self.seal_batch()?;
-        let mut next = self.root.clone().ok_or(Error::Ejected)?;
-        next.generation = next.generation.checked_add(1).ok_or(Error::LimitExceeded)?;
-        next.features |= FEATURE_PREALLOCATION;
-        self.publish(next, Vec::new(), &[], None, Vec::new(), 0)?;
-        self.sync_publication()
+        volume.eject()?;
+        Ok(changed)
     }
 
     /// Report capacity for adapter statistics. Available space excludes the
@@ -1336,7 +1318,7 @@ fn bootstrap(
     let root = Root {
         label: None,
         uuid,
-        features: 0,
+        revision: REVISION,
         generation: 1,
         blocks: geometry.blocks(),
         catalog: reference(512),

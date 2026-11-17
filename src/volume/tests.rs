@@ -13,11 +13,19 @@ mod labels;
 mod links;
 mod salvage;
 mod symlinks;
+mod upgrade;
 
 fn formatted() -> BTreeMap<u64, Page> {
     let device = FaultDevice::new(BTreeMap::new(), MountMode::ReadWrite);
     let media = device.media.clone();
     Volume::format_at(device, UUID, 1, 0).unwrap();
+    media.borrow().durable.clone()
+}
+
+fn formatted_legacy() -> BTreeMap<u64, Page> {
+    let device = FaultDevice::new(BTreeMap::new(), MountMode::ReadWrite);
+    let media = device.media.clone();
+    Volume::format_legacy_at(device, UUID, 1, 0).unwrap();
     media.borrow().durable.clone()
 }
 
@@ -3500,9 +3508,11 @@ fn cleanup_query_matches_sync_and_issues_no_output() {
 #[test]
 fn regression_maximum_write_charges_288_blocks_before_output() {
     const CHARGE: u64 = 288;
+    // The write retires one block, so it may borrow one from the reserve.
+    const BORROWED: u64 = 1;
     const OFFSET: u64 = 3 * 65_536 - 1;
     let bytes = vec![6; 1 << 20];
-    for remaining in [CHARGE - 1, CHARGE] {
+    for remaining in [CHARGE - BORROWED - 1, CHARGE - BORROWED] {
         let mut volume = opened();
         let file = volume.create_file(ROOT, name("unaligned")).unwrap();
         volume.write(&file, 0, b"a").unwrap();
@@ -3525,7 +3535,7 @@ fn regression_maximum_write_charges_288_blocks_before_output() {
         let media = volume.device.as_ref().unwrap().media.clone();
         media.borrow_mut().events.clear();
         let result = volume.write(&file, OFFSET, &bytes);
-        if remaining < CHARGE {
+        if remaining < CHARGE - BORROWED {
             assert!(matches!(result, Err(Error::NoSpace)));
             assert_eq!(volume.info().unwrap(), info);
             assert_eq!(volume.handle_attributes(&file).unwrap(), attributes);
@@ -3548,7 +3558,7 @@ fn regression_maximum_write_charges_288_blocks_before_output() {
         } else {
             assert_eq!(result.unwrap(), bytes.len());
             assert_eq!(before - raw_free(&mut volume), CHARGE);
-            assert_eq!(raw_free(&mut volume), crate::allocation::RESERVE);
+            assert_eq!(raw_free(&mut volume), crate::allocation::RESERVE - BORROWED);
             let mut expected = vec![0; OFFSET as usize + bytes.len()];
             expected[0] = b'a';
             expected[OFFSET as usize..].copy_from_slice(&bytes);

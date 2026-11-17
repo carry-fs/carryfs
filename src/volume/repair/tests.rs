@@ -612,7 +612,6 @@ fn new_image_rebuilds_a_blocked_source_and_preserves_metadata_and_sparse_files()
     use crate::{AttributeChange, Mode, Timestamp, VolumeLabel};
     let (image, _, bytes) = fixture();
     let mut volume = Volume::open(FaultDevice::new(image, MountMode::ReadWrite)).unwrap();
-    volume.upgrade().unwrap();
     volume
         .set_label(VolumeLabel::parse("Recovered archive").unwrap())
         .unwrap();

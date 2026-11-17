@@ -88,6 +88,23 @@ struct Integrity {
     plan: Option<ScanResult>,
     scrub: Option<ScanResult>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Check {
+    Structure,
+    Data,
+}
+/// A check of the open volume that runs beside other work; a task that needs
+/// the volume stops it.
+struct Background {
+    check: Check,
+    key: VolumeKey,
+    control: Arc<operation::Control>,
+    receiver: Receiver<ScanResult>,
+    started: Instant,
+}
+/// How long nothing else must run before the file data check starts by itself.
+const QUIET: Duration = Duration::from_secs(30);
+
 /// A source whose metadata is too damaged to open.
 struct Damaged {
     source: Source,
@@ -148,6 +165,9 @@ struct State {
     error: bool,
     sheet: Option<Sheet>,
     erase_name: TextEdit,
+    background: Option<Background>,
+    /// When the last task started or finished.
+    quiet_since: Instant,
 }
 impl State {
     fn empty() -> Self {
@@ -177,6 +197,8 @@ impl State {
             error: false,
             sheet: None,
             erase_name: TextEdit::new(""),
+            background: None,
+            quiet_since: Instant::now(),
         }
     }
     fn target_name(&self) -> String {
@@ -226,6 +248,7 @@ impl State {
                     {
                         Some(fresh) => self.device = Some(fresh.clone()),
                         None => {
+                            self.stop_background();
                             self.device = None;
                             self.browser = None;
                             self.damaged = None;
@@ -320,6 +343,11 @@ impl State {
         if self.pending.is_some() {
             return;
         }
+        // Discovery and installs leave the volume alone; other tasks may need it.
+        if !matches!(name, "Discover disks" | "Install CarryFS") {
+            self.stop_background();
+        }
+        self.quiet_since = Instant::now();
         let cancel = Arc::new(operation::Control::default());
         self.cancel = cancellable.then(|| cancel.clone());
         self.task = name.into();
@@ -340,6 +368,89 @@ impl State {
             let _ = sender.send(job(cancel).map_err(|e| e.to_string()));
         });
         tx.wake_after(Duration::from_millis(20));
+    }
+    /// Run `check` on the open volume beside other work.
+    fn check(&mut self, check: Check, tx: &mut Tx) {
+        let Some(browser) = self.browser.clone() else {
+            return;
+        };
+        self.stop_background();
+        let key = (browser.info.uuid, browser.info.generation);
+        let control = Arc::new(operation::Control::default());
+        let job = control.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = match check {
+                Check::Structure => operation::fsck(browser.source(), Fsck::Plan, job),
+                Check::Data => operation::inspect(browser, true, job),
+            };
+            let _ = sender.send(ScanResult::new(result));
+        });
+        self.background = Some(Background {
+            check,
+            key,
+            control,
+            receiver,
+            started: Instant::now(),
+        });
+        tx.wake_after(Duration::from_millis(250));
+    }
+    fn stop_background(&mut self) {
+        if let Some(background) = self.background.take()
+            && let Err(error) = background.control.stop()
+        {
+            eprintln!("CarryFS Manager: stop background check: {error}");
+        }
+    }
+    fn finish_check(&mut self, background: Background, result: ScanResult) {
+        self.history.push(Record {
+            task: match background.check {
+                Check::Structure => "Check structure",
+                Check::Data => "Check file data",
+            }
+            .into(),
+            target: self.target_name(),
+            message: result.summary.lines().next().unwrap_or_default().to_owned(),
+            failed: !result.passed,
+            at: SystemTime::now(),
+        });
+        let state = self.integrity.entry(background.key).or_default();
+        match background.check {
+            Check::Structure => state.plan = Some(result),
+            Check::Data => state.scrub = Some(result),
+        }
+    }
+    /// Check the open volume unprompted: its structure at once, its file
+    /// data once nothing else has run for [`QUIET`], since that reads every
+    /// stored byte. Returns whether a check started.
+    fn schedule_checks(&mut self, tx: &mut Tx) -> bool {
+        if self.background.is_some() || self.pending.is_some() || self.sheet.is_some() {
+            return false;
+        }
+        let Some(browser) = &self.browser else {
+            return false;
+        };
+        // Never ask for the administrator password unprompted.
+        if browser.device.is_some() && !unlocked() {
+            return false;
+        }
+        let state = self
+            .integrity
+            .get(&(browser.info.uuid, browser.info.generation));
+        let Some(plan) = state.and_then(|i| i.plan.as_ref()) else {
+            self.check(Check::Structure, tx);
+            return true;
+        };
+        if !plan.passed || state.is_some_and(|i| i.scrub.is_some()) {
+            return false;
+        }
+        let waited = self.quiet_since.elapsed();
+        if waited < QUIET {
+            tx.wake_after(QUIET - waited);
+            return false;
+        }
+        self.check(Check::Data, tx);
+        true
     }
     /// Open `kind`'s sheet at its question.
     fn ask(&mut self, kind: SheetKind) {
@@ -621,6 +732,28 @@ impl Default for State {
     }
 }
 fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
+    let background = poll_background(s, tx);
+    let task = poll_task(s, tx);
+    let scheduled = s.schedule_checks(tx);
+    background || task || scheduled
+}
+fn poll_background(s: &mut State, tx: &mut Tx) -> bool {
+    let Some(background) = &s.background else {
+        return false;
+    };
+    match background.receiver.try_recv() {
+        Ok(result) => {
+            if let Some(background) = s.background.take() {
+                s.finish_check(background, result);
+            }
+        }
+        // Redraw for its progress.
+        Err(mpsc::TryRecvError::Empty) => tx.wake_after(Duration::from_millis(250)),
+        Err(mpsc::TryRecvError::Disconnected) => s.background = None,
+    }
+    true
+}
+fn poll_task(s: &mut State, tx: &mut Tx) -> bool {
     if s.pending.is_none() {
         if let Some(path) = s.startup_image.take() {
             s.open(path, tx);
@@ -640,6 +773,7 @@ fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
         Ok(result) => {
             s.pending = None;
             s.cancel = None;
+            s.quiet_since = Instant::now();
             s.apply(result);
             true
         }

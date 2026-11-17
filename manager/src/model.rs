@@ -99,6 +99,12 @@ impl Browser {
         })
     }
 
+    /// Bytes in use, metadata included: the most a scrub reads.
+    pub fn used_bytes(&self) -> u64 {
+        let free = self.info.free_blocks * u64::from(self.space.block_bytes);
+        self.info.byte_len.saturating_sub(free)
+    }
+
     pub fn source(&self) -> Source {
         Source {
             path: self.path.clone(),

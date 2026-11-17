@@ -116,6 +116,20 @@ fn finish(rt: &mut Runtime<State>) {
     assert!(!rt.state.error, "{}", rt.state.status);
 }
 
+/// Wait for the running background check to report.
+fn settle_checks(rt: &mut Runtime<State>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while rt.state.background.is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Background check timed out"
+        );
+        rt.frame(1.0 / 60.0);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    rt.frame(1.0 / 60.0);
+}
+
 /// Run First Aid from the toolbar and wait for its report.
 fn first_aid(rt: &mut Runtime<State>) {
     click(rt, "first-aid");
@@ -647,6 +661,7 @@ fn ui_upgrades_an_image_in_place_and_shows_stored_permissions() {
     let browser = Browser::open(fixture.image()).unwrap();
     rt.update(|s, _| s.apply(Ok(Update::Browser(Box::new(browser)))));
     rt.frame(0.01);
+    settle_checks(&mut rt);
     let before = rt.state.browser.as_ref().unwrap().info.clone();
     assert!(!rt.state.browser.as_ref().unwrap().attributes);
     // The format section sits below the fold of the Overview.
@@ -955,4 +970,87 @@ fn first_aid_on_an_unopened_volume_keeps_its_results() {
     assert!(health.plan.as_ref().is_some_and(|p| p.passed));
     assert!(health.scrub.as_ref().is_some_and(|p| p.passed));
     assert_eq!(rt.state.status, "First Aid found no problems.");
+}
+
+#[test]
+fn checks_run_by_themselves_structure_first_then_file_data_once_quiet() {
+    let fixture = Fixture::new();
+    let mut rt = runtime();
+    let browser = Browser::open(fixture.image()).unwrap();
+    let key = (browser.info.uuid, browser.info.generation);
+    rt.update(|s, _| s.apply(Ok(Update::Browser(Box::new(browser)))));
+    rt.frame(0.01);
+    assert_eq!(
+        rt.state.background.as_ref().map(|b| b.check),
+        Some(Check::Structure)
+    );
+    settle_checks(&mut rt);
+    assert!(rt.state.integrity[&key].plan.as_ref().unwrap().passed);
+    assert!(
+        rt.state.background.is_none(),
+        "File data waits for a quiet period"
+    );
+    rt.update(|s, _| s.quiet_since -= QUIET);
+    rt.frame(0.01);
+    assert_eq!(
+        rt.state.background.as_ref().map(|b| b.check),
+        Some(Check::Data)
+    );
+    settle_checks(&mut rt);
+    let scrub = rt.state.integrity[&key].scrub.as_ref().unwrap();
+    assert!(scrub.passed, "{}", scrub.summary);
+    assert_eq!(rt.state.history.last().unwrap().task, "Check file data");
+    rt.frame(0.01);
+    assert!(
+        rt.state.background.is_none(),
+        "Checked volumes aren't checked again"
+    );
+}
+
+#[test]
+fn a_task_on_the_volume_stops_a_background_check() {
+    let fixture = Fixture::new();
+    let mut rt = runtime();
+    let browser = Browser::open(fixture.image()).unwrap();
+    let key = (browser.info.uuid, browser.info.generation);
+    rt.update(|s, _| s.apply(Ok(Update::Browser(Box::new(browser)))));
+    rt.frame(0.01);
+    settle_checks(&mut rt);
+    rt.update(|s, tx| {
+        s.check(Check::Data, tx);
+        s.start("Discover disks", false, tx, |_| {
+            Ok(Update::Report("Done".into()))
+        });
+    });
+    assert!(
+        rt.state.background.is_some(),
+        "Discovery leaves the volume alone"
+    );
+    finish(&mut rt);
+    settle_checks(&mut rt);
+    rt.update(|s, tx| {
+        s.integrity.get_mut(&key).unwrap().scrub = None;
+        s.check(Check::Data, tx);
+        s.start("Read folder", false, tx, |_| {
+            Ok(Update::Report("Done".into()))
+        });
+    });
+    assert!(rt.state.background.is_none());
+    finish(&mut rt);
+    assert!(
+        rt.state.integrity[&key].scrub.is_none(),
+        "A stopped check reports nothing, and doesn't restart before the quiet period"
+    );
+}
+
+#[test]
+fn file_data_progress_estimates_the_time_left() {
+    let gib = 1 << 30;
+    assert_eq!(view::data_progress(0, gib, Duration::from_secs(5)).0, None);
+    let (value, line) = view::data_progress(gib / 4, gib, Duration::from_secs(60));
+    assert_eq!(value, Some(0.25));
+    assert_eq!(line, "256.0 MiB of 1.0 GiB · about 3 min left");
+    let (value, line) = view::data_progress(2 * gib, gib, Duration::from_secs(60));
+    assert_eq!(value, Some(1.0));
+    assert!(line.ends_with("under a minute left"), "{line}");
 }

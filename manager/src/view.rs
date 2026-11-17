@@ -948,8 +948,35 @@ fn callout(k: &Kit, warning: bool, title: &str, message: String, actions: Vec<El
     card
 }
 
-/// One First Aid result: a status line and the tool's counts.
-fn health_tile(k: &Kit, title: &str, result: Option<&ScanResult>, never: &str) -> El {
+/// A scrub's progress through `total` bytes after `elapsed`: its fraction and
+/// a line like "1.2 GiB of 4.0 GiB · about 3 min left".
+pub(crate) fn data_progress(done: u64, total: u64, elapsed: Duration) -> (Option<f32>, String) {
+    if done == 0 || total == 0 {
+        return (None, "Starting…".into());
+    }
+    let done = done.min(total);
+    let left = elapsed.as_secs_f64() * (total - done) as f64 / done as f64;
+    let eta = if left < 60.0 {
+        "under a minute left".to_owned()
+    } else {
+        format!("about {} min left", (left / 60.0).round())
+    };
+    (
+        Some(done as f32 / total as f32),
+        format!("{} of {} · {eta}", bytes(done), bytes(total)),
+    )
+}
+
+/// One First Aid result: a status line and the tool's counts, or the
+/// check's progress while it runs, and a button that runs it.
+fn health_tile(
+    k: &Kit,
+    title: &str,
+    result: Option<&ScanResult>,
+    never: &str,
+    running: Option<(Option<f32>, String)>,
+    action: Option<El>,
+) -> El {
     let (glyph, color, state) = match result {
         None => (&FIRST_AID, k.c.icon_faint, never.to_owned()),
         Some(r) => {
@@ -981,20 +1008,23 @@ fn health_tile(k: &Kit, title: &str, result: Option<&ScanResult>, never: &str) -
             .map_or(line, |(_, counts)| counts)
             .to_owned()
     });
-    let mut body = col()
-        .grow(1.0)
-        .min_w(0.0)
-        .gap(2.0)
-        .child(
-            text(title.to_owned())
-                .font(k.ty.text_small_medium)
-                .color(k.c.text_weak),
-        )
-        .child(label(state, k));
-    if let Some(counts) = counts {
-        body = body.child(muted(counts, k).wrap());
+    let mut body = col().grow(1.0).min_w(0.0).gap(2.0).child(
+        text(title.to_owned())
+            .font(k.ty.text_small_medium)
+            .color(k.c.text_weak),
+    );
+    match running {
+        Some((value, line)) => {
+            body = body.child(Progress::new(value).label(line).build(k));
+        }
+        None => {
+            body = body.child(label(state, k));
+            if let Some(counts) = counts {
+                body = body.child(muted(counts, k).wrap());
+            }
+        }
     }
-    row()
+    let mut tile = row()
         .grow(1.0)
         .min_w(0.0)
         .gap(12.0)
@@ -1002,7 +1032,11 @@ fn health_tile(k: &Kit, title: &str, result: Option<&ScanResult>, never: &str) -
         .radius(10.0)
         .border(1.0, k.c.border_weak)
         .child(icon(glyph, 22.0).color(color))
-        .child(body)
+        .child(body);
+    if let Some(action) = action {
+        tile = tile.child(action);
+    }
+    tile
 }
 
 /// Disk Utility's two-column table of facts.
@@ -1151,6 +1185,38 @@ fn overview(s: &State, k: &Kit) -> El {
             _ => (None, None),
         };
         let _ = source;
+        let busy = s.pending.is_some();
+        let running = |check| {
+            let b = s.browser.as_ref()?;
+            let background = s
+                .background
+                .as_ref()
+                .filter(|g| g.check == check && g.key == (b.info.uuid, b.info.generation))?;
+            Some(match check {
+                Check::Structure => (None, "Checking…".to_owned()),
+                Check::Data => data_progress(
+                    background.control.progress(),
+                    b.used_bytes(),
+                    background.started.elapsed(),
+                ),
+            })
+        };
+        // Damaged volumes don't open; First Aid diagnoses them instead.
+        let action = |check, key: &str, enabled: bool| {
+            s.browser.is_some().then(|| {
+                Button::new(if running(check).is_some() {
+                    "Checking…"
+                } else {
+                    "Check"
+                })
+                .variant(ButtonVariant::Outline)
+                .disabled(busy || !enabled || running(check).is_some())
+                .on_press_tx(move |s: &mut State, tx| s.check(check, tx))
+                .build(k)
+                .key(key.to_owned())
+            })
+        };
+        let sound = plan.is_none_or(|p| p.passed);
         body = body.child(
             col()
                 .w_full()
@@ -1160,16 +1226,25 @@ fn overview(s: &State, k: &Kit) -> El {
                     row()
                         .w_full()
                         .gap(12.0)
-                        .child(health_tile(k, "Structure", plan, "Not checked yet"))
+                        .child(health_tile(
+                            k,
+                            "Structure",
+                            plan,
+                            "Not checked yet",
+                            running(Check::Structure),
+                            action(Check::Structure, "check-structure", true),
+                        ))
                         .child(health_tile(
                             k,
                             "File data",
                             scrub,
-                            if plan.is_some_and(|p| !p.passed) {
-                                "Checked once the structure is sound"
-                            } else {
+                            if sound {
                                 "Not verified yet"
+                            } else {
+                                "Checked once the structure is sound"
                             },
+                            running(Check::Data),
+                            action(Check::Data, "check-data", sound),
                         )),
                 ),
         );
@@ -1830,7 +1905,17 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
             col()
                 .w_full()
                 .gap(12.0)
-                .child(Progress::new(None).label(format!("{} · {} s", s.task, s.elapsed_seconds)).build(k))
+                .child({
+                    // First Aid's file data pass reports how far it has read.
+                    let done = s.cancel.as_ref().map_or(0, |c| c.progress());
+                    let (value, line) = match &s.browser {
+                        Some(b) if done > 0 => {
+                            data_progress(done, b.used_bytes(), s.started.elapsed())
+                        }
+                        _ => (None, format!("{} · {} s", s.task, s.elapsed_seconds)),
+                    };
+                    Progress::new(value).label(line).build(k)
+                })
                 .child(buttons(vec![
                     Button::new("Stop")
                         .variant(ButtonVariant::Outline)

@@ -3,12 +3,12 @@ use crate::{
     platform::Result,
 };
 use std::{
-    io::Read,
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -50,16 +50,22 @@ fn companion_for(exe: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn drain(mut stream: impl Read) -> std::io::Result<String> {
+/// The stream's last 256 KiB. With `control`, its `progress N` lines go there instead.
+fn drain(stream: impl Read, control: Option<&Control>) -> std::io::Result<String> {
     const LIMIT: usize = 256 * 1024;
     let mut tail = Vec::new();
-    let mut buffer = [0; 8192];
-    loop {
-        let n = stream.read(&mut buffer)?;
-        if n == 0 {
-            break;
+    let mut reader = BufReader::new(stream);
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line)? != 0 {
+        let progress = control.zip(
+            line.strip_prefix(b"progress ")
+                .and_then(|n| std::str::from_utf8(n).ok()?.trim().parse().ok()),
+        );
+        match progress {
+            Some((control, bytes)) => control.progress.store(bytes, Ordering::Relaxed),
+            None => tail.extend_from_slice(&line),
         }
-        tail.extend_from_slice(&buffer[..n]);
+        line.clear();
         if tail.len() > LIMIT {
             tail.drain(..tail.len() - LIMIT);
         }
@@ -71,8 +77,13 @@ fn drain(mut stream: impl Read) -> std::io::Result<String> {
 pub struct Control {
     cancelled: AtomicBool,
     child: Mutex<Option<Child>>,
+    progress: AtomicU64,
 }
 impl Control {
+    /// File data bytes verified so far by a running scrub.
+    pub fn progress(&self) -> u64 {
+        self.progress.load(Ordering::Relaxed)
+    }
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
     }
@@ -152,8 +163,9 @@ fn run_status(mut command: Command, control: Arc<Control>) -> Result<(ExitStatus
         *slot = Some(child);
         (stdout, stderr)
     };
-    let out = std::thread::spawn(move || drain(stdout));
-    let err = std::thread::spawn(move || drain(stderr));
+    let out = std::thread::spawn(move || drain(stdout, None));
+    let err_control = control.clone();
+    let err = std::thread::spawn(move || drain(stderr, Some(&err_control)));
     let status = loop {
         if control.cancelled.load(Ordering::Relaxed) {
             control.stop()?;
@@ -189,7 +201,11 @@ pub fn inspect(browser: Browser, scrub: bool, cancel: Arc<Control>) -> Result<St
     // Validate the selected snapshot, then release its lease before the CLI opens it.
     drop(browser.volume()?);
     let mut command = cli()?;
-    command.arg(if scrub { "scrub" } else { "check" });
+    command.args(if scrub {
+        &["scrub", "--progress"][..]
+    } else {
+        &["check"]
+    });
     match &browser.device {
         Some(device) => device_source(&mut command, device)?,
         None => drop(command.arg(&browser.path)),
@@ -328,6 +344,18 @@ pub fn recover(browser: Browser, destination: &Path, cancel: Arc<Control>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn progress_lines_leave_the_report() {
+        let control = Control::default();
+        let report = drain(
+            &b"progress 5\nScrub: 1 files\nprogress 9\n"[..],
+            Some(&control),
+        )
+        .unwrap();
+        assert_eq!(report, "Scrub: 1 files\n");
+        assert_eq!(control.progress(), 9);
+        assert_eq!(drain(&b"progress 5\n"[..], None).unwrap(), "progress 5\n");
+    }
     #[cfg(unix)]
     #[test]
     fn cancellation_stops_a_read_only_child_and_reports_incomplete_work() {

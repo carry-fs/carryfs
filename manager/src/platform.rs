@@ -152,9 +152,11 @@ fn parse_device(v: &Value, parent: Option<String>, whole: bool) -> Result<Device
             .unwrap_or_else(|| id.clone()),
         id,
         parent,
+        // `Size` is the media size in both `list` and `info`; `info`'s
+        // `TotalSize` is the mounted filesystem's, which can be smaller.
         bytes: v
-            .get("TotalSize")
-            .or_else(|| v.get("Size"))
+            .get("Size")
+            .or_else(|| v.get("TotalSize"))
             .and_then(Value::as_u64)
             .ok_or("Missing device size")?,
         uuid: string(v, "DiskUUID").or_else(|| string(v, "VolumeUUID")),
@@ -465,6 +467,9 @@ mod tests {
         let mut changed = devices[1].clone();
         changed.uuid = Some("DIFFERENT".into());
         assert!(devices[1].verify(&changed).is_err());
+        let info = serde_json::json!({"DeviceIdentifier":"disk8s1","Size":268435456,"TotalSize":268000000,"DiskUUID":"ABC-123"});
+        let fresh = parse_device(&info, Some("disk8".into()), false).unwrap();
+        assert!(devices[1].verify(&fresh).is_ok());
     }
     #[test]
     fn apfs_containers_belong_to_their_physical_store() {

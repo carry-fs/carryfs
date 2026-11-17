@@ -216,7 +216,7 @@ impl ImageDevice {
     ///
     /// The platform does not report a raw device's length through the file
     /// system on macOS, so the caller supplies it (for example `diskutil`'s
-    /// `TotalSize`); `Volume::open` then rejects roots that disagree with it.
+    /// `Size`); `Volume::open` then rejects roots that disagree with it.
     /// No lease is taken: a lock on a device node would not stop the kernel
     /// or another filesystem from writing it, so the caller must make sure
     /// nothing has the device mounted. Unix and Windows only.

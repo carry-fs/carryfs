@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "carryfs-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carryfs-ondisk",
  "libc",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "carryfs-manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carryfs-core",
  "libc",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "carryfs-ondisk"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "cc"

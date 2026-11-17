@@ -662,8 +662,11 @@ fn ui_upgrades_an_image_in_place_and_shows_stored_permissions() {
     rt.update(|s, _| s.apply(Ok(Update::Browser(Box::new(browser)))));
     rt.frame(0.01);
     settle_checks(&mut rt);
+    assert!(rt.find("upgrade").is_none(), "New volumes need no upgrade");
+    // mkfs only makes revision 2; the core tests upgrade a revision 1 root.
+    rt.update(|s, _| s.browser.as_mut().unwrap().legacy = true);
+    rt.frame(0.01);
     let before = rt.state.browser.as_ref().unwrap().info.clone();
-    assert!(!rt.state.browser.as_ref().unwrap().attributes);
     // The format section sits below the fold of the Overview.
     reveal(&mut rt);
     click(&mut rt, "upgrade");
@@ -674,11 +677,9 @@ fn ui_upgrades_an_image_in_place_and_shows_stored_permissions() {
     finish(&mut rt);
     click(&mut rt, "close-sheet");
     let browser = rt.state.browser.as_ref().unwrap();
-    assert!(browser.attributes, "{}", rt.state.status);
-    assert!(!browser.preallocation);
+    assert!(!browser.legacy, "{}", rt.state.status);
     assert_eq!(browser.info.uuid, before.uuid);
-    assert!(browser.info.generation > before.generation);
-    assert!(rt.state.status.contains("now stores permissions"));
+    assert!(rt.state.status.contains("already up to date"), "{}", rt.state.status);
     assert!(
         rt.find("upgrade").is_none(),
         "An upgraded volume offers no upgrade"
@@ -828,7 +829,6 @@ fn a_clean_volume_with_hard_links_rebuilds_into_a_new_verified_image() {
 
     let mut rt = runtime();
     let browser = Browser::open(fixture.image()).unwrap();
-    assert!(browser.links);
     let entry = browser
         .entries
         .iter()
@@ -861,7 +861,6 @@ fn a_clean_volume_with_hard_links_rebuilds_into_a_new_verified_image() {
     assert!(fixture.0.join("rebuilt.cfs.recovery.json").is_file());
     let rebuilt = Browser::open(output).unwrap();
     assert_ne!(rebuilt.info.uuid, key.0);
-    assert!(rebuilt.links, "The rebuilt image keeps the hard link");
     assert!(
         rebuilt
             .entries

@@ -1314,7 +1314,6 @@ fn overview(s: &State, k: &Kit) -> El {
         );
     }
     if let Some(b) = &s.browser {
-        let newer = b.attributes || b.preallocation || b.links;
         let mut features = col()
             .w_full()
             .gap(10.0)
@@ -1324,36 +1323,25 @@ fn overview(s: &State, k: &Kit) -> El {
                 vec![
                     (
                         "Permissions",
-                        if b.attributes {
-                            "Stored, with the hidden flag".into()
+                        if b.legacy {
+                            "Not stored: files read as rw-r--r--"
                         } else {
-                            "Not stored: files read as rw-r--r--".into()
-                        },
-                    ),
-                    (
-                        "Preallocation",
-                        if b.preallocation {
-                            "In use"
-                        } else {
-                            "Not used"
+                            "Stored, with the hidden flag"
                         }
                         .into(),
                     ),
                     (
-                        "Hard links",
-                        if b.links { "In use" } else { "Not used" }.into(),
-                    ),
-                    (
                         "Compatibility",
-                        if newer {
-                            "Needs CarryFS newer than 0.1.0".into()
+                        if b.legacy {
+                            "Every CarryFS release; 0.2.0 and newer mount it read-only"
                         } else {
-                            "Every CarryFS release".into()
-                        },
+                            "CarryFS 0.2.0 and newer"
+                        }
+                        .into(),
                     ),
                 ],
             ));
-        if !b.attributes {
+        if b.legacy {
             features = features.child(
                 row()
                     .gap(12.0)
@@ -1366,7 +1354,7 @@ fn overview(s: &State, k: &Kit) -> El {
                             .key("upgrade"),
                     )
                     .child(muted(
-                        "Store each file's permissions and hidden flag. Files are kept.",
+                        "Let this CarryFS write to it and store each file's permissions. Files are kept.",
                         k,
                     )),
             );
@@ -1869,7 +1857,7 @@ fn software(s: &State, k: &Kit) -> El {
         ))
         .child(
             muted(
-                "Updating CarryFS replaces the software only; it never changes your disks. Eject CarryFS volumes before updating. Newer format features, such as stored permissions, are added per volume with Upgrade Format, and CarryFS 0.1.0 can't mount volumes that use them.",
+                "Updating CarryFS replaces the software only; it never changes your disks. Eject CarryFS volumes before updating. CarryFS 0.2.0 reads volumes 0.1.0 formatted and writes to them after Upgrade Format; 0.1.0 can't open volumes 0.2.0 formatted or upgraded.",
                 k,
             )
             .wrap(),
@@ -2012,7 +2000,7 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
             ),
             SheetKind::Upgrade => (
                 format!("Upgrade “{name}”?"),
-                "The volume will store each file's permissions and hidden flag. Your files are kept. CarryFS 0.1.0 can't mount it afterwards, and the upgrade can't be undone, so update CarryFS on every computer that uses this volume first.".into(),
+                "CarryFS 0.1.0 formatted this volume, so this CarryFS only reads it. Upgrading lets it write to the volume and store each file's permissions and hidden flag. Your files are kept. CarryFS 0.1.0 can't open the volume afterwards, and the upgrade can't be undone, so update CarryFS on every computer that uses this volume first.".into(),
                 buttons(vec![
                     cancel(),
                     Button::new("Upgrade")

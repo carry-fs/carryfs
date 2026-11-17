@@ -51,12 +51,8 @@ pub struct Browser {
     pub path: PathBuf,
     pub info: VolumeInfo,
     pub space: Space,
-    /// Stores permissions and the hidden attribute.
-    pub attributes: bool,
-    /// Permits preallocated (unwritten) extents.
-    pub preallocation: bool,
-    /// A file has had more than one name.
-    pub links: bool,
+    /// Formatted by CarryFS 0.1.0: readable, but writes need an upgrade.
+    pub legacy: bool,
     pub trail: Vec<(ObjectId, String)>,
     pub entries: Vec<Entry>,
 }
@@ -86,12 +82,11 @@ impl Browser {
         image: ImageDevice,
     ) -> Result<Self> {
         let mut volume = open_volume(image)?;
+        let info = volume.info()?;
         Ok(Self {
-            info: volume.info()?,
+            legacy: info.revision < u32::from(carryfs_core::REVISION),
+            info,
             space: volume.space()?,
-            attributes: volume.stores_attributes(),
-            preallocation: volume.supports_preallocation(),
-            links: volume.supports_links(),
             entries: list(&mut volume, ROOT)?,
             device,
             path,

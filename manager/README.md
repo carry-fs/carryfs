@@ -33,7 +33,7 @@ Discovery reads disk metadata only and needs no permission. Mounting, unmounting
 - A volume too damaged to open still appears, explains why, and offers First Aid and recovery.
 - **Erase** asks for a name and shows the partition it will erase, then runs `diskutil eraseVolume CarryFS` with progress in the sheet and refreshes the disk list. Only unmounted external partitions can be erased; APFS, internal, and system storage cannot.
 - **Eject** confirms that every volume on the disk is ejected. There is no forced unmount.
-- **Format features** shows stored permissions, preallocation, and hard links, any of which stops CarryFS 0.1.0 from mounting the volume. **Upgrade Format…** adds permissions and the hidden flag in place: a disk image through the companion tool, a disk through the installed adapter. Preallocation and hard links turn on when software uses them on a mounted volume.
+- **Format features** shows whether the volume stores permissions and which releases open it. A volume CarryFS 0.1.0 formatted (format revision 1) is read-only until **Upgrade Format…** publishes a revision 2 root in place, without rewriting files: a disk image through the companion tool, a disk through the installed adapter. CarryFS 0.1.0 can't open revision 2 volumes.
 - **Files** browses folders read-only and exports single files to new paths. Entries show permissions, hidden entries are dimmed, and the selection shows allocated bytes and hard-link names. **Recover This Folder…** exports the current folder with `carryfs get`.
 - **History** keeps the latest 100 task results of this session.
 
@@ -43,7 +43,7 @@ Long tasks run in child processes with bounded output capture; **Stop** ends the
 
 ## Software Update
 
-**Software Update** shows the installed CarryFS version (from `/Library/Filesystems/carryfs.fs/Contents/VERSION`), the latest release from `https://carryfs.com/releases.txt`, and the manager's own version. **Install** runs the published installer with `--yes` through the root helper; the installer verifies the package checksum and refuses while CarryFS volumes are mounted. It never downgrades and never changes disks. Revision 1 volumes gain features per volume with **Upgrade Format**; rolling back software doesn't undo them.
+**Software Update** shows the installed CarryFS version (from `/Library/Filesystems/carryfs.fs/Contents/VERSION`), the latest release from `https://carryfs.com/releases.txt`, and the manager's own version. **Install** runs the published installer with `--yes` through the root helper; the installer verifies the package checksum and refuses while CarryFS volumes are mounted. It never downgrades and never changes disks. Revision 1 volumes take writes after **Upgrade Format**; rolling back software doesn't undo an upgrade.
 
 ## Disposable demo and headless checks
 

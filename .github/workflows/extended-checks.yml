@@ -91,3 +91,33 @@ jobs:
             build/check-fsyncdir.log
             build/fsyncdir-*/*/probe.log
           retention-days: 7
+
+  freebsd-arm64:
+    name: FreeBSD 15.1 (arm64, full)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: |
+            build/cargo-freebsd
+            target
+          key: freebsd-15.1-arm64-${{ hashFiles('Cargo.lock') }}
+      - name: FreeBSD VM
+        uses: cross-platform-actions/action@ef53f0d3fd471648f2758f3fcdc3cb2aa40c87cb # v1.7.0
+        with:
+          operating_system: freebsd
+          version: '15.1'
+          architecture: arm64
+      - name: Build and test on FreeBSD
+        shell: cpa.sh {0}
+        run: |
+          sudo pkg install -y rust python3 bash
+          sudo kldload fusefs
+          CARGO_HOME="$PWD/build/cargo-freebsd" sh scripts/check-freebsd.sh
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: extended-freebsd-arm64
+          path: build/freebsd-*/daemon.log

@@ -67,7 +67,9 @@ must be restored from an independent backup. For metadata damage, see
 [offline diagnosis, repair, and recovery](RECOVERY.md).
 
 CarryFS runs in user space through FUSE on Linux and FreeBSD, macFUSE on macOS, and WinFsp
-on Windows. See the [limits and data safety notes](INSTALLATION.md#limits-and-data-safety)
+on Windows. Linux also has a native driver.
+[Platform support](INSTALLATION.md#platform-support) ranks each platform by
+tier. Read the [limits and data safety notes](INSTALLATION.md#limits-and-data-safety)
 before using it for backups.
 
 ## Performance

@@ -5,6 +5,31 @@ For source builds, see
 [CONTRIBUTING.md](CONTRIBUTING.md#build-and-install-from-source).
 If you'd rather not run the installer, [install by hand](#install-by-hand).
 
+## Platform support
+
+| Tier | Platform | Adapter |
+|---|---|---|
+| 0 | Linux | [Native kernel driver](#fuse-adapter-or-native-driver) |
+| 1 | macOS, Apple Silicon | macFUSE |
+| 1 | Linux, x86-64 | FUSE |
+| 1 | Windows\*, x86-64 | WinFsp |
+| 2 | FreeBSD\*\* 14.5 and 15.1, amd64 and arm64 | fusefs |
+| Planned | Android | |
+
+Tier 0 runs with the native driver for the best performance.
+
+Tier 1 adapters are tuned for speed, support every feature, and get tested on
+real hardware.
+
+Tier 2 has the core features and best-effort performance.
+
+Android is planned and has no adapter yet.
+
+\*Windows can't create new [hard links](#limits-and-data-safety).
+
+\*\*FreeBSD is tested only in virtual machines and can't set the
+[hidden flag](#limits-and-data-safety).
+
 ## Requirements
 
 CarryFS mounts volumes through a user-space filesystem framework. The install
@@ -347,7 +372,9 @@ written.
 
 Files and symlinks can have hard links: `ln` on Linux, macOS, and FreeBSD, up
 to 65,535 names each. Directories cannot be hard linked.
-Windows opens, renames, and deletes the names but cannot create new ones.
+Windows opens, renames, and deletes existing names. It can't create new ones
+because WinFsp rejects hard link creation. WinFsp also reports a link count of
+1 for every file, so Windows tools don't show a file's other names.
 `carryfs put` and `carryfs get` keep the hard links inside the copied tree;
 if the destination cannot link, `get` writes a separate copy.
 

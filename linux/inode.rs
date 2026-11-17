@@ -278,21 +278,18 @@ unsafe fn change_attributes(
         kernel::error::to_result(bindings::setattr_prepare(idmap, dentry, attr))?;
         let inode = (*dentry).d_inode;
         let valid = (*attr).ia_valid;
-        let stores = namei::stores_attributes(&volume::of((*inode).i_sb).lock());
         let format = (*inode).i_mode as u32 & bindings::S_IFMT;
         // Nine permission bits are stored; setuid, setgid and sticky are
         // dropped. A symlink stores none.
-        let mode = (valid & bindings::ATTR_MODE != 0 && stores && format != bindings::S_IFLNK)
+        let mode = (valid & bindings::ATTR_MODE != 0 && format != bindings::S_IFLNK)
             .then(|| format | (*attr).ia_mode as u32 & 0o777);
         if let Some(mode) = mode {
             (*attr).ia_mode = mode as _;
-        } else if stores && format == bindings::S_IFLNK {
+        } else if format == bindings::S_IFLNK {
             (*attr).ia_mode = (*inode).i_mode;
         }
-        // Owners are not stored, nor are modes without the feature; only
-        // no-op changes pass.
-        if (valid & bindings::ATTR_MODE != 0 && !stores && (*attr).ia_mode != (*inode).i_mode)
-            || (valid & bindings::ATTR_UID != 0
+        // Owners are not stored; only no-op changes pass.
+        if (valid & bindings::ATTR_UID != 0
                 && (*attr).__bindgen_anon_1.ia_uid.val != (*inode).i_uid.val)
             || (valid & bindings::ATTR_GID != 0
                 && (*attr).__bindgen_anon_2.ia_gid.val != (*inode).i_gid.val)

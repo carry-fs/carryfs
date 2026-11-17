@@ -94,7 +94,15 @@ fn check_page(data: &[u8]) {
             root.uuid = uuid;
             let _ = crate::workspace::read_with(&root, |_| Ok(encoded.clone()));
         }
-        assert_eq!(encoded.0[..], *data);
+        // A revision 1 page re-encodes as the same page at revision 2.
+        let mut expected = data.to_vec();
+        if expected[8..10] == format::LEGACY_REVISION.to_le_bytes() {
+            expected[8..10].copy_from_slice(&format::REVISION.to_le_bytes());
+            expected[64..68].fill(0);
+            let crc = format::crc32c(&expected);
+            expected[64..68].copy_from_slice(&crc.to_le_bytes());
+        }
+        assert_eq!(encoded.0[..], expected[..]);
     }
 }
 

@@ -173,7 +173,6 @@ pub(crate) struct Txn {
     /// workspace list.
     pub(crate) superseded: KVec<u64>,
     pub(crate) generation: u64,
-    pub(crate) features: u64,
     pub(crate) next_object: u64,
     pub(crate) committed_allocation: TreeRef,
     pub(crate) groups: KVec<Group>,
@@ -216,7 +215,6 @@ impl Txn {
             ],
             superseded: KVec::new(),
             generation: root.generation.checked_add(1).ok_or(ENOSPC)?,
-            features: root.features,
             next_object: root.next_object,
             committed_allocation: root.allocation,
             groups: KVec::new(),

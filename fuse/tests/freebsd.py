@@ -405,19 +405,6 @@ class MountedVolume(unittest.TestCase):
         recovered = self.recover()
         self.assertEqual({name: mode(recovered / name) for name in expected}, expected)
 
-    def test_modes_without_the_feature(self):
-        owner = 4242
-        p = self.shared_point()
-        self.mount(f"rw,uid={owner},gid={owner}")
-        self.assertEqual(self.user(owner, "touch $MNT/a", umask=0o077)[0], 0)
-        self.assertEqual(stat.S_IMODE(os.stat(p / "a").st_mode), 0o644)
-        self.assertEqual(self.user(owner, "chmod 644 $MNT/a")[0], 0)
-        status, out = self.user(owner, "chmod 600 $MNT/a")
-        self.assertNotEqual(status, 0)
-        self.assertIn("not permitted", out)
-        self.assertEqual(stat.S_IMODE(os.stat(p / "a").st_mode), 0o644)
-        self.unmount()
-
     def test_label_and_provider_names_share_one_lock(self):
         # A CarryFS partition needs at least 256 MiB, so grow the disk first.
         run("mdconfig", "-d", "-u", Path(self.device).name)

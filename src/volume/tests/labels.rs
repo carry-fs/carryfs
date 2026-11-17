@@ -30,7 +30,7 @@ fn formatting_with_label_stores_it_in_the_first_generation() {
     let info = volume.info().unwrap();
     assert_eq!(info.label, Some(label));
     assert_eq!(info.name(), "Andrei, Backup \\ 東京");
-    assert_eq!((info.revision, info.generation), (1, 1));
+    assert_eq!((info.revision, info.generation), (2, 1));
     volume.eject().unwrap();
     let durable = media.borrow().durable.clone();
     let device = FaultDevice::new(durable, MountMode::ReadOnly);
@@ -44,13 +44,13 @@ fn naming_an_unnamed_volume_keeps_revision_identity_and_accounting() {
     let media = device.media.clone();
     let mut volume = Volume::open(device).unwrap();
     let before = volume.info().unwrap();
-    assert_eq!(before.revision, 1);
+    assert_eq!(before.revision, 2);
     assert_eq!(before.name(), "CarryFS-42424242");
     volume
         .set_label(VolumeLabel::parse("Backup").unwrap())
         .unwrap();
     let after = volume.info().unwrap();
-    assert_eq!(after.revision, 1);
+    assert_eq!(after.revision, 2);
     assert_eq!(after.name(), "Backup");
     assert_eq!(after.uuid, before.uuid);
     assert_eq!(after.free_blocks, before.free_blocks);

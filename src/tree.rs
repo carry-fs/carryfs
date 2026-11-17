@@ -710,9 +710,6 @@ pub(crate) struct Forest<'a, D> {
     pub device: &'a mut D,
     pub base: &'a Root,
     pub generation: u64,
-    /// Root feature bits this forest publishes: the base's, plus any an
-    /// operation enables, such as the first hard link.
-    pub features: u64,
     nodes: Vec<Node>,
     pub retired: BTreeSet<u64>,
     /// Blocks added to `retired` by this forest, in order, so a mark records
@@ -742,7 +739,6 @@ pub(crate) struct Forest<'a, D> {
 #[derive(Default)]
 pub(crate) struct Drafts {
     generation: u64,
-    features: u64,
     nodes: Vec<Node>,
     retired: BTreeSet<u64>,
     reads: usize,
@@ -756,11 +752,6 @@ impl Drafts {
     pub fn follows(&self, base: &Root) -> bool {
         Some(self.generation) == base.generation.checked_add(1)
     }
-
-    /// Root feature bits the batch will publish, including enabled ones.
-    pub fn features(&self) -> u64 {
-        self.features
-    }
 }
 
 /// Where a forest stood before one operation, so that a failed or refused
@@ -768,7 +759,6 @@ impl Drafts {
 /// undoing them truncates; `retired` is the one set an edit adds to, and its
 /// additions are undone from the log.
 pub(crate) struct Mark {
-    features: u64,
     nodes: usize,
     retired: usize,
     reads: usize,
@@ -798,7 +788,6 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             base,
             cache,
             generation: base.generation.checked_add(1).ok_or(Error::LimitExceeded)?,
-            features: base.features,
             nodes: Vec::new(),
             retired: BTreeSet::new(),
             retired_log: Vec::new(),
@@ -830,7 +819,6 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
             base,
             cache,
             generation: drafts.generation,
-            features: drafts.features | base.features,
             nodes: drafts.nodes,
             retired: drafts.retired,
             retired_log: Vec::new(),
@@ -847,7 +835,6 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     pub fn suspend(self) -> Drafts {
         Drafts {
             generation: self.generation,
-            features: self.features,
             nodes: self.nodes,
             retired: self.retired,
             reads: self.reads,
@@ -927,7 +914,6 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     pub fn mark(&mut self) -> Mark {
         self.owned = self.nodes.len();
         Mark {
-            features: self.features,
             nodes: self.nodes.len(),
             retired: self.retired_log.len(),
             reads: self.reads,
@@ -939,7 +925,6 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     /// Undo everything since `mark`. Nothing reachable from the transaction's
     /// roots at `mark` is touched, because edits only ever append drafts.
     pub fn rewind(&mut self, mark: Mark) {
-        self.features = mark.features;
         self.nodes.truncate(mark.nodes);
         for block in self.retired_log.drain(mark.retired..) {
             self.retired.remove(&block);
@@ -1767,14 +1752,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                 // or when they entered a draft, and `seal` checks every page
                 // it encodes, so only the new record needs checking here.
                 let mut total = node.edge.data_blocks;
-                let new = leaf_record_blocks(
-                    kind,
-                    key,
-                    value,
-                    self.base.blocks,
-                    self.generation,
-                    self.features,
-                )?;
+                let new = leaf_record_blocks(kind, key, value, self.base.blocks, self.generation)?;
                 let appended = records
                     .len()
                     .checked_sub(1)
@@ -1790,7 +1768,6 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
                                 old_value,
                                 self.base.blocks,
                                 self.generation,
-                                self.features,
                             )?
                         } else {
                             0
@@ -1911,14 +1888,7 @@ impl<'a, D: BlockDevice> Forest<'a, D> {
     /// Data blocks a leaf record accounts for; only catalog extents have any.
     fn record_blocks(&self, kind: TreeKind, key: &[u8], value: &[u8]) -> Result<u64> {
         if kind == TreeKind::Catalog && key.get(8) == Some(&3) {
-            leaf_record_blocks(
-                kind,
-                key,
-                value,
-                self.base.blocks,
-                self.generation,
-                self.features,
-            )
+            leaf_record_blocks(kind, key, value, self.base.blocks, self.generation)
         } else {
             Ok(0)
         }
@@ -2466,7 +2436,7 @@ mod tests {
         let root = Root {
             label: None,
             uuid: UUID,
-            features: 0,
+            revision: crate::format::REVISION,
             generation: 1,
             blocks: GEOMETRY.blocks(),
             catalog: reference(512),

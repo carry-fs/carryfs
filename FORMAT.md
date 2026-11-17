@@ -1,8 +1,10 @@
-# CarryFS format, revision 1
+# CarryFS format, revision 2
 
-Every root and every tree and workspace page carries revision 1. An image with
-any other revision is rejected as unsupported. The format is not frozen. A
-future revision may require copying files out and reformatting.
+Every root and every tree and workspace page this revision writes carries
+revision 2. Revision 1, which CarryFS 0.1.0 wrote, differs only in what it
+permits (section 3). A revision 2 reader accepts a revision 1 root and
+revision 1 pages; any other revision is rejected as unsupported. The format is
+not frozen. A future revision may require copying files out and reformatting.
 
 This document defines the byte representation and the invariants it requires.
 It does not establish device durability, bounded cleanup progress at full
@@ -49,7 +51,7 @@ A direct-I/O backend supplies its own memory-aligned buffers; the in-memory page
 type is not over-aligned.
 
 Reserved fields and unused page bytes must be zero. Unknown record kinds, flags,
-revisions, or feature bits are rejected, including on read-only opens. Validate
+or revisions are rejected, including on read-only opens. Validate
 lengths before slicing, converting to host sizes, or allocating. No allocation
 may be sized directly from an unchecked disk count.
 
@@ -83,7 +85,7 @@ Each root occupies one complete page. CRC covers all 4,096 bytes with bytes
 | Offset | Bytes | Field and validity |
 |---:|---:|---|
 | 0 | 8 | ASCII `CFSXROOT` |
-| 8 | 4 | Root revision, 1 |
+| 8 | 4 | Root revision, 2; or 1 until a CarryFS 0.1.0 volume is upgraded |
 | 12 | 4 | Record bytes, 4,096 |
 | 16 | 4 | Allocation bytes, 4,096 |
 | 20 | 4 | Checksum-unit bytes, 65,536 |
@@ -96,7 +98,7 @@ Each root occupies one complete page. CRC covers all 4,096 bytes with bytes
 | 96 | 16 | Cleanup `TreeRef` |
 | 112 | 8 | Next object ID, greater than every issued ID |
 | 120 | 8 | Free blocks, including the maintenance reserve |
-| 128 | 8 | Feature bits: bit 0 inode attributes, bit 1 unwritten extents, bit 2 hard links; other bits zero |
+| 128 | 8 | Reserved zero |
 | 136 | 4 | Filename profile, 2 |
 | 140 | 4 | State flags, zero |
 | 144 | 8 | Maintenance reserve floor, 16,384 blocks |
@@ -116,26 +118,14 @@ The label participates in the root CRC and same-generation mirror comparison.
 Naming or renaming publishes both roots using the normal commit sequence and
 does not change the UUID, allocation accounting, or page encodings.
 
-Feature bit 0 lets inodes record a mode and attributes (section 5). A reader
-that does not know a feature bit returns "unsupported format" and writes
-nothing; it never falls back to the other root for that reason. A publication
-carries the feature bits of the root it succeeds. Formatting leaves the bit
-clear; `carryfs upgrade` sets it by publishing one root, with no page writes.
-Nothing clears it.
-
-Feature bit 1 permits unwritten extents. A successful preallocation operation
-opts the volume into this feature; ordinary writes leave it unchanged. The
-userspace engine publishes the feature before reserving blocks. The Linux
-kernel engine publishes it with the first reservation. The feature remains
-set after all reservations are consumed or released. A request that fails after
-the userspace engine enables the feature does not clear it.
-
-Feature bit 2 permits a regular file or symlink to have more than one
-directory entry. The first link that gives an already named object another
-entry opts the volume
-into this feature; linking an unnamed temporary file does not. Both engines
-publish the feature in the link's own transaction, so a failed link leaves it
-unchanged. The feature remains set after the extra entries are removed.
+Revision 2 lets inodes record a mode and attributes (section 5), extents be
+unwritten (section 6), and a regular file or symlink have more than one
+directory entry. Revision 1 permits none of these. A revision 2 engine opens a
+revision 1 volume read-only and refuses a writable open, writing nothing.
+Upgrading publishes one revision 2 root and writes no page; revision 1 pages
+stay valid under it, and later edits write revision 2 pages. A reader that
+knows only revision 1 rejects a revision 2 root as unsupported and writes
+nothing; it never falls back to the other root for that reason.
 
 ### Selection and reopen
 
@@ -146,7 +136,7 @@ unchanged. The feature remains set after the extra entries are removed.
    their envelopes, CRCs, self locations, and geometry before trusting fields.
    An I/O failure is not interchangeable with a checksum-invalid root: if either
    read fails, opening fails because that slot may contain the newer state.
-3. A checksum-valid envelope advertising an unsupported revision/profile/features
+3. A checksum-valid envelope advertising an unsupported revision or profile
    produces `UnsupportedFormat`, not fallback to an older compatible root.
 4. If neither supported root is valid, report corruption. If both are valid but
    UUIDs differ, report corruption. At equal generation, all bytes other than
@@ -247,7 +237,7 @@ storage details.
 | Offset | Bytes | Field |
 |---:|---:|---|
 | 0 | 8 | ASCII `CFSXPAGE` |
-| 8 | 2 | Revision, 1 |
+| 8 | 2 | Revision, 2; or 1, written by CarryFS 0.1.0 |
 | 10 | 2 | Flags, zero |
 | 12 | 1 | Page kind: 1 leaf, 2 internal |
 | 13 | 1 | Tree kind: 1 catalog, 2 allocation, 3 cleanup, 4 workspace |
@@ -346,12 +336,10 @@ The mode is zero or `0x8000 | p` with `p` in `0o000..=0o777`, the usual
 `rwxrwxrwx`; bits 9 through 14 are zero, so no setuid, setgid or sticky bit
 is stored. Zero means the type's default: `0o644` for a file, `0o755` for a
 directory. A symlink's mode is zero and reads as `0o777`. Bit 15 lets all-zero
-bytes keep meaning "default", so inodes written before the feature need no
-rewrite, and `0o000` is storable as `0x8000`. The hidden bit applies to every
-type and does not affect access. No owner is stored: every object belongs to
-the account that mounts the volume. When root feature bit 0 is clear, bytes 2
-through 4 of every inode are zero; a reader that predates the feature
-reports anything else as corruption.
+bytes keep meaning "default", so revision 1 inodes need no rewrite, and
+`0o000` is storable as `0x8000`. The hidden bit applies to every type and does
+not affect access. No owner is stored: every object belongs to the account
+that mounts the volume. Revision 1 inodes have zeros in bytes 2 through 4.
 
 Each timestamp is signed Unix seconds `i64`, nanoseconds `u32`, reserved zero
 `u32`. Seconds range from -11644473600 through 253402300799, corresponding to
@@ -366,10 +354,9 @@ most 65,534. Its parent is the directory of the entry most recently created or
 moved to it: a hint, nonzero and below the next object ID, that may name a
 directory holding none of its entries or one since removed. Only directory
 parents form the rooted chain. Every directory entry lives in a linked
-directory. Extra links are zero for directories and orphans, and require root
-feature bit 2 when nonzero. Adapters report the link count as
-`extra_links + 1`, or 0 for an orphan. Bytes written before the feature read
-as zero, so an object with one entry needs no rewrite. Files have no directory-entry children,
+directory. Extra links are zero for directories and orphans, and zero in
+revision 1 inodes. Adapters report the link count as `extra_links + 1`, or 0
+for an orphan. Files have no directory-entry children,
 directories and symlinks have no extents/checksum groups, and the linked directory
 graph is rooted and acyclic. Orphans have no directory entries and exactly one
 orphan marker in the cleanup tree. Their last parent is retained for attributes
@@ -411,8 +398,8 @@ new object and then sets its reparse point.
 ### Extent
 
 Value: physical starting block `u64`, block count `u32`, flags `u32`.
-Flag bit 0 marks an unwritten extent and requires root feature bit 1. All
-other flag bits are zero. Without the feature, the entire flags word is zero.
+Flag bit 0 marks an unwritten extent. All other flag bits are zero. Revision 1
+extents have a zero flags word.
 Count is nonzero. Logical and physical ends use checked arithmetic. Extents are
 ordered, nonoverlapping, in range, and uniquely own their data blocks.
 
@@ -649,7 +636,7 @@ prove every catalog deletion or open-handle lifetime can be admitted safely.
 Foreground allocation must leave maintenance headroom after charging its maximum
 publication cost and partial-tail rewrites. Report `available = max(free - 16384,
 0)` to users. Cleanup and space-reducing mutations may spend the reserve.
-With feature bit 1, replacing writes may borrow data blocks from it when
+Replacing writes may borrow data blocks from it when
 retirement repays those blocks after mirroring. The userspace planner limits
 this allowance to 4,096 blocks per batch; the kernel bounds it by the current
 write batch. New reservations receive no such allowance. Before
@@ -716,7 +703,8 @@ remain distinct from ASCII letters.
 |---|---|
 | Invalid request, name, type, collision, missing entry | Typed request error; no mutation for that operation |
 | Budget exhausted before output | NoSpace/Limit error; no partial namespace operation |
-| Unsupported envelope/version/feature | UnsupportedFormat; no writes |
+| Unsupported envelope/revision | UnsupportedFormat; no writes |
+| Writable open of a revision 1 volume | NeedsUpgrade; no writes |
 | Malformed metadata or checksum mismatch | Corruption with object/block/unit context |
 | I/O error during output or mirroring | Faulted instance; no further mutation/reclamation |
 | Corruption discovered on a writable volume | Fault mutation/reclamation; allow only independently verified reads |

@@ -27,6 +27,8 @@ pub enum Error {
     UnsupportedFormat,
     /// The device was opened without write access.
     ReadOnly,
+    /// CarryFS 0.1.0 formatted the volume; it opens read-only until upgraded.
+    NeedsUpgrade,
     /// Another cooperating instance owns this image.
     Busy,
     /// There is not enough previously mirrored free space for this publication.
@@ -96,6 +98,9 @@ impl fmt::Display for Error {
             }
             Self::UnsupportedFormat => f.write_str("unsupported CarryFS format or feature"),
             Self::ReadOnly => f.write_str("device is read-only"),
+            Self::NeedsUpgrade => {
+                f.write_str("CarryFS 0.1.0 formatted this volume; upgrade it to write to it")
+            }
             Self::Busy => f.write_str("image is already in use"),
             Self::NoSpace => f.write_str("insufficient free space"),
             Self::LimitExceeded => f.write_str("operation exceeds its work budget"),

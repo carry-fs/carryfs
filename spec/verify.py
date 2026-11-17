@@ -180,7 +180,7 @@ def fixtures():
     for label, block in [('root-a', 256), ('root-b', 65536 - 257)]:
         page = bytearray(4096)
         page[:8] = b'CFSXROOT'
-        struct.pack_into('<IIII', page, 8, 1, 4096, 4096, 65536)
+        struct.pack_into('<IIII', page, 8, 2, 4096, 4096, 65536)
         page[24:40] = UUID
         struct.pack_into('<QQQ', page, 40, block, 7, 65536)
         struct.pack_into('<QQQQQQ', page, 64, 1024, 5, 1025, 7, 1026, 7)
@@ -195,18 +195,23 @@ def fixtures():
     page[4092:] = bytes(4)
     struct.pack_into('<I', page, 4092, crc32c(page))
     result['labeled-root-a'] = (bytes(page), 4092)
-    # Root feature bit 0: inodes may record a mode and attributes.
+    # Revision 1, as CarryFS 0.1.0 wrote it.
     page = bytearray(result['root-a'][0])
-    struct.pack_into('<Q', page, 128, 1)
+    struct.pack_into('<I', page, 8, 1)
     page[4092:] = bytes(4)
     struct.pack_into('<I', page, 4092, crc32c(page))
-    result['attributes-root-a'] = (bytes(page), 4092)
+    result['legacy-root-a'] = (bytes(page), 4092)
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
-    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 0, 0, 0)
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 2, 0, 1, 1, 0, 0, 1024, 5, 0, 0, 0)
     page[40:56] = UUID
     struct.pack_into('<I', page, 64, crc32c(page))
     result['empty-catalog-leaf'] = (bytes(page), 64)
+    legacy = bytearray(page)
+    struct.pack_into('<H', legacy, 8, 1)
+    legacy[64:68] = bytes(4)
+    struct.pack_into('<I', legacy, 64, crc32c(legacy))
+    result['legacy-catalog-leaf'] = (bytes(legacy), 64)
     page[64:68] = bytes(4)
     key = struct.pack('>QBQ', 2, 3, 0)
     value = struct.pack('<QII', 2048, 16, 0)
@@ -226,7 +231,7 @@ def fixtures():
                                           (struct.pack('>QBQ', 2, 4, 0), bytes(group))])
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
-    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 2, len(records), 0)
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 2, 0, 1, 1, 0, 0, 1024, 5, 2, len(records), 0)
     page[40:56] = UUID
     struct.pack_into('<Q', page, 56, 16)
     page[80:80 + len(records)] = records
@@ -246,7 +251,7 @@ def fixtures():
                                           (struct.pack('>QB', 2, 1), bytes(inode) + target)])
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
-    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 2, len(records), 0)
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 2, 0, 1, 1, 0, 0, 1024, 5, 2, len(records), 0)
     page[40:56] = UUID
     page[80:80 + len(records)] = records
     struct.pack_into('<I', page, 64, crc32c(page))
@@ -267,7 +272,7 @@ def fixtures():
         records += struct.pack('<HH', len(key), len(value)) + key + value
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
-    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 4, len(records), 0)
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 2, 0, 1, 1, 0, 0, 1024, 5, 4, len(records), 0)
     page[40:56] = UUID
     page[80:80 + len(records)] = records
     struct.pack_into('<I', page, 64, crc32c(page))
@@ -284,7 +289,7 @@ def fixtures():
                                           for name in (b'a', b'b')] + [(struct.pack('>QB', 2, 1), bytes(inode))])
     page = bytearray(4096)
     page[:8] = b'CFSXPAGE'
-    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 1, 0, 0, 1024, 5, 3, len(records), 0)
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 2, 0, 1, 1, 0, 0, 1024, 5, 3, len(records), 0)
     page[40:56] = UUID
     page[80:80 + len(records)] = records
     struct.pack_into('<I', page, 64, crc32c(page))
@@ -295,7 +300,7 @@ def fixtures():
     records = b''.join(struct.pack('<HH', 8, 4) + struct.pack('>Q', first)
                        + struct.pack('<I', count)
                        for first, count in [(8192, 1), (9000, 2)])
-    struct.pack_into('<HHBBBBQQHHI', page, 8, 1, 0, 1, 4, 0, 0, 32, 7,
+    struct.pack_into('<HHBBBBQQHHI', page, 8, 2, 0, 1, 4, 0, 0, 32, 7,
                      2, len(records), 0)
     page[40:56] = UUID
     page[80:80 + len(records)] = records
@@ -340,7 +345,7 @@ def verify_checksums(write):
                                  payload='zeros' if valid == 65536 else 'hex', crc32c=f'{crc:08x}'))
     check(len({case['crc32c'] for case in unit_records}) == len(unit_records),
           'identity/tail vectors accidentally coincide')
-    document = dict(revision=1, root_revisions=[1], uuid_hex=UUID.hex(), fixtures=records, data_units=unit_records)
+    document = dict(revision=2, root_revisions=[1, 2], uuid_hex=UUID.hex(), fixtures=records, data_units=unit_records)
     path = DATA / 'checksum-vectors.json'
     if write:
         path.write_text(json.dumps(document, indent=2) + '\n', encoding='utf-8')

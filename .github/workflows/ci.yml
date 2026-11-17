@@ -46,10 +46,13 @@ jobs:
             architecture: x86-64
           - version: '14.5'
             architecture: x86-64
+          # Emulated guests are slow; lint and core unit tests run on x86-64 (core in full weekly on arm64).
           - version: '15.1'
             architecture: arm64
+            args: --emulated
           - version: '14.5'
             architecture: arm64
+            args: --emulated
     steps:
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
@@ -69,7 +72,7 @@ jobs:
         run: |
           sudo pkg install -y rust python3 bash
           sudo kldload fusefs
-          CARGO_HOME="$PWD/build/cargo-freebsd" sh scripts/check-freebsd.sh
+          CARGO_HOME="$PWD/build/cargo-freebsd" sh scripts/check-freebsd.sh ${{ matrix.args }}
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

@@ -60,7 +60,7 @@ jobs:
         run: |
           mkdir -p build/check-kernel
           git init build/fstests
-          git -C build/fstests fetch --depth 1 https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git 22348afe338c0f6d540c0d7ef0db749eaa51b218
+          git -C build/fstests fetch --depth 1 https://github.com/kdave/xfstests 22348afe338c0f6d540c0d7ef0db749eaa51b218
           git -C build/fstests checkout --detach FETCH_HEAD
           cc -D_GNU_SOURCE -O2 build/fstests/src/log-writes/replay-log.c \
             build/fstests/src/log-writes/log-writes.c -o build/check-kernel/replay-log

@@ -16,7 +16,7 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "carryfs-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carryfs-ondisk",
  "libc",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "carryfs-fuse"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carryfs-core",
  "fuser",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "carryfs-macos"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carryfs-core",
  "libc",
@@ -41,11 +41,11 @@ dependencies = [
 
 [[package]]
 name = "carryfs-ondisk"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "carryfs-windows"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carryfs-core",
  "windows-sys",

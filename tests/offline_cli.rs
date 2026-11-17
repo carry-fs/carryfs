@@ -88,7 +88,7 @@ fn cli_round_trips_trees_and_refuses_collisions_and_aliases() {
     temp.pass(&["mkfs", "image", "268435456"]);
     assert!(
         String::from_utf8_lossy(&temp.pass(&["dump", "image"]).stdout)
-            .contains("Format revision: 1")
+            .contains("Format revision: 2")
     );
     temp.pass(&["put", "image", "source", "/backup"]);
     temp.pass(&["check", "image"]);
@@ -275,7 +275,7 @@ fn cli_keeps_modes_on_images_that_store_them() {
     set(&source.join("locked"), 0o500);
     set(&source, 0o750);
 
-    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["mkfs", "image", "268435456"]);
     temp.pass(&["put", "image", "source", "/tree"]);
     let attr = |args: &[&str]| String::from_utf8(temp.pass(args).stdout).unwrap();
     assert_eq!(attr(&["attr", "image", "/tree/script"]), "file 0755\n");
@@ -309,18 +309,6 @@ fn cli_keeps_modes_on_images_that_store_them() {
     for root in [&source, &out] {
         set(&root.join("locked"), 0o700);
     }
-
-    // An image without the feature reads defaults and refuses changes.
-    temp.pass(&["mkfs", "plain", "268435456"]);
-    temp.pass(&["put", "plain", "source", "/tree"]);
-    assert_eq!(attr(&["attr", "plain", "/tree/script"]), "file 0644\n");
-    let refused = temp.run(&["attr", "plain", "/tree/script", "mode=755"]);
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("carryfs upgrade"));
-    temp.pass(&["upgrade", "plain"]);
-    assert_eq!(
-        attr(&["attr", "plain", "/tree/script", "mode=755"]),
-        "file 0755\n"
-    );
 }
 
 #[cfg(target_os = "macos")]
@@ -343,7 +331,7 @@ fn cli_keeps_hidden_symlinks_without_hiding_their_targets() {
             .unwrap()
             .success()
     );
-    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["mkfs", "image", "268435456"]);
     temp.pass(&["put", "image", "source", "/tree"]);
     assert_eq!(
         temp.pass(&["attr", "image", "/tree/link"]).stdout,
@@ -607,7 +595,7 @@ fn fsck_rebuilds_a_new_image_without_repairing_the_source() {
     let temp = Temp::new();
     let bytes = vec![0x79; 150_001];
     fs::write(temp.0.join("source"), &bytes).unwrap();
-    temp.pass(&["mkfs", "--attributes", "image", "268435456"]);
+    temp.pass(&["mkfs", "image", "268435456"]);
     temp.pass(&["put", "image", "source", "/notes"]);
     temp.pass(&["attr", "image", "/notes", "mode=400", "hidden=yes"]);
     let original_uuid = disk_root(&temp).uuid;
@@ -800,6 +788,63 @@ fn cli_keeps_hard_links_through_put_and_get() {
     assert_eq!(
         fs::read_link(recovered.join("sub/s2")).unwrap(),
         Path::new("a")
+    );
+}
+
+/// In-place repair writes a raw macOS disk node and must flush it there.
+#[test]
+#[cfg(target_os = "macos")]
+#[ignore = "attaches a disk image with hdiutil"]
+fn fsck_repairs_a_raw_macos_device_in_place() {
+    let temp = Temp::new();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    damage_page(&temp, disk_root(&temp).allocation.block);
+    let attach = Command::new("hdiutil")
+        .args([
+            "attach",
+            "-nomount",
+            "-imagekey",
+            "diskimage-class=CRawDiskImage",
+        ])
+        .arg(temp.0.join("image"))
+        .output()
+        .unwrap();
+    assert!(
+        attach.status.success(),
+        "{}",
+        String::from_utf8_lossy(&attach.stderr)
+    );
+    let disk = String::from_utf8_lossy(&attach.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    let repair = fsck(
+        &temp,
+        &[
+            "--repair",
+            "--report",
+            "repair.txt",
+            "--bytes",
+            "268435456",
+            &disk,
+        ],
+    );
+    let check = temp.run(&["check", "--bytes", "268435456", &disk]);
+    Command::new("hdiutil")
+        .args(["detach", &disk])
+        .output()
+        .unwrap();
+    assert_eq!(
+        repair.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&repair.stderr)
+    );
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
     );
 }
 

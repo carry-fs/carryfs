@@ -1,13 +1,6 @@
-//! Modes and the hidden attribute: stored only after `upgrade`, carried
-//! through every inode rewrite, and never written without the root feature.
+//! Modes and the hidden attribute, carried through every inode rewrite.
 
 use super::*;
-
-fn upgraded() -> Volume<FaultDevice> {
-    let mut volume = opened();
-    assert!(volume.upgrade().unwrap());
-    volume
-}
 
 fn new(mode: u32, hidden: bool) -> NewAttributes {
     NewAttributes {
@@ -29,115 +22,8 @@ fn mode_keeps_only_the_nine_permission_bits() {
 }
 
 #[test]
-fn a_volume_without_the_feature_reads_defaults_and_stores_nothing() {
-    let mut volume = opened();
-    assert!(!volume.stores_attributes());
-    let file = volume
-        .create_file_with(ROOT, name("f"), new(0o600, true))
-        .unwrap();
-    let dir = volume
-        .create_directory_with(ROOT, name("d"), new(0o700, true))
-        .unwrap();
-    let object = volume.lookup(ROOT, &name("f")).unwrap();
-    let attributes = volume.attributes(object).unwrap();
-    assert_eq!((attributes.mode, attributes.hidden), (Mode::FILE, false));
-    assert_eq!(volume.attributes(dir).unwrap().mode, Mode::DIRECTORY);
-
-    for change in [
-        AttributeChange {
-            mode: Some(Mode::FILE),
-            ..Default::default()
-        },
-        AttributeChange {
-            hidden: Some(false),
-            ..Default::default()
-        },
-    ] {
-        assert!(matches!(
-            volume.set_attributes(&file, change),
-            Err(Error::InvalidInput(_))
-        ));
-    }
-    let stamp = Timestamp::new(7, 0).unwrap();
-    volume
-        .set_attributes(
-            &file,
-            AttributeChange {
-                modification: Some(stamp),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert_eq!(volume.attributes(object).unwrap().modification, stamp);
-    volume.close_handle(file).unwrap();
-    volume.sync().unwrap();
-    checked(&volume);
-}
-
-#[test]
-fn the_core_refuses_an_inode_with_a_mode_on_a_volume_without_the_feature() {
-    let mut volume = opened();
-    let now = Timestamp::now().unwrap();
-    let refused = volume.edit(|transaction| {
-        super::super::namespace::create_in(
-            transaction,
-            ROOT,
-            name("f"),
-            ObjectKind::File,
-            &[],
-            new(0o600, false),
-            now,
-        )
-    });
-    assert!(matches!(refused, Err(Error::InvalidInput(_))));
-}
-
-#[test]
-fn upgrade_is_idempotent_and_publishes_only_a_root() {
-    let device = FaultDevice::new(formatted(), MountMode::ReadWrite);
-    let media = device.media.clone();
-    let mut volume = Volume::open(device).unwrap();
-    let before = volume.info().unwrap();
-    assert!(volume.upgrade().unwrap());
-    assert_eq!(
-        media.borrow().events,
-        vec![
-            Event::Flush,
-            Event::Write(ROOT_A),
-            Event::Flush,
-            Event::Write(GEOMETRY.blocks() - 257),
-            Event::Flush,
-        ]
-    );
-    let events = media.borrow().events.clone();
-    assert!(!volume.upgrade().unwrap());
-    assert_eq!(media.borrow().events, events);
-    assert_eq!(volume.info().unwrap().free_blocks, before.free_blocks);
-    assert!(reopened(&volume).stores_attributes());
-    checked(&volume);
-}
-
-#[test]
-fn a_crash_during_upgrade_leaves_the_old_or_the_new_root() {
-    for event in 0..5 {
-        let device = FaultDevice::new(formatted(), MountMode::ReadWrite);
-        let media = device.media.clone();
-        let mut volume = Volume::open(device).unwrap();
-        media.borrow_mut().failure = Some(Failure {
-            event,
-            whole_mask: 0,
-            tear: None,
-        });
-        let _ = volume.upgrade();
-        let durable = media.borrow().durable.clone();
-        let mut volume = Volume::open(FaultDevice::new(durable, MountMode::ReadOnly)).unwrap();
-        volume.check().unwrap();
-    }
-}
-
-#[test]
 fn mode_and_hidden_survive_writes_renames_truncation_orphaning_and_reopen() {
-    let mut volume = upgraded();
+    let mut volume = opened();
     let file = volume
         .create_file_with(ROOT, name("script"), new(0o750, true))
         .unwrap();
@@ -168,7 +54,7 @@ fn mode_and_hidden_survive_writes_renames_truncation_orphaning_and_reopen() {
 
 #[test]
 fn a_mode_change_bumps_only_the_metadata_change_time() {
-    let mut volume = upgraded();
+    let mut volume = opened();
     let file = volume.create_file(ROOT, name("f")).unwrap();
     let object = volume.lookup(ROOT, &name("f")).unwrap();
     let before = volume.attributes(object).unwrap();
@@ -218,7 +104,7 @@ fn a_mode_change_bumps_only_the_metadata_change_time() {
 
 #[test]
 fn a_symlink_stores_no_mode_but_keeps_hidden() {
-    let mut volume = upgraded();
+    let mut volume = opened();
     let link = volume.create_symlink(ROOT, name("l"), b"target").unwrap();
     let pin = volume.retain_object(link).unwrap();
     volume
@@ -250,7 +136,7 @@ fn a_symlink_stores_no_mode_but_keeps_hidden() {
 
 #[test]
 fn mode_zero_is_stored_and_distinct_from_the_default() {
-    let mut volume = upgraded();
+    let mut volume = opened();
     let file = volume
         .create_file_with(ROOT, name("locked"), new(0, false))
         .unwrap();

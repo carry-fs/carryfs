@@ -1346,19 +1346,8 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             if uid.is_some_and(|uid| uid != shown.uid) || gid.is_some_and(|gid| gid != shown.gid) {
                 return Err(Errno::EPERM);
             }
-            let stores = s.volume.stores_attributes();
             // Setuid, setgid and sticky are dropped: CarryFS stores nine bits.
             let mode = mode.map(Mode::from_host);
-            // Without the feature a Linux or FreeBSD chmod that changes the
-            // mode fails. macOS copies restore mode and timestamps together,
-            // so there it is a no-op and Finder can clear its unfinished-copy
-            // timestamp.
-            if cfg!(any(target_os = "linux", target_os = "freebsd"))
-                && !stores
-                && mode.is_some_and(|mode| mode != current.mode)
-            {
-                return Err(Errno::EPERM);
-            }
             // Other BSD flags are accepted and dropped, as before.
             #[cfg(target_os = "macos")]
             let hidden = flags.map(|flags| flags.bits() & UF_HIDDEN != 0);
@@ -1370,8 +1359,8 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             };
             let change = AttributeChange {
                 creation: crtime.map(timestamp).transpose()?,
-                mode: mode.filter(|_| stores),
-                hidden: hidden.filter(|_| stores),
+                mode,
+                hidden,
                 ..AttributeChange::default()
             };
             let resize = size.filter(|&size| size != current.size);
@@ -2224,7 +2213,7 @@ pub(crate) fn errno(error: &Error) -> Errno {
         Error::NameCollision => Errno::EEXIST,
         Error::WrongType => Errno::ENOTDIR,
         Error::DirectoryNotEmpty => Errno::ENOTEMPTY,
-        Error::ReadOnly => Errno::EROFS,
+        Error::ReadOnly | Error::NeedsUpgrade => Errno::EROFS,
         Error::NoSpace => Errno::ENOSPC,
         Error::LimitExceeded => Errno::EFBIG,
         // FUSE does not enforce the reported 255-byte name limit, so the core does.

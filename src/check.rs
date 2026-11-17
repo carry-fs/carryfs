@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::BuildHasherDefault;
 
 use crate::format::{
-    BLOCK_BYTES, EXTENT_UNWRITTEN, FEATURE_PREALLOCATION, Page, Root, TreeKind, TreeRef,
-    checksum_slot, decode_page, extra_links, link_hash, validate_inode_features,
+    BLOCK_BYTES, EXTENT_UNWRITTEN, Page, Root, TreeKind, TreeRef, checksum_slot, decode_page,
+    extra_links, link_hash,
 };
 use crate::tree::{PageHasher, Record, tree_ref, u64_be, u64_le};
 use crate::{BlockDevice, Error, Result};
@@ -251,12 +251,6 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
             self.root.blocks,
         )
         .map_err(|error| error.at_block(block))?;
-        if position.kind == TreeKind::Catalog && decoded.level == 0 {
-            for (key, value) in &decoded.records {
-                validate_inode_features(key, value, self.root.features)
-                    .map_err(|error| error.at_block(block))?;
-            }
-        }
         let first = decoded
             .records
             .first()
@@ -682,15 +676,12 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                         reader
                             .inode_link(owner, value)
                             .map_err(|error| error.at_block(page))?;
-                        validate_inode_features(key, value, reader.root.features)
-                            .map_err(|error| error.at_block(page))?;
                         state = Some(Object {
                             owner,
                             inode: value.to_vec(),
                             children: 0,
                             blocks: 0,
                             end: 0,
-                            preallocation: reader.root.features & FEATURE_PREALLOCATION != 0,
                         });
                         count += 1;
                         if owner != 1 && value[1] & 1 == 0 {
@@ -753,10 +744,6 @@ impl<'a, D: BlockDevice> Reader<'a, D> {
                                 != 0;
                             if logical < state.end
                                 || (!unwritten && logical + extent_count > size.div_ceil(4096))
-                                || (reader.root.features & FEATURE_PREALLOCATION == 0
-                                    && logical > state.end
-                                    && (!state.end.is_multiple_of(16)
-                                        || !logical.is_multiple_of(16)))
                             {
                                 return Err(Error::Corrupt(
                                     "extent overlap, gap inside unit, or EOF overrun",
@@ -838,7 +825,6 @@ struct Object {
     children: u64,
     blocks: u64,
     end: u64,
-    preallocation: bool,
 }
 
 impl Object {
@@ -847,10 +833,6 @@ impl Object {
             || self.blocks != u64_le(&self.inode[24..32])?
         {
             return Err(Error::Corrupt("inode child or allocation count mismatch"));
-        }
-        let size = u64_le(&self.inode[16..24])?;
-        if !self.preallocation && self.end != size.div_ceil(4096) && !self.end.is_multiple_of(16) {
-            return Err(Error::Corrupt("backed tail is not checksum-unit aligned"));
         }
         Ok(())
     }

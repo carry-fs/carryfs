@@ -462,6 +462,11 @@ impl BlockDevice for ImageDevice {
     }
 
     fn flush_durable(&mut self) -> Result<()> {
+        #[cfg(target_os = "netbsd")]
+        if is_device_file(&self.file)? {
+            return crate::netbsd::flush_device(&self.file)
+                .map_err(|source| Error::io("flush_durable", source));
+        }
         #[cfg(target_os = "macos")]
         if is_device_file(&self.file)? {
             return flush_macos_device(&self.file)

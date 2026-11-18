@@ -44,7 +44,7 @@ use fuser::{
     ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 
-#[cfg(not(target_os = "freebsd"))]
+#[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
 use fuser::{InitFlags, Notifier};
 
 #[cfg(target_os = "macos")]
@@ -56,14 +56,14 @@ use crate::eject_macos::Failure;
 // only an entry's stored spelling is ever given a lifetime, and every change
 // made through any other spelling invalidates cached names. Linux increments
 // the connection epoch before mutation; macOS queues per-name invalidation.
-// Older Linux kernels and FreeBSD use zero entry TTL.
+// Older Linux kernels and the BSD adapters use zero entry TTL.
 // Other spellings and missing names are never cached. Caching exact names let
 // `stat` skip the lookup round trip. Attributes
 // belong to the inode, and this mount is the only writer; the kernel drops
 // them after its own write, truncate, create, unlink, and rename requests, so
 // a short TTL serves repeated stat calls. FreeBSD does not invalidate the
 // replaced inode's attributes on rename: another hard link would keep a stale
-// link count. Writable FreeBSD mounts therefore give attributes no lifetime.
+// link count. Writable BSD mounts conservatively give attributes no lifetime.
 //
 // A stored-spelling name lives one hour, writable mounts included: this
 // mount holds the device, and the kernel updates its own entries on every
@@ -94,14 +94,19 @@ const CACHED_TTL: Duration = Duration::from_secs(3600);
 const FILE_OPEN: FopenFlags = FopenFlags::FOPEN_KEEP_CACHE;
 #[cfg(not(target_os = "linux"))]
 const FILE_OPEN: FopenFlags = FopenFlags::empty();
-const MAX_WRITE: u32 = 1 << 20;
+// NetBSD's relay uses packet sockets bounded by the default kernel sbmax.
+const MAX_WRITE: u32 = if cfg!(target_os = "netbsd") {
+    64 << 10
+} else {
+    1 << 20
+};
 /// The block size each object reports. macFUSE sends reads and writes of
 /// this size, rounded up to the 16 KiB page: 4 KiB made 16 KiB writes, which
 /// ran at 31 MiB/s on a USB SSD against 165 MiB/s at 1 MiB. Neither the
 /// `iosize` mount option nor the statfs block size changed that.
 #[cfg(target_os = "macos")]
 const IO_BYTES: u32 = MAX_WRITE;
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))]
 const IO_BYTES: u32 = 4096;
 #[cfg(target_os = "macos")]
 const MACFUSE_CASE_INSENSITIVE: u64 = 1 << 29;
@@ -470,12 +475,12 @@ impl<D: BlockDevice> CarryFs<D> {
             state: Arc::new(Mutex::new(State::new(volume))),
             owner,
             read_buffer: Mutex::new(Vec::new()),
-            entry_ttl: if strict || cfg!(target_os = "freebsd") {
+            entry_ttl: if strict || cfg!(any(target_os = "freebsd", target_os = "netbsd")) {
                 NO_TTL
             } else {
                 ENTRY_TTL
             },
-            attr_ttl: if cfg!(target_os = "freebsd") {
+            attr_ttl: if cfg!(any(target_os = "freebsd", target_os = "netbsd")) {
                 NO_TTL
             } else {
                 ATTR_TTL
@@ -523,7 +528,7 @@ impl<D: BlockDevice> CarryFs<D> {
         requested: &OsStr,
         stored: &[u8],
     ) -> Duration {
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))]
         {
             let _ = (state, parent);
             name_ttl(requested, stored, self.entry_ttl)
@@ -1160,7 +1165,11 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
         // One FUSE write maps to one bounded core write.
         config
             .set_max_write(MAX_WRITE)
-            .map_err(|_| io::Error::other("kernel rejected the 1 MiB write size"))?;
+            .map_err(|_| io::Error::other("kernel rejected the write size"))?;
+        #[cfg(target_os = "netbsd")]
+        config
+            .set_max_readahead(MAX_WRITE)
+            .map_err(|_| io::Error::other("relay rejected the read size"))?;
         // Full plus replies favor list-all-then-stat callers such as file
         // managers and rsync. Strict mounts and older kernels, whose plus
         // entries carry zero TTL, let Linux switch to plain replies (AUTO).
@@ -1219,7 +1228,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
 
     /// Publish while the mount still owns the device, before unmount can
     /// return. A failed publication must allow removal, with a warning.
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))]
     fn before_destroy(&self) {
         let result = self.with(|state| {
             state.ended = true;
@@ -1460,7 +1469,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                 let (destination_parent, destination) = (id(newparent)?, parse(newname)?);
                 // Archive Utility and NSFileManager's replaceItem swap a finished
                 // temporary item into place and do not fall back.
-                #[cfg(not(target_os = "freebsd"))]
+                #[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
                 if flags == SWAP {
                     let mut entry =
                         |parent, name| s.volume.lookup_entry(parent, name).map_err(|e| errno(&e));
@@ -1495,7 +1504,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                 }
                 let replace = rename_replace(flags)?;
                 let moved = s.volume.lookup_entry(source_parent, &source).ok();
-                #[cfg(not(target_os = "freebsd"))]
+                #[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
                 let replaced = s.volume.lookup_entry(destination_parent, &destination).ok();
                 #[cfg(target_os = "linux")]
                 self.invalidate_names(
@@ -1979,7 +1988,11 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
                                 // iterate_dir holds i_rwsem until fuse_readdir has
                                 // linked these names. An alias mutation cannot
                                 // overtake this reply in the same directory.
-                                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                                #[cfg(any(
+                                    target_os = "linux",
+                                    target_os = "freebsd",
+                                    target_os = "netbsd"
+                                ))]
                                 let ttl = self.entry_ttl;
                                 #[cfg(target_os = "macos")]
                                 let ttl = if guarded.contains(name.as_bytes()) {
@@ -2085,7 +2098,7 @@ impl<D: BlockDevice> CarryFs<D> {
             let result = s.volume.remove_with(directory, &parsed, kind, |stored| {
                 self.invalidate_names(&mut s.notifier, name.as_bytes() != stored)
             });
-            #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+            #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd"))]
             let result = s.volume.remove(directory, &parsed, kind);
             match result {
                 Err(Error::WrongType) if kind == RemoveKind::File => return Err(Errno::EISDIR),
@@ -2149,8 +2162,8 @@ fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     }
 }
 
-/// FreeBSD has no rename flags, so exchange never reaches `rename`.
-#[cfg(target_os = "freebsd")]
+/// The BSDs have no rename flags, so exchange never reaches `rename`.
+#[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
 fn rename_replace(flags: RenameFlags) -> Reply<Replace> {
     if flags.is_empty() {
         Ok(Replace::Allowed)

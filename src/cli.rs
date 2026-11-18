@@ -2,17 +2,32 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 use std::{fs, io::Read, os::unix::ffi::OsStrExt};
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 use carryfs_core::{AttributeChange, Mode, Name, NewAttributes, ObjectId, ObjectKind, ROOT};
 use carryfs_core::{Finding, ImageDevice, MountMode, Volume};
 
 #[cfg(target_os = "macos")]
 mod authopen;
 pub(super) mod fsck;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 mod host;
 #[cfg(target_os = "linux")]
 mod image_linux;
@@ -37,7 +52,12 @@ pub(super) fn report(finding: Finding<'_>) {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 fn names(path: &OsStr) -> Result<Vec<Name>> {
     let path = path.to_str().ok_or("CarryFS path must be UTF-8")?;
     if !path.starts_with('/') {
@@ -52,7 +72,12 @@ fn names(path: &OsStr) -> Result<Vec<Name>> {
         .collect()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 fn resolve(volume: &mut Volume<ImageDevice>, path: &[Name]) -> Result<ObjectId> {
     let mut object = ROOT;
     for name in path {
@@ -169,11 +194,17 @@ fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
     Ok(carryfs_core::freebsd::open_device(path, mode)?)
 }
 
+#[cfg(target_os = "netbsd")]
+fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
+    Ok(carryfs_core::netbsd::open_device(path, mode)?)
+}
+
 /// Other platforms open the device without excluding a mount.
 #[cfg(not(any(
     target_os = "linux",
     target_os = "macos",
     target_os = "freebsd",
+    target_os = "netbsd",
     windows
 )))]
 fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
@@ -238,7 +269,12 @@ pub(super) fn upgrade(image: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 pub(super) fn get(
     image: &Path,
     device_bytes: Option<u64>,
@@ -261,13 +297,23 @@ pub(super) fn get(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
 pub(super) fn get(_: &Path, _: Option<u64>, _: &OsStr, _: &Path) -> Result<()> {
-    Err("secure extraction is implemented only on Linux, macOS, and FreeBSD".into())
+    Err("secure extraction is implemented only on Linux, macOS, FreeBSD, and NetBSD".into())
 }
 
 /// The mode and, on macOS, the Finder hidden flag of a host object.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 fn host_attributes(metadata: &fs::Metadata) -> NewAttributes {
     use std::os::unix::fs::PermissionsExt;
     #[cfg(target_os = "macos")]
@@ -285,7 +331,12 @@ fn host_attributes(metadata: &fs::Metadata) -> NewAttributes {
 
 /// Print the mode and hidden state of `path` in `image`, after applying
 /// `changes`: `mode=OCTAL` and `hidden=yes` or `hidden=no`.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 pub(super) fn attr(image: &Path, path: &OsStr, changes: &[OsString]) -> Result<()> {
     const USAGE: &str = "expected mode=OCTAL (0 through 777) or hidden=yes|no";
     let mut change = AttributeChange::default();
@@ -332,12 +383,22 @@ pub(super) fn attr(image: &Path, path: &OsStr, changes: &[OsString]) -> Result<(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
 pub(super) fn attr(_: &Path, _: &OsStr, _: &[OsString]) -> Result<()> {
-    Err("attr is implemented only on Linux, macOS, and FreeBSD".into())
+    Err("attr is implemented only on Linux, macOS, FreeBSD, and NetBSD".into())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 fn import_file(
     volume: &mut Volume<ImageDevice>,
     source: &Path,
@@ -396,7 +457,12 @@ fn import_file(
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()> {
     let path = names(destination)?;
     let (name, parents) = path
@@ -479,7 +545,12 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
     result.map_err(|error| format!("import failed; partial destination may remain: {error}").into())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
 pub(super) fn put(_: &Path, _: &Path, _: &OsStr) -> Result<()> {
-    Err("offline import is implemented only on Linux, macOS, and FreeBSD".into())
+    Err("offline import is implemented only on Linux, macOS, FreeBSD, and NetBSD".into())
 }

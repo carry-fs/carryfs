@@ -56,6 +56,17 @@ class ReleaseIndexTests(unittest.TestCase):
                 assets = [asset for asset in complete["assets"] if asset != missing]
                 self.assertEqual(self.generate([[release("0.1.1", assets=assets)]]), "")
 
+    def test_netbsd_releases_require_both_payloads(self):
+        complete = release("0.2.0")
+        netbsd = [dict(name=f"carryfs-0.2.0-{platform}.tar.gz", state="uploaded")
+                  for platform in ("netbsd10-x86_64", "netbsd11-x86_64")]
+        complete["assets"].extend(netbsd)
+        self.assertEqual(self.generate([[complete]]), "0.2.0\n")
+        for missing in netbsd:
+            with self.subTest(missing=missing["name"]):
+                assets = [asset for asset in complete["assets"] if asset != missing]
+                self.assertEqual(self.generate([[release("0.2.0", assets=assets)]]), "")
+
     def test_empty_repository_has_empty_index(self):
         self.assertEqual(self.generate([[]]), "")
 

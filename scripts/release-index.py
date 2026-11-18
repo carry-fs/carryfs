@@ -21,6 +21,9 @@ def main():
             if any(asset["name"].startswith(f"carryfs-{version}-freebsd") for asset in release["assets"]):
                 required.update(f"carryfs-{version}-{platform}.tar.gz" for platform in (
                     "freebsd14-x86_64", "freebsd14-arm64", "freebsd15-x86_64", "freebsd15-arm64"))
+            if any(asset["name"].startswith(f"carryfs-{version}-netbsd") for asset in release["assets"]):
+                required.update(f"carryfs-{version}-{platform}.tar.gz" for platform in (
+                    "netbsd10-x86_64", "netbsd11-x86_64"))
             uploaded = {asset["name"] for asset in release["assets"] if asset["state"] == "uploaded"}
             if required <= uploaded:
                 versions.add(tuple(map(int, match.groups())))

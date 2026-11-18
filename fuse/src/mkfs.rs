@@ -14,11 +14,14 @@
 
 use std::error::Error as StdError;
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use std::fs::OpenOptions;
 #[cfg(target_os = "linux")]
 use std::io::ErrorKind;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -40,7 +43,7 @@ enum Request {
 #[cfg(target_os = "linux")]
 const USAGE: &str = "usage: mkfs.carryfs [-f] [-L LABEL] DEVICE | mkfs.carryfs --wipe DEVICE";
 
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
 const USAGE: &str = "usage: newfs_carryfs [-f] [-L LABEL] DEVICE | newfs_carryfs --wipe DEVICE";
 
 /// Format options, then the device.
@@ -97,6 +100,8 @@ fn run(device: &Path, request: Request) -> Result<String> {
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(device)?;
+    #[cfg(target_os = "netbsd")]
+    let claim = carryfs_core::netbsd::open_device(device, MountMode::ReadOnly)?;
     let partitions = partitions(&claim)?;
     if !partitions.is_empty() {
         return Err(format!(
@@ -186,6 +191,88 @@ fn partitions(device: &File) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     Err(format!("gpart show {name} failed: {stderr}").into())
+}
+
+/// Wedges are partitions. Whole disks must have neither wedges nor disklabel
+/// partitions before the formatter is allowed to erase their reserved bands.
+#[cfg(target_os = "netbsd")]
+fn partitions(device: &File) -> Result<Vec<String>> {
+    use std::os::unix::fs::MetadataExt;
+    #[link(name = "util")]
+    unsafe extern "C" {
+        fn getrawpartition() -> libc::c_int;
+    }
+    let metadata = device.metadata()?;
+    // SAFETY: devname returns a NUL-terminated device name, copied immediately.
+    let name = unsafe {
+        let name = libc::devname(metadata.rdev() as libc::dev_t, libc::S_IFCHR);
+        if name.is_null() {
+            return Err("unknown NetBSD raw disk".into());
+        }
+        std::ffi::CStr::from_ptr(name).to_str()?.to_owned()
+    };
+    // devname may return an alias such as rvnd0, without its partition suffix.
+    let path = std::fs::canonicalize(format!("/dev/{name}"))?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("invalid NetBSD raw disk name")?;
+    if name.starts_with("rdk") {
+        return Ok(Vec::new());
+    }
+    // SAFETY: getrawpartition takes no arguments and returns an index or -1.
+    let raw = unsafe { getrawpartition() };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // amd64 disklabel partitions occupy the low four minor-number bits.
+    if libc::minor(metadata.rdev() as libc::dev_t) % 16 != raw {
+        return Ok(Vec::new());
+    }
+    let path = path.to_str().ok_or("invalid NetBSD raw disk path")?;
+    let wedges = std::process::Command::new("/sbin/dkctl")
+        .env("LC_ALL", "C")
+        .args([path, "listwedges"])
+        .output()?;
+    if !wedges.status.success() {
+        return Err(format!(
+            "dkctl listwedges failed: {}",
+            String::from_utf8_lossy(&wedges.stderr)
+        )
+        .into());
+    }
+    let mut names: Vec<String> = String::from_utf8(wedges.stdout)?
+        .lines()
+        .filter_map(|line| {
+            line.split_once(':')
+                .filter(|(name, _)| name.starts_with("dk"))
+        })
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    let label = std::process::Command::new("/sbin/disklabel")
+        .env("LC_ALL", "C")
+        .args(["-r", path])
+        .output()?;
+    if label.status.success() {
+        for line in String::from_utf8(label.stdout)?.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() >= 3
+                && fields[0].len() == 2
+                && fields[0].ends_with(':')
+                && fields[0].as_bytes()[0] != b'a' + raw as u8
+                && fields[1].parse::<u64>().is_ok_and(|size| size != 0)
+            {
+                names.push(fields[0].trim_end_matches(':').to_owned());
+            }
+        }
+    } else if !String::from_utf8_lossy(&label.stderr).contains("could not read existing label") {
+        return Err(format!(
+            "disklabel failed: {}",
+            String::from_utf8_lossy(&label.stderr)
+        )
+        .into());
+    }
+    Ok(names)
 }
 
 #[cfg(test)]

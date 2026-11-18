@@ -102,10 +102,50 @@ jobs:
           path: payload
           if-no-files-found: error
 
+  netbsd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '10.2'
+            platform: netbsd10-x86_64
+          - version: '11.1'
+            platform: netbsd11-x86_64
+    steps:
+      - uses: actions/checkout@v7
+      - name: NetBSD VM
+        uses: cross-platform-actions/action@82668f1fbd89d9c99487604f822cbf6716f124d3 # v1.7.0
+        with:
+          operating_system: netbsd
+          # The action default image bundle predates NetBSD 11.1.
+          image_url: https://github.com/cross-platform-actions/netbsd-builder/releases/download/v1.3.0/netbsd-${{ matrix.version }}-x86-64.tar.zst
+          architecture: x86-64
+          version: ${{ matrix.version }}
+      - name: Build and stage
+        shell: cpa.sh {0}
+        run: |
+          export PATH="$HOME/.cargo/bin:/usr/pkg/bin:/usr/pkg/sbin:/sbin:/usr/sbin:$PATH"
+          curl -fsSL -o /tmp/carryfs-rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-netbsd/rustup-init
+          chmod +x /tmp/carryfs-rustup-init
+          /tmp/carryfs-rustup-init -y --profile minimal
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+            [ "$GITHUB_REF_NAME" = "v$version" ]
+          fi
+          cargo build --release --locked -p carryfs-core -p carryfs-fuse
+          bash packaging/stage-release.sh ${{ matrix.platform }} payload
+      - uses: actions/upload-artifact@v7
+        with:
+          name: payload-${{ matrix.platform }}
+          path: payload
+          if-no-files-found: error
+
   # Archives are built on Linux so the Windows zip has forward-slash entries,
   # which install.ps1 requires.
   package:
-    needs: [build, freebsd]
+    needs: [build, freebsd, netbsd]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
@@ -116,7 +156,7 @@ jobs:
           set -euo pipefail
           version=$(cat payloads/payload-linux-x86_64/VERSION)
           mkdir dist
-          for platform in linux-x86_64 macos-arm64 freebsd14-x86_64 freebsd14-arm64 freebsd15-x86_64 freebsd15-arm64; do
+          for platform in linux-x86_64 macos-arm64 freebsd14-x86_64 freebsd14-arm64 freebsd15-x86_64 freebsd15-arm64 netbsd10-x86_64 netbsd11-x86_64; do
             [ "$(cat payloads/payload-$platform/VERSION)" = "$version" ]
             tar --owner=0 --group=0 --numeric-owner -czf "dist/carryfs-$version-$platform.tar.gz" -C "payloads/payload-$platform" .
           done

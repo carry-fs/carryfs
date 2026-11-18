@@ -5,6 +5,8 @@ die() { printf 'carryfs: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die 'System installation requires root.'
 [ "$#" = 3 ] || die 'Usage: install-system.sh PACKAGE PLATFORM EXPECTED_VERSION'
 payload=$1 platform=$2 expected=$3
+bsd_sbin=/usr/local/sbin
+case $platform in netbsd*) bsd_sbin=/usr/sbin ;; esac
 case $platform in
     linux-x86_64)
         marker=/usr/libexec/carryfs/VERSION
@@ -14,9 +16,9 @@ case $platform in
         marker=/Library/Filesystems/carryfs.fs/Contents/VERSION
         paths='/usr/local/bin/carryfs /usr/local/bin/fsck.carryfs /Library/Filesystems/carryfs.fs'
         ;;
-    freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64)
+    freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64|netbsd10-x86_64|netbsd11-x86_64)
         marker=/usr/local/libexec/carryfs/VERSION
-        paths='/usr/local/bin/carryfs /usr/local/bin/fsck.carryfs /usr/local/libexec/carryfs /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs'
+        paths="/usr/local/bin/carryfs /usr/local/bin/fsck.carryfs /usr/local/libexec/carryfs $bsd_sbin/mount_carryfs $bsd_sbin/newfs_carryfs"
         ;;
     *) die 'Unsupported package platform.' ;;
 esac
@@ -177,16 +179,16 @@ case $platform in
         fi
         udevadm control --reload
         ;;
-    freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64)
-        for link in /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs; do
+    freebsd14-x86_64|freebsd14-arm64|freebsd15-x86_64|freebsd15-arm64|netbsd10-x86_64|netbsd11-x86_64)
+        for link in "$bsd_sbin/mount_carryfs" "$bsd_sbin/newfs_carryfs"; do
             if [ -e "$link" ] || [ -L "$link" ]; then
                 [ -L "$link" ] && [ "$(readlink "$link")" = /usr/local/libexec/carryfs/carryfs-fuse ] || die "$link already belongs to another installation."
             fi
         done
-        mkdir -p /usr/local/libexec/carryfs /usr/local/sbin
+        mkdir -p /usr/local/libexec/carryfs "$bsd_sbin"
         install -m 755 "$payload/carryfs-fuse" /usr/local/libexec/carryfs/carryfs-fuse.new
         mv -f /usr/local/libexec/carryfs/carryfs-fuse.new /usr/local/libexec/carryfs/carryfs-fuse
-        for link in /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs; do
+        for link in "$bsd_sbin/mount_carryfs" "$bsd_sbin/newfs_carryfs"; do
             if [ ! -L "$link" ]; then ln -s /usr/local/libexec/carryfs/carryfs-fuse "$link"; fi
         done
         install -m 644 "$payload/VERSION" "$marker"

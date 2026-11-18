@@ -1,25 +1,45 @@
 //! CarryFS FUSE adapter. On Ubuntu: a FUSE daemon, udisks mount helper, udev
 //! probe, and mkfs(8) helper. On macOS: a macFUSE daemon and its mount(8) helper.
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 mod device;
 #[cfg(target_os = "macos")]
 mod eject_macos;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 mod fs;
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))]
 mod mkfs;
 #[cfg(target_os = "linux")]
 mod mount;
-#[cfg(target_os = "freebsd")]
-mod mount_freebsd;
+#[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
+mod mount_bsd;
 #[cfg(target_os = "macos")]
 mod mount_macos;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 mod options;
 #[cfg(target_os = "macos")]
 mod read_cache;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 mod signals;
 
 use std::process::ExitCode;
@@ -68,10 +88,10 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd"))]
 fn main() -> ExitCode {
-    #[cfg(target_os = "freebsd")]
-    use mount_freebsd as platform;
+    #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
+    use mount_bsd as platform;
     #[cfg(target_os = "macos")]
     use mount_macos as platform;
     use std::path::Path;
@@ -80,7 +100,7 @@ fn main() -> ExitCode {
     let helper = args
         .first()
         .is_some_and(|argv0| options::is_helper_name(argv0));
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
     if args
         .first()
         .is_some_and(|arg| Path::new(arg).file_name() == Some("newfs_carryfs".as_ref()))
@@ -101,7 +121,7 @@ fn main() -> ExitCode {
                 println!("{}", carryfs_core::version_line("carryfs-fuse"));
                 Ok(())
             }
-            #[cfg(target_os = "freebsd")]
+            #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
             [command, rest @ ..] if command == "mkfs" => mkfs::main(rest),
             [command, device, directory, options] if command == "serve" => options
                 .to_str()
@@ -125,7 +145,12 @@ fn main() -> ExitCode {
 
 /// Let a volume CarryFS 0.1.0 formatted on `path` take writes. CarryFS 0.1.0
 /// cannot mount it afterwards.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 fn upgrade(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use carryfs_core::{MountMode, Volume};
     #[cfg(target_os = "macos")]
@@ -133,7 +158,7 @@ fn upgrade(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     let path = raw.as_path();
     // On Linux the kernel's exclusive claim fails while the device is
-    // mounted. On macOS and FreeBSD `Disk::open` takes the lock a mounted
+    // mounted. On macOS and the BSDs `Disk::open` takes the lock a mounted
     // daemon holds.
     #[cfg(target_os = "linux")]
     let _claim = {
@@ -162,8 +187,13 @@ fn upgrade(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
 fn main() -> ExitCode {
-    eprintln!("carryfs-fuse supports only Linux, macOS, and FreeBSD");
+    eprintln!("carryfs-fuse supports only Linux, macOS, FreeBSD, and NetBSD");
     ExitCode::FAILURE
 }

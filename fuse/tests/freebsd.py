@@ -231,7 +231,9 @@ class MountedVolume(unittest.TestCase):
                         os.close(directory)
                     self.daemon.wait(timeout=20)
                     self.daemon = None
-                    run("umount", "-f", self.point)
+                    # PUFFS detaches automatically when its daemon exits.
+                    if os.path.ismount(self.point):
+                        run("umount", "-f", self.point)
                     result = run(CLI, "get", "--bytes", BYTES, self.device, "/", self.work / f"{operation}-{datasync}", stdout=self.log)
                     self.assertEqual(result.returncode, 0)
                     expected = {"create": {"before", "after"}, "rename": {"after"}, "unlink": {}}[operation]
@@ -324,7 +326,7 @@ class MountedVolume(unittest.TestCase):
         self.assertEqual(nobody("cat", str(point / "shared")).stdout, b"readable")
         for command in [("touch", str(point / "new")),
                         ("rm", "-f", str(point / "shared")),
-                        ("truncate", "-s", "0", str(point / "shared"))]:
+                        (sys.executable, "-c", "import os,sys; os.close(os.open(sys.argv[1], os.O_WRONLY | os.O_TRUNC))", str(point / "shared"))]:
             result = nobody(*command)
             self.assertNotEqual(result.returncode, 0, command)
         self.assertEqual((point / "shared").read_bytes(), b"readable")
@@ -390,11 +392,12 @@ class MountedVolume(unittest.TestCase):
         self.assertNotEqual(self.user(owner, f"chown {other} $MNT/a")[0], 0)
         self.assertEqual(self.user(owner, f"chown {owner}:{owner} $MNT/a")[0], 0)
         # FreeBSD's fusefs accepts chflags and drops it before the daemon.
-        self.assertEqual(self.user(owner, "chflags hidden $MNT/a")[0], 0)
-        self.assertEqual(os.stat(p / "a").st_flags & stat.UF_HIDDEN, 0)
+        if sys.platform.startswith("freebsd"):
+            self.assertEqual(self.user(owner, "chflags hidden $MNT/a")[0], 0)
+            self.assertEqual(os.stat(p / "a").st_flags & stat.UF_HIDDEN, 0)
         self.user(owner, "ln -s a $MNT/link")
         self.assertEqual(mode(p / "link"), 0o777)
-        self.assertEqual(self.user(owner, "mv $MNT/script $MNT/d/moved && truncate -s 1 $MNT/d/moved")[0], 0)
+        self.assertEqual(self.user(owner, "mv $MNT/script $MNT/d/moved && printf x > $MNT/d/moved")[0], 0)
         self.assertEqual(mode(p / "d/moved"), 0o750)
         expected = {name: mode(p / name) for name in ["a", "d", "shared", "secret", "d/moved"]}
         self.unmount()

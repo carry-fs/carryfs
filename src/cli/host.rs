@@ -71,8 +71,10 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 pub(super) const UF_HIDDEN: u32 = 0x8000;
 
+type StoredAttributes = (u32, bool);
+
 /// Give an extracted object its stored mode, and on macOS its hidden flag.
-fn restore(file: &File, (mode, hidden): (u32, bool)) -> Result<()> {
+fn restore(file: &File, (mode, hidden): StoredAttributes) -> Result<()> {
     file.set_permissions(Permissions::from_mode(mode))
         .map_err(|e| io_error("restore extracted mode", e))?;
     #[cfg(target_os = "macos")]
@@ -151,8 +153,8 @@ pub(super) struct Sink {
     // Root followed by the currently visited ancestors, each with the mode
     // to restore once its entries exist. Completed branches are dropped when
     // traversal returns to a shallower path.
-    directories: Vec<(Rc<File>, Option<(u32, bool)>)>,
-    link_parents: Vec<(Rc<File>, (u32, bool))>,
+    directories: Vec<(Rc<File>, Option<StoredAttributes>)>,
+    link_parents: Vec<(Rc<File>, StoredAttributes)>,
     /// Created entries whose objects have other names, by path, so a later
     /// link reaches only the object extraction wrote.
     held: HashMap<Vec<Vec<u8>>, Held>,
@@ -190,12 +192,37 @@ impl Held {
 }
 
 /// The device and inode `name` in `directory` names, without following it.
+#[cfg(not(target_os = "macos"))]
 fn identity(directory: &File, name: &CString) -> Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     let metadata = open_at(directory, name, IDENTITY)?
         .metadata()
         .map_err(|e| io_error("inspect extracted entry", e))?;
     Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(target_os = "macos")]
+fn identity(directory: &File, name: &CString) -> Result<(u64, u64)> {
+    // O_SYMLINK still requires read permission when the entry is a regular file.
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the directory and name are live, and fstatat writes to metadata.
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io_error(
+            "inspect extracted entry",
+            io::Error::last_os_error(),
+        ));
+    }
+    // SAFETY: successful fstatat initialized the structure.
+    let metadata = unsafe { metadata.assume_init() };
+    Ok((metadata.st_dev as u64, metadata.st_ino))
 }
 
 fn path_key(path: &[Name]) -> Vec<Vec<u8>> {
@@ -271,7 +298,7 @@ impl Sink {
         Ok(())
     }
 
-    fn stored(&self, attributes: &Attributes) -> Option<(u32, bool)> {
+    fn stored(&self, attributes: &Attributes) -> Option<StoredAttributes> {
         (attributes.kind != ObjectKind::Symlink)
             .then(|| (u32::from(attributes.mode.bits()), attributes.hidden))
     }
@@ -536,6 +563,7 @@ mod tests {
         let linked = Attributes {
             kind: ObjectKind::File,
             links: 2,
+            mode: carryfs_core::Mode::from_host(0),
             ..attributes()
         };
         let temp = Temp::new();

@@ -127,9 +127,9 @@ jobs:
         shell: cpa.sh {0}
         run: |
           export PATH="$HOME/.cargo/bin:/usr/pkg/bin:/usr/pkg/sbin:/sbin:/usr/sbin:$PATH"
-          curl -fsSL -o /tmp/carryfs-rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-netbsd/rustup-init
-          chmod +x /tmp/carryfs-rustup-init
-          /tmp/carryfs-rustup-init -y --profile minimal
+          curl -fsSL -o /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-netbsd/rustup-init
+          chmod +x /tmp/rustup-init
+          /tmp/rustup-init -y --profile minimal
           if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
             version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
             [ "$GITHUB_REF_NAME" = "v$version" ]

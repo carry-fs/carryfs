@@ -1313,7 +1313,8 @@ fn overview(s: &State, k: &Kit) -> El {
                 .child(facts(k, pairs)),
         );
     }
-    if let Some(b) = &s.browser {
+    // Revision 2 volumes all show the same two rows, so only legacy ones get the block.
+    if let Some(b) = s.browser.as_ref().filter(|b| b.legacy) {
         let mut features = col()
             .w_full()
             .gap(10.0)

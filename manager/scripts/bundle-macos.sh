@@ -3,7 +3,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 target="$root/manager/target"
 cargo build --manifest-path "$root/manager/Cargo.toml" --target-dir "$target" --locked --release --bins
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/manager/Cargo.toml" | head -n 1)
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml" | head -n 1)
 stage=$(mktemp -d "$target/bundle.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 bundle="$target/CarryFS Manager.app"

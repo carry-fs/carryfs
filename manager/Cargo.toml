@@ -1,6 +1,5 @@
 [package]
 name = "carryfs-manager"
-version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0 OR GPL-2.0-only"
 default-run = "carryfs-manager"

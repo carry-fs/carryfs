@@ -1788,13 +1788,6 @@ fn activity(s: &State, k: &Kit) -> El {
 
 fn software(s: &State, k: &Kit) -> El {
     let busy = s.pending.is_some();
-    let core = include_str!("../../Cargo.toml")
-        .lines()
-        .find_map(|s| {
-            s.strip_prefix("version = \"")
-                .and_then(|s| s.strip_suffix('"'))
-        })
-        .unwrap_or("Unknown");
     let installed = s.versions.installed.clone();
     let mut actions = row().gap(8.0).child(
         Button::new("Check for Updates")
@@ -1852,8 +1845,8 @@ fn software(s: &State, k: &Kit) -> El {
                     "Latest release",
                     s.versions.latest.clone().unwrap_or_else(|| "Not checked".into()),
                 ),
-                ("CarryFS Manager", env!("CARGO_PKG_VERSION").into()),
-                ("Bundled tools", core.into()),
+                ("CarryFS Manager", carryfs_core::VERSION.into()),
+                ("Bundled tools", carryfs_core::VERSION.into()),
             ],
         ))
         .child(

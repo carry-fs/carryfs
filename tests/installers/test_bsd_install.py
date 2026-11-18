@@ -80,3 +80,34 @@ class BSDInstallTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("another installation", result.stderr)
         self.assertEqual(foreign.read_text(), "another checker")
+
+    def test_uninstall_removes_only_owned_bsd_helpers(self):
+        for system, platform, sbin in (
+            ("NetBSD", "netbsd11-x86_64", "usr/sbin"),
+            ("FreeBSD", "freebsd15-arm64", "usr/local/sbin"),
+        ):
+            with self.subTest(system=system):
+                result = self.install(platform)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                owned = self.host / sbin / "newfs_carryfs"
+                foreign = self.host / sbin / "mount_carryfs"
+                foreign.unlink()
+                foreign.write_text("local helper")
+
+                uname = self.host / "bin/uname"
+                uname.write_text(f"#!/bin/sh\necho {system}\n")
+                uname.chmod(0o755)
+                confirmation = self.work / "confirmation"
+                confirmation.write_text("y\n")
+                source = (ROOT / "install.sh").read_text()
+                source = re.sub(r"/(?:usr/local|usr/sbin)",
+                                lambda match: str(self.host) + match[0], source)
+                source = source.replace("> /dev/tty", "> /dev/null").replace("/dev/tty", str(confirmation))
+                env = dict(os.environ, PATH=str(self.host / "bin") + os.pathsep + os.environ["PATH"])
+                result = subprocess.run(["sh", "-s", "--", "--uninstall"], input=source,
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(foreign.read_text(), "local helper")
+                self.assertFalse(owned.is_symlink())
+                self.assertFalse((self.host / "usr/local/bin/fsck.carryfs").is_symlink())
+                self.assertFalse((self.host / "usr/local/libexec/carryfs").exists())

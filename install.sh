@@ -481,7 +481,12 @@ main() {
             if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then $sudo rm -f /usr/local/bin/fsck.carryfs; fi
             bsd_sbin=/usr/local/sbin
             [ "$system" != NetBSD ] || bsd_sbin=/usr/sbin
-            $sudo rm -f /usr/local/bin/carryfs "$bsd_sbin/mount_carryfs" "$bsd_sbin/newfs_carryfs"
+            for link in "$bsd_sbin/mount_carryfs" "$bsd_sbin/newfs_carryfs"; do
+                if [ -L "$link" ] && [ "$(readlink "$link")" = /usr/local/libexec/carryfs/carryfs-fuse ]; then
+                    $sudo rm -f "$link"
+                fi
+            done
+            $sudo rm -f /usr/local/bin/carryfs
             $sudo rm -rf /usr/local/libexec/carryfs
         elif [ "$(id -u)" = 0 ]; then
             if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then rm -f /usr/local/bin/fsck.carryfs; fi

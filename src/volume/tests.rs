@@ -1670,6 +1670,30 @@ fn grouped_write_preserves_checksums_across_groups_and_sparse_growth() {
     }
 }
 
+#[test]
+fn scrub_reports_growing_progress_up_to_the_verified_bytes() {
+    let mut volume = opened();
+    // Two files, one spanning two checksum groups, and a hole that isn't counted.
+    let big = volume.create_file(ROOT, name("big.bin")).unwrap();
+    let group = 256 * UNIT_BYTES;
+    let data = vec![7; group + 5];
+    let mut at = 0;
+    while at < data.len() {
+        at += volume.write(&big, at as u64, &data[at..]).unwrap();
+    }
+    let small = volume.create_file(ROOT, name("small.bin")).unwrap();
+    volume.write(&small, 3 * group as u64, b"tail").unwrap();
+    volume.sync().unwrap();
+    let mut reader = Volume::open(FaultDevice::new(durable(&volume), MountMode::ReadOnly)).unwrap();
+    let mut seen = Vec::new();
+    reader
+        .scrub_with_progress(&mut |f| panic!("{f:?}"), &mut |bytes| seen.push(bytes))
+        .unwrap();
+    assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+    assert!(seen.len() >= 3, "one report per group: {seen:?}");
+    assert_eq!(seen.last(), Some(&(group as u64 + 5 + 4)));
+}
+
 /// Extent records of `object` as (logical, physical, count).
 fn extents(volume: &mut Volume<FaultDevice>, object: ObjectId) -> Vec<(u64, u64, u64)> {
     use crate::volume::file::extent_key;

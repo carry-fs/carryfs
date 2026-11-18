@@ -395,7 +395,7 @@ UNINSTALL
 }
 
 main() {
-    requested='' upgrade=0 uninstall=0 local_build=0 native=0 installed=''
+    requested='' upgrade=0 uninstall=0 local_build=0 native=0 installed='' assume_yes=0
     while [ "$#" -gt 0 ]; do
         case $1 in
             --version)
@@ -407,8 +407,9 @@ main() {
             --uninstall) uninstall=1; shift ;;
             --local) local_build=1; shift ;;
             --native) native=1; shift ;;
+            --yes) assume_yes=1; shift ;;
             --help|-h)
-                printf 'Usage: install.sh [--version X.Y.Z[-rc.N] | --upgrade | --local [--native] | --uninstall]\nDefault: latest stable release within the installed major; latest stable on first install.\n--version installs that exact release, prereleases included.\n--local builds the checkout holding this script and installs or reinstalls it.\n--native adds the experimental Linux module for the running kernel; requires --local.\n--uninstall also removes all native modules recorded by this installer.\n'
+                printf 'Usage: install.sh [--version X.Y.Z[-rc.N] | --upgrade | --local [--native] | --uninstall] [--yes]\nDefault: latest stable release within the installed major; latest stable on first install.\n--version installs that exact release, prereleases included.\n--local builds the checkout holding this script and installs or reinstalls it.\n--native adds the experimental Linux module for the running kernel; requires --local.\n--uninstall also removes all native modules recorded by this installer.\n--yes installs without asking, for a caller that already confirmed it.\n'
                 return ;;
             *) die "Unknown argument: $1" ;;
         esac
@@ -504,10 +505,12 @@ main() {
         printf 'Native module: /lib/modules/%s/updates/carryfs.ko. FUSE remains the default; the module will not be loaded.\n' "$(cat "$work/payload/KERNEL_RELEASE")"
     fi
     printf '%s System installation requires administrator permission.\n' "$origin"
-    [ -r /dev/tty ] || die 'Confirmation needs a terminal; download the script and run it from an interactive shell.'
-    printf 'Install? [y/N] ' > /dev/tty
-    IFS= read -r answer < /dev/tty || die 'Could not read confirmation.'
-    case $answer in y|Y|yes|YES) ;; *) printf 'Installation cancelled.\n'; return ;; esac
+    if [ "$assume_yes" = 0 ]; then
+        [ -r /dev/tty ] || die 'Confirmation needs a terminal; download the script and run it from an interactive shell.'
+        printf 'Install? [y/N] ' > /dev/tty
+        IFS= read -r answer < /dev/tty || die 'Could not read confirmation.'
+        case $answer in y|Y|yes|YES) ;; *) printf 'Installation cancelled.\n'; return ;; esac
+    fi
     if [ "$(id -u)" = 0 ]; then
         sh "$work/payload/install-system.sh" "$work/payload" "$platform" "$installed"
     else

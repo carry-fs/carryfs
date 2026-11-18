@@ -8,7 +8,7 @@ description = "CarryFS image commit engine"
 
 [workspace]
 members = [".", "ondisk", "fuse", "macos", "windows", "android/native"]
-exclude = ["fuzz"]
+exclude = ["fuzz", "manager"]
 
 # The product version: every crate, package, and tag shares it (VERSIONING.md).
 [workspace.package]

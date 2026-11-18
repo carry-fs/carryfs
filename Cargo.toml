@@ -65,7 +65,8 @@ codegen-units = 1
 # publication finishes before the unmount reply (cberner/fuser#757), and
 # separate name/attribute TTLs for create and readdirplus (cberner/fuser#756),
 # and a spin budget for the event loop (`Config::spin`).
-# It also converts the NetBSD nodev mount flag, which nix lacks.
+# On NetBSD it also converts the nodev mount flag, which nix lacks, and
+# retries replies the relay socket rejects with EMSGSIZE until it has room.
 # Return to upstream once these fixes are available.
 [patch.crates-io]
 fuser = { git = "https://github.com/carry-fs/fuser", branch = "master" }

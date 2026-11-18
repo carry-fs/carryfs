@@ -185,8 +185,9 @@ Other raw-device programs must honor those leases to coordinate with CarryFS.
 NetBSD uses ordinary directory listings and conservative name and attribute
 caching. Namespace and data changes publish synchronously because libperfuse
 can omit directory fsync requests. The adapter includes a compatibility shim
-for libperfuse access checks and root ownership; it loads only into the
-adapter's relay process. Hidden flags and rename exchange are unsupported.
+for libperfuse access checks and root ownership, and it keeps the relay running
+until the kernel has finished an unmount. It loads only into the adapter's
+relay process. Hidden flags and rename exchange are unsupported.
 
 ### macOS
 

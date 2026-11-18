@@ -10,6 +10,8 @@ layout=$(mktemp -d)
 trap 'rm -rf "$layout"' EXIT
 cc -std=c11 -Wall -Wextra -Werror fuse/tests/netbsd-layout.c -o "$layout/layout"
 "$layout/layout"
+cc -std=c11 -Wall -Wextra -Werror fuse/tests/netbsd-relay.c -lpuffs -o "$layout/relay"
+"$layout/relay"
 PYTHON=$(command -v python3 || command -v python3.12)
 export PYTHON
 workspace='--workspace --exclude carryfs-macos --exclude carryfs-windows'

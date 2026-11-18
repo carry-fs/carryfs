@@ -70,8 +70,9 @@ still_mounted(const char *source)
     struct statvfs *mounts;
     int count = getmntinfo(&mounts, ST_NOWAIT);
 
-    if (count < 0)
-        err(1, "CarryFS relay: getmntinfo");
+    /* Zero means the mount table could not be read. Keep the relay alive. */
+    if (count == 0)
+        return 1;
     for (int i = 0; i < count; i++)
         if (strcmp(mounts[i].f_mntfromname, source) == 0 &&
             strncmp(mounts[i].f_fstypename, "puffs", 5) == 0)
@@ -85,6 +86,7 @@ perfuse_mainloop(struct puffs_usermount *mount)
     int (*next)(struct puffs_usermount *) = next_symbol("perfuse_mainloop");
     const char *source = getenv("CARRYFS_PERFUSE_SOURCE");
     const struct timespec pause = { 0, 10 * 1000 * 1000 };
+    unsigned warn_after = 2000;
     int result;
 
     if (source == NULL)
@@ -96,12 +98,10 @@ perfuse_mainloop(struct puffs_usermount *mount)
      * 10.2 and 11.1. Exit only after the mount has left the mount table; the
      * device lease keeps its source unique.
      */
-    for (int waited = 0; result == 0 && still_mounted(source); waited++) {
-        if (waited == 2000) {
-            warnx("CarryFS relay: %s is still mounted after 20 s", source);
-            break;
-        }
+    while (result == 0 && still_mounted(source)) {
         nanosleep(&pause, NULL);
+        if (warn_after != 0 && --warn_after == 0)
+            warnx("CarryFS relay: %s is still mounted after 20 s", source);
     }
     return result;
 }

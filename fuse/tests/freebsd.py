@@ -43,11 +43,7 @@ class MountedVolume(unittest.TestCase):
         ).strip()
 
     def cleanup(self):
-        if self.daemon is not None and self.daemon.poll() is None:
-            self.daemon.kill()
-            self.daemon.wait(timeout=20)
-        if os.path.ismount(self.point):
-            run("umount", "-f", self.point)
+        self.stop_daemon()
         if self.device is not None:
             run("mdconfig", "-d", "-u", Path(self.device).name)
         self.log.close()
@@ -66,6 +62,24 @@ class MountedVolume(unittest.TestCase):
             ready, _, _ = select.select([self.daemon.stdout], [], [], 45)
             if not ready or self.daemon.stdout.readline().strip() != b"ready":
                 raise AssertionError(f"mount failed; see {self.work / 'daemon.log'}")
+
+    def stop_daemon(self):
+        """Kill a running daemon and remove its mount."""
+        if self.daemon is not None:
+            if self.daemon.poll() is None:
+                self.daemon.kill()
+            self.daemon.wait(timeout=20)
+            self.daemon = None
+            if sys.platform.startswith("netbsd"):
+                # PUFFS force-unmounts when the relay exits after the daemon.
+                # A concurrent umount -f races that detach and panics NetBSD
+                # 10.2 and 11.1 in puffs_vfsop_unmount.
+                deadline = time.monotonic() + 20
+                while os.path.ismount(self.point):
+                    self.assertLess(time.monotonic(), deadline, "PUFFS did not detach")
+                    time.sleep(.05)
+        if os.path.ismount(self.point):
+            run("umount", "-f", self.point)
 
     def unmount(self):
         run("umount", self.point)
@@ -229,11 +243,7 @@ class MountedVolume(unittest.TestCase):
                         self.daemon.kill()
                     finally:
                         os.close(directory)
-                    self.daemon.wait(timeout=20)
-                    self.daemon = None
-                    # PUFFS detaches automatically when its daemon exits.
-                    if os.path.ismount(self.point):
-                        run("umount", "-f", self.point)
+                    self.stop_daemon()
                     result = run(CLI, "get", "--bytes", BYTES, self.device, "/", self.work / f"{operation}-{datasync}", stdout=self.log)
                     self.assertEqual(result.returncode, 0)
                     expected = {"create": {"before", "after"}, "rename": {"after"}, "unlink": {}}[operation]

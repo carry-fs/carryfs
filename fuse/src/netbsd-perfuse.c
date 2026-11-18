@@ -3,11 +3,14 @@
  * which also knows the request's supplementary groups.
  */
 #include <sys/types.h>
+#include <sys/statvfs.h>
 #include <dlfcn.h>
 #include <err.h>
 #include <puffs.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 struct perfuse_callbacks;
 struct perfuse_mount_info;
@@ -59,4 +62,46 @@ perfuse_node_access(struct puffs_usermount *mount, puffs_cookie_t node, int mode
         mode = (mode >> 6) & 7;
     next = next_symbol("perfuse_node_access");
     return next(mount, node, mode, credentials);
+}
+
+static int
+still_mounted(const char *source)
+{
+    struct statvfs *mounts;
+    int count = getmntinfo(&mounts, ST_NOWAIT);
+
+    if (count < 0)
+        err(1, "CarryFS relay: getmntinfo");
+    for (int i = 0; i < count; i++)
+        if (strcmp(mounts[i].f_mntfromname, source) == 0 &&
+            strncmp(mounts[i].f_fstypename, "puffs", 5) == 0)
+            return 1;
+    return 0;
+}
+
+int
+perfuse_mainloop(struct puffs_usermount *mount)
+{
+    int (*next)(struct puffs_usermount *) = next_symbol("perfuse_mainloop");
+    const char *source = getenv("CARRYFS_PERFUSE_SOURCE");
+    const struct timespec pause = { 0, 10 * 1000 * 1000 };
+    int result;
+
+    if (source == NULL)
+        errx(1, "CarryFS relay: missing mount source");
+    result = next(mount);
+    /* The loop returns once it has answered UNMOUNT, while the kernel is still
+     * tearing the mount down. Closing /dev/puffs then can free the putter
+     * instance before puffs_vfsop_unmount's seldestroy, which panics NetBSD
+     * 10.2 and 11.1. Exit only after the mount has left the mount table; the
+     * device lease keeps its source unique.
+     */
+    for (int waited = 0; result == 0 && still_mounted(source); waited++) {
+        if (waited == 2000) {
+            warnx("CarryFS relay: %s is still mounted after 20 s", source);
+            break;
+        }
+        nanosleep(&pause, NULL);
+    }
+    return result;
 }

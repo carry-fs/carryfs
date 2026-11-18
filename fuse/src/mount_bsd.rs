@@ -138,7 +138,8 @@ pub fn serve(device: &Path, directory: &Path, text: &str) -> Result<()> {
     #[cfg(target_os = "freebsd")]
     let session = Session::new(fs, directory, &config)?;
     #[cfg(target_os = "netbsd")]
-    let (session, mut relay) = netbsd_session(fs, device, directory, &options, root_mode, config)?;
+    let (session, mut relay, channel) =
+        netbsd_session(fs, device, directory, &options, root_mode, config)?;
     let point = directory.to_path_buf();
     signals::watch(signals, move || {
         stopper.checkpoint();
@@ -155,6 +156,7 @@ pub fn serve(device: &Path, directory: &Path, text: &str) -> Result<()> {
             relay.kill()?;
         }
         let status = relay.wait()?;
+        drop(channel);
         result?;
         if !status.success() {
             return Err(format!("perfused exited with {status}").into());
@@ -190,7 +192,11 @@ fn netbsd_session(
     options: &crate::options::Options,
     root_mode: u16,
     config: Config,
-) -> io::Result<(Session<CarryFs<Disk>>, std::process::Child)> {
+) -> io::Result<(
+    Session<CarryFs<Disk>>,
+    std::process::Child,
+    std::os::fd::OwnedFd,
+)> {
     use std::os::fd::AsRawFd;
 
     #[link(name = "perfuse")]
@@ -205,7 +211,7 @@ fn netbsd_session(
     }
     let source = CString::new(device.as_os_str().as_bytes())?;
     let target = CString::new(directory.as_os_str().as_bytes())?;
-    let (fd, mut relay, library) = netbsd_relay(options.owner, root_mode)?;
+    let (fd, mut relay, library) = netbsd_relay(device, options.owner, root_mode)?;
     let data = CString::new(format!("fd={},default_permissions", fd.as_raw_fd()))?;
     let mut flags = libc::MNT_NOSUID | libc::MNT_NODEV;
     if options.read_only {
@@ -230,17 +236,17 @@ fn netbsd_session(
         relay.wait()?;
         return Err(error);
     }
+    // perfused exits as soon as it reads EOF. fuser closes its channel right
+    // after replying to DESTROY, before perfused has answered the kernel's
+    // UNMOUNT. This duplicate keeps the socket open until perfused has exited.
+    let channel = fd.try_clone()?;
     let session = Session::from_fd(fs, fd, SessionACL::All, config);
-    if session.is_err() {
-        // A failed INIT can leave a mount behind; preserve the original error.
-        if let Err(error) = detach(directory) {
-            eprintln!("carryfs: cleaning up failed NetBSD mount: {error}");
-        }
-    }
     drop(library); // The relay has loaded the library before sending INIT.
     match session {
-        Ok(session) => Ok((session, relay)),
+        Ok(session) => Ok((session, relay, channel)),
         Err(error) => {
+            // Closing /dev/puffs on the relay's exit force-unmounts; a
+            // concurrent unmount(2) would race it.
             relay.kill()?;
             relay.wait()?;
             Err(error)
@@ -263,6 +269,7 @@ impl Drop for RelayLibrary {
 
 #[cfg(target_os = "netbsd")]
 fn netbsd_relay(
+    device: &Path,
     owner: Owner,
     root_mode: u16,
 ) -> io::Result<(std::os::fd::OwnedFd, std::process::Child, RelayLibrary)> {
@@ -344,7 +351,8 @@ fn netbsd_relay(
         .env(
             "CARRYFS_PERFUSE_ROOT",
             format!("{}:{}:{root_mode:o}", owner.uid, owner.gid),
-        );
+        )
+        .env("CARRYFS_PERFUSE_SOURCE", device);
     // SAFETY: pre_exec only calls the async-signal-safe fcntl operation. The
     // server descriptor remains live until the spawn completes.
     unsafe {

@@ -41,11 +41,7 @@ class MountedVolume(freebsd.MountedVolume):
         self.device = f"/dev/r{self.unit}d"
 
     def cleanup(self):
-        if self.daemon is not None and self.daemon.poll() is None:
-            self.daemon.kill()
-            self.daemon.wait(timeout=20)
-        if os.path.ismount(self.point):
-            run("umount", "-f", self.point)
+        self.stop_daemon()
         if self.device is not None:
             run("vndconfig", "-u", self.unit)
         self.log.close()

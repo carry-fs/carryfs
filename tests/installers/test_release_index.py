@@ -162,6 +162,11 @@ printf '%s\\n' "$selected"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, expected + "\n")
 
+    def test_prerelease_updates_to_stable_on_the_same_minor_line(self):
+        result = self.select("0.1.0\n0.2.0\n0.3.0\n", installed="0.2.0-rc.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "0.2.0\n")
+
     def test_releases_without_a_package_for_this_system_are_skipped(self):
         result = self.select("0.1.0\n0.1.1\n", unpackaged="0.1.0")
         self.assertEqual(result.returncode, 0, result.stderr)

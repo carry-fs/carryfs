@@ -176,9 +176,10 @@ select_release() {
         # before 1.0, where a minor release may break compatibility.
         line=
         if [ -n "$installed" ] && [ "$upgrade" = 0 ]; then
-            case $installed in
-                0.*) line=${installed%.*} ;;
-                *) line=${installed%%.*} ;;
+            installed_core=${installed%%-*}
+            case $installed_core in
+                0.*) line=${installed_core%.*} ;;
+                *) line=${installed_core%%.*} ;;
             esac
         fi
         tag=$(awk -v line="$line" -v unpackaged="$unpackaged_through" '

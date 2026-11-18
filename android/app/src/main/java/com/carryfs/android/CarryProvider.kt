@@ -24,8 +24,8 @@ import kotlin.math.max
 
 /**
  * Shows each mounted CarryFS volume as a root in the system file picker and
- * Files app. Document IDs are "volume/object"; object IDs survive renames
- * and moves, so granted URIs keep working.
+ * Files app. Document IDs are "volume/id". Each hard-link name has its own ID.
+ * IDs survive renames and moves within the mount, so granted URIs keep working.
  */
 class CarryProvider : DocumentsProvider() {
     companion object {

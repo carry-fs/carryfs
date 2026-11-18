@@ -9,6 +9,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path};
+use std::rc::Rc;
 
 use carryfs_core::{Attributes, Error, ExtractionSink, Name, ObjectKind, Result};
 
@@ -145,12 +146,13 @@ pub(super) fn open_source(path: &Path) -> Result<File> {
 }
 
 pub(super) struct Sink {
-    parent: File,
+    parent: Rc<File>,
     name: CString,
     // Root followed by the currently visited ancestors, each with the mode
     // to restore once its entries exist. Completed branches are dropped when
     // traversal returns to a shallower path.
-    directories: Vec<(File, Option<(u32, bool)>)>,
+    directories: Vec<(Rc<File>, Option<(u32, bool)>)>,
+    link_parents: Vec<(Rc<File>, (u32, bool))>,
     /// Created entries whose objects have other names, by path, so a later
     /// link reaches only the object extraction wrote.
     held: HashMap<Vec<Vec<u8>>, Held>,
@@ -160,6 +162,8 @@ pub(super) struct Sink {
 /// be freed and reused while later names may link to it.
 struct Held {
     _object: File,
+    parent: Rc<File>,
+    name: CString,
     identity: (u64, u64),
     /// Names still to link before the descriptor can close.
     remaining: u32,
@@ -170,13 +174,15 @@ struct Held {
 const MAX_HELD: usize = 128;
 
 impl Held {
-    fn new(object: File, links: u32) -> Result<Self> {
+    fn new(object: File, parent: Rc<File>, name: CString, links: u32) -> Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let metadata = object
             .metadata()
             .map_err(|e| io_error("inspect extracted entry", e))?;
         Ok(Self {
             _object: object,
+            parent,
+            name,
             identity: (metadata.dev(), metadata.ino()),
             remaining: links - 1,
         })
@@ -227,9 +233,10 @@ impl Sink {
             Ok(_) => return Err(Error::InvalidInput("extraction destination already exists")),
         }
         Ok(Self {
-            parent,
+            parent: Rc::new(parent),
             name,
             directories: Vec::new(),
+            link_parents: Vec::new(),
             held: HashMap::new(),
         })
     }
@@ -237,13 +244,28 @@ impl Sink {
     /// Restore the modes of the directories still open. A directory gets its
     /// mode after its entries, so a read-only one can still be filled.
     pub(super) fn finish(mut self) -> Result<()> {
+        self.held.clear();
         self.leave(0)
     }
 
     fn leave(&mut self, depth: usize) -> Result<()> {
         while self.directories.len() > depth {
             if let Some((directory, Some(stored))) = self.directories.pop() {
-                restore(&directory, stored)?;
+                if Rc::strong_count(&directory) > 1 {
+                    self.link_parents.push((directory, stored));
+                } else {
+                    restore(&directory, stored)?;
+                }
+            }
+        }
+        // A later name may still need search permission on its source parent.
+        let mut index = 0;
+        while let Some((directory, stored)) = self.link_parents.get(index) {
+            if Rc::strong_count(directory) == 1 {
+                restore(directory, *stored)?;
+                self.link_parents.swap_remove(index);
+            } else {
+                index += 1;
             }
         }
         Ok(())
@@ -254,28 +276,7 @@ impl Sink {
             .then(|| (u32::from(attributes.mode.bits()), attributes.hidden))
     }
 
-    /// Open the parent of an entry this sink created, from the extraction
-    /// root: that branch's descriptors may be gone and its modes restored.
-    fn reopen(&self, path: &[Name]) -> Result<(File, CString)> {
-        let Some((last, directories)) = path.split_last() else {
-            let parent = self
-                .parent
-                .try_clone()
-                .map_err(|e| io_error("reopen destination parent", e))?;
-            return Ok((parent, self.name.clone()));
-        };
-        let mut directory = open_at(&self.parent, &self.name, DIRECTORY)?;
-        for name in directories {
-            directory = open_at(
-                &directory,
-                &component(OsStr::from_bytes(name.stored()))?,
-                DIRECTORY,
-            )?;
-        }
-        Ok((directory, component(OsStr::from_bytes(last.stored()))?))
-    }
-
-    fn entry(&mut self, path: &[Name]) -> Result<(&File, CString)> {
+    fn entry(&mut self, path: &[Name]) -> Result<(&Rc<File>, CString)> {
         self.leave(path.len())?;
         if let Some(name) = path.last() {
             let (parent, _) = self
@@ -302,20 +303,21 @@ impl ExtractionSink for Sink {
             ));
         }
         let directory = open_at(parent, &name, DIRECTORY)?;
-        self.directories.push((directory, stored));
+        self.directories.push((Rc::new(directory), stored));
         Ok(())
     }
 
     fn create_file(&mut self, path: &[Name], attributes: &Attributes) -> Result<File> {
         let stored = self.stored(attributes);
+        let hold = attributes.links > 1 && self.held.len() < MAX_HELD;
         let (parent, name) = self.entry(path)?;
         let file = open_at(parent, &name, CREATE)?;
-        if attributes.links > 1 && self.held.len() < MAX_HELD {
+        if hold {
             let object = file
                 .try_clone()
                 .map_err(|e| io_error("hold extracted file", e))?;
-            self.held
-                .insert(path_key(path), Held::new(object, attributes.links)?);
+            let held = Held::new(object, Rc::clone(parent), name, attributes.links)?;
+            self.held.insert(path_key(path), held);
         }
         // Extraction writes through this descriptor, which the mode does not
         // limit once open.
@@ -360,20 +362,21 @@ impl ExtractionSink for Sink {
         let _ = hidden;
         // An object not held has its later names extracted as copies.
         if hold && let Ok(object) = open_at(parent, &name, IDENTITY) {
-            self.held
-                .insert(path_key(path), Held::new(object, attributes.links)?);
+            let held = Held::new(object, Rc::clone(parent), name, attributes.links)?;
+            self.held.insert(path_key(path), held);
         }
         Ok(())
     }
 
     fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()> {
         let key = path_key(existing);
-        let created = self
+        let held = self
             .held
             .get(&key)
-            .ok_or(Error::InvalidInput("no extracted object to link"))?
-            .identity;
-        let (existing_parent, existing_name) = self.reopen(existing)?;
+            .ok_or(Error::InvalidInput("no extracted object to link"))?;
+        let created = held.identity;
+        let existing_parent = Rc::clone(&held.parent);
+        let existing_name = held.name.clone();
         // Another process may have replaced the first name since extraction
         // wrote it; link only the object extraction verified.
         if identity(&existing_parent, &existing_name)? != created {
@@ -559,6 +562,45 @@ mod tests {
         assert!(!root.join("fourth").exists());
         // A name with no recorded object is refused too.
         assert!(sink.create_link(&name("fifth"), &name("missing")).is_err());
+    }
+
+    #[test]
+    fn extraction_can_link_out_of_a_directory_without_search_permission() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = Temp::new();
+        let root = temp.0.join("output");
+        let mut sink = Sink::new(&root).unwrap();
+        let directory = Name::parse("locked").unwrap();
+        let first = [directory.clone(), Name::parse("first").unwrap()];
+        let second = [Name::parse("second").unwrap()];
+        let linked = Attributes {
+            kind: ObjectKind::File,
+            links: 2,
+            ..attributes()
+        };
+        let locked = Attributes {
+            mode: carryfs_core::Mode::from_host(0),
+            ..attributes()
+        };
+        sink.create_directory(&[], &attributes()).unwrap();
+        sink.create_directory(&[directory], &locked).unwrap();
+        sink.create_file(&first, &linked)
+            .unwrap()
+            .write_all(b"shared")
+            .unwrap();
+        let linked = sink.create_link(&second, &first);
+        let finished = sink.finish();
+
+        let metadata = std::fs::metadata(root.join("locked")).unwrap();
+        std::fs::set_permissions(root.join("locked"), Permissions::from_mode(0o700)).unwrap();
+        linked.unwrap();
+        finished.unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0);
+        assert_eq!(
+            std::fs::metadata(root.join("second")).unwrap().ino(),
+            std::fs::metadata(root.join("locked/first")).unwrap().ino()
+        );
     }
 
     #[test]

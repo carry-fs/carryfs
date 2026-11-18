@@ -10,6 +10,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -17,7 +18,7 @@ import java.io.File
 
 /**
  * Drives the documents provider the way other apps do, on a copy of
- * files/test.img: a desktop-made image holding /hello.txt. See
+ * files/test.img, a desktop-made image with regular files and hard links. See
  * android/README.md for how to push it.
  */
 class ProviderTest {
@@ -51,16 +52,37 @@ class ProviderTest {
         }
     }
 
-    @Test
-    fun readsWhatADesktopWrote() {
-        val hello = names(root()).single { it == "hello.txt" }
+    private fun child(folder: Uri, name: String): Uri {
         val children = DocumentsContract.buildChildDocumentsUri(
-            CarryProvider.AUTHORITY, DocumentsContract.getDocumentId(root()),
+            CarryProvider.AUTHORITY, DocumentsContract.getDocumentId(folder),
         )
         val id = resolver.query(children, arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME), null, null, null)!!
-            .use { generateSequence { if (it.moveToNext()) it.getString(0) to it.getString(1) else null }.first { it.second == hello }.first }
-        val uri = DocumentsContract.buildDocumentUri(CarryProvider.AUTHORITY, id)
+            .use { cursor ->
+                generateSequence { if (cursor.moveToNext()) cursor.getString(0) to cursor.getString(1) else null }
+                    .first { it.second == name }.first
+            }
+        return DocumentsContract.buildDocumentUri(CarryProvider.AUTHORITY, id)
+    }
+
+    @Test
+    fun readsWhatADesktopWrote() {
+        val uri = child(root(), "hello.txt")
         assertEquals("hello from a desktop\n", resolver.openInputStream(uri)!!.use { it.readBytes().decodeToString() })
+    }
+
+    @Test
+    fun hardLinkNamesCanBeRenamedAndDeletedIndependently() {
+        val folder = child(root(), "links")
+        val original = child(folder, "original.txt")
+        val alias = child(folder, "alias.txt")
+        assertNotEquals(original, alias)
+
+        val renamed = DocumentsContract.renameDocument(resolver, alias, "renamed.txt") ?: alias
+        assertEquals(renamed, child(folder, "renamed.txt"))
+        assertTrue(DocumentsContract.deleteDocument(resolver, renamed))
+        assertEquals(listOf("original.txt"), names(folder))
+        assertEquals(original, child(folder, "original.txt"))
+        assertEquals("hello from a desktop\n", resolver.openInputStream(original)!!.use { it.readBytes().decodeToString() })
     }
 
     @Test
@@ -76,7 +98,7 @@ class ProviderTest {
         val renamed = DocumentsContract.renameDocument(resolver, file, "kept.txt") ?: file
         val moved = DocumentsContract.moveDocument(resolver, renamed, folder, root)!!
         DocumentsContract.deleteDocument(resolver, folder)
-        assertEquals(listOf("hello.txt", "kept.txt"), names(root))
+        assertEquals(listOf("hello.txt", "kept.txt", "links"), names(root))
 
         // Eject publishes everything; a fresh mount must read the same bytes.
         Drives.eject(context, Drives.IMAGE)

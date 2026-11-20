@@ -104,7 +104,14 @@ jobs:
               apt-get install -y --no-install-recommends "rustc-$rust"
           - distro: arch
             image: archlinux:latest
-            install: pacman -Syu --noconfirm --needed base-devel linux-headers rust pahole
+            install: |
+              pacman -Syu --noconfirm --needed base-devel linux-headers pahole
+              # The exact rust build that built the kernel, e.g. "(Arch Linux rust 1:1.100.0-1)".
+              # The repos keep only the newest rust; the archive keeps every build.
+              conf=$(ls -d /usr/lib/modules/*/build/include/config/auto.conf | sort -V | tail -1)
+              ver=$(sed -n '/^CONFIG_RUSTC_VERSION_TEXT=/s/.*(Arch Linux rust \([^)]*\)).*/\1/p' "$conf")
+              test -n "$ver"
+              pacman -U --noconfirm "https://archive.archlinux.org/packages/r/rust/rust-$ver-x86_64.pkg.tar.zst"
           - distro: fedora
             image: fedora:45
             install: |

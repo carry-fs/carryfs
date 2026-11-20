@@ -222,7 +222,7 @@ class MountedVolume(unittest.TestCase):
         self.assertEqual((self.recover() / "signal").read_bytes(), b"preserved")
 
     def test_directory_fsync_survives_daemon_crash(self):
-        for operation in ("create", "rename", "unlink"):
+        for operation in ("create", "link", "rename", "unlink"):
             for datasync in (False, True):
                 with self.subTest(operation=operation, datasync=datasync):
                     self.mount()
@@ -233,6 +233,8 @@ class MountedVolume(unittest.TestCase):
                         os.fsync(file.fileno())
                     if operation == "create":
                         (self.point / "after").touch()
+                    elif operation == "link":
+                        os.link(before, self.point / "after")
                     elif operation == "rename":
                         before.rename(self.point / "after")
                     else:
@@ -246,7 +248,8 @@ class MountedVolume(unittest.TestCase):
                     self.stop_daemon()
                     result = run(CLI, "get", "--bytes", BYTES, self.device, "/", self.work / f"{operation}-{datasync}", stdout=self.log)
                     self.assertEqual(result.returncode, 0)
-                    expected = {"create": {"before", "after"}, "rename": {"after"}, "unlink": {}}[operation]
+                    expected = {"create": {"before", "after"}, "link": {"before", "after"},
+                                "rename": {"after"}, "unlink": {}}[operation]
                     self.assertEqual({p.name for p in (self.work / f"{operation}-{datasync}").iterdir()}, set(expected))
                     # Reset the disposable device for the next independent operation.
                     run(FUSE, "mkfs", "-f", self.device, stdout=self.log)

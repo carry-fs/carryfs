@@ -105,11 +105,9 @@ pub fn serve(device: &Path, directory: &Path, text: &str) -> Result<()> {
     let mut volume = Volume::open(Disk::open(device, mode)?)?;
     #[cfg(target_os = "netbsd")]
     let root_mode = volume.attributes(carryfs_core::ROOT)?.mode.bits();
-    // libperfuse can omit FSYNCDIR after creation. NetBSD publishes every
-    // mutation synchronously so directory fsync still guarantees durability.
     if options.read_only {
         volume.enable_readonly_metadata_cache()?;
-    } else if !cfg!(target_os = "netbsd") && !options.sync {
+    } else if !options.sync {
         volume.set_deferred_checkpoints(true)?;
     }
     let (mut fs, _) = CarryFs::new(volume, options.owner, options.strict);

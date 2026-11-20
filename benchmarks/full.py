@@ -29,10 +29,14 @@ from benchmarks.workloads import bench
 from benchmarks.workloads import listing
 
 # carryfs-kernel is the native Linux driver in linux/; carryfs is FUSE.
-SYSTEMS = ("carryfs", "carryfs-kernel", "ext4", "exfat", "btrfs", "apfs", "ntfs")
+SYSTEMS = ("carryfs", "carryfs-kernel", "ext4", "exfat", "btrfs", "apfs", "ntfs", "ufs", "ffs")
 SUPPORTED = {"linux": ("carryfs", "carryfs-kernel", "ext4", "exfat", "btrfs"),
              "darwin": ("carryfs", "exfat", "apfs"),
-             "win32": ("carryfs", "exfat", "ntfs")}
+             "win32": ("carryfs", "exfat", "ntfs"),
+             "freebsd": ("carryfs", "ufs", "exfat"),
+             "netbsd": ("carryfs", "ffs", "exfat")}
+# sys.platform carries the major version on the BSDs, such as freebsd15.
+HOST = next((name for name in ("freebsd", "netbsd") if sys.platform.startswith(name)), sys.platform)
 DEFAULTS = dict(seq_mib=512, files=1000, dirs=20, per_dir=50,
                 many_files=10000, batch=128, stale_seconds=1.5)
 CACHE = "sync + partition fadvise(DONTNEED) before each fresh mount; immediate and delayed repeats; drive cache retained"
@@ -161,7 +165,7 @@ def configuration(args):
             raise ValueError("filesystems must be a nonempty list")
         labels = set()
         for target in systems:
-            if not isinstance(target, dict) or set(target) - {"fs", "name", "device", "mount", "bin_dir", "partition_uuid"} or target.get("fs") not in SUPPORTED.get(sys.platform, ()):
+            if not isinstance(target, dict) or set(target) - {"fs", "name", "device", "mount", "bin_dir", "partition_uuid"} or target.get("fs") not in SUPPORTED.get(HOST, ()):
                 raise ValueError(f"unsupported filesystem target: {target}")
             target.setdefault("name", target["fs"])
             name(target["name"])
@@ -169,7 +173,7 @@ def configuration(args):
                 raise ValueError("filesystem target names must be unique within a disk")
             labels.add(target["name"])
             if not args.images:
-                if sys.platform != "linux" and not isinstance(target.get("partition_uuid"), str):
+                if HOST in ("darwin", "win32") and not isinstance(target.get("partition_uuid"), str):
                     raise ValueError("macOS/Windows physical targets require partition_uuid")
                 for field in ("device", "mount"):
                     if not isinstance(target.get(field), str) or not target[field] or (sys.platform != "win32" and not Path(target[field]).is_absolute()):
@@ -261,6 +265,9 @@ def preflight_output(args, check_access):
 
 def preflight(config, args):
     from benchmarks import native
+    if HOST in ("freebsd", "netbsd"):
+        from benchmarks import bsd
+        return bsd.preflight(config, args)
     if sys.platform != "linux":
         return native.preflight(config, args)
     if args.command == "run" and config["mount_mode"] == "root" and os.geteuid() != 0:
@@ -414,6 +421,9 @@ def copy_sparse(source, destination):
 
 class Sample:
     """One formatted filesystem, owning only mounts and loops it starts."""
+
+    # False when stat reports no distinct inode numbers; names and sizes are still checked.
+    stat_inode_ids = True
 
     def __init__(self, runner, disk, target, round_):
         self.runner, self.disk, self.target, self.round = runner, disk, target, round_
@@ -660,7 +670,7 @@ class Sample:
                             time.sleep(w["stale_seconds"])
                         result, names, attributes = listing.measure(directory, pattern)
                         entry_ids_missing = sys.platform == "win32" and pattern == "interleaved"
-                        validate_listing(names, attributes, count, inode_ids=not entry_ids_missing)
+                        validate_listing(names, attributes, count, inode_ids=self.stat_inode_ids and not entry_ids_missing)
                         self.record("listing", mode=mode, cache=cache, **result)
                     if entry_ids_missing:
                         # Windows DirEntry.stat has zero IDs; check after all timed passes.
@@ -879,7 +889,8 @@ def run(args):
         sources = {path.relative_to(REPO).as_posix(): source_digest(path) for path in
                    (REPO / "benchmarks/workloads/bench.py", REPO / "benchmarks/workloads/listing.py",
                     REPO / "benchmarks/full.py", REPO / "benchmarks/run.py",
-                    REPO / "benchmarks/mount.rs", REPO / "benchmarks/native.py", REPO / "benchmarks/native_io.py", REPO / "benchmarks/focused.py")}
+                    REPO / "benchmarks/mount.rs", REPO / "benchmarks/native.py", REPO / "benchmarks/native_io.py", REPO / "benchmarks/focused.py",
+                    REPO / "benchmarks/bsd.py")}
         binaries = {}
         for disk in config["disks"]:
             for target in disk["filesystems"]:
@@ -909,7 +920,11 @@ def run(args):
                 from benchmarks import native_io
                 bench.os = SimpleNamespace(**dict(vars(os), open=native_io.open_fd, fsync=native_io.flush_fd))
                 bench.sync_path = native_io.sync_path
-            sample_type = Sample if sys.platform == "linux" else native.Sample
+            if HOST in ("freebsd", "netbsd"):
+                from benchmarks import bsd
+                sample_type = bsd.Sample
+            else:
+                sample_type = Sample if sys.platform == "linux" else native.Sample
             for disk in config["disks"]:
                 for round_ in range(1, config["rounds"] + 1):
                     targets = disk["filesystems"]

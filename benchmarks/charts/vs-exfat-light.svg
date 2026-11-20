@@ -19,85 +19,112 @@
 <text x="24.0" y="336.0" font-size="12" font-weight="400" text-anchor="start" fill="#0b0b0b">List 10,000 names, cold</text>
 <text x="24.0" y="364.0" font-size="12" font-weight="400" text-anchor="start" fill="#0b0b0b">List and stat 10,000 files, cold</text>
 <text x="244.0" y="108.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">macOS, macFUSE</text>
-<line x1="289.3" x2="289.3" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="289.3" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">¼×</text>
-<line x1="334.6" x2="334.6" y1="122" y2="374" stroke="#c3c2b7"/>
-<text x="334.6" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">1×</text>
-<line x1="379.8" x2="379.8" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="379.8" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">4×</text>
-<line x1="425.1" x2="425.1" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="425.1" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">16×</text>
-<path fill="#2a78d6" d="M334.6,129.0H334.6Q336.6,129.0 336.6,133.0V139.0Q336.6,143.0 334.6,143.0H334.6Z"/>
-<text x="342.6" y="140.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
-<path fill="#898781" d="M334.6,157.0H334.6Q332.6,157.0 332.6,161.0V167.0Q332.6,171.0 334.6,171.0H334.6Z"/>
-<text x="326.6" y="168.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">1.0×</text>
-<path fill="#2a78d6" d="M334.6,185.0H371.7Q375.7,185.0 375.7,189.0V195.0Q375.7,199.0 371.7,199.0H334.6Z"/>
-<text x="381.7" y="196.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.5×</text>
-<path fill="#2a78d6" d="M334.6,213.0H377.4Q381.4,213.0 381.4,217.0V223.0Q381.4,227.0 377.4,227.0H334.6Z"/>
-<text x="387.4" y="224.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">4.2×</text>
-<path fill="#2a78d6" d="M334.6,241.0H357.7Q361.7,241.0 361.7,245.0V251.0Q361.7,255.0 357.7,255.0H334.6Z"/>
-<text x="367.7" y="252.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">2.3×</text>
-<path fill="#2a78d6" d="M334.6,269.0H356.8Q360.8,269.0 360.8,273.0V279.0Q360.8,283.0 356.8,283.0H334.6Z"/>
-<text x="366.8" y="280.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">2.2×</text>
-<path fill="#2a78d6" d="M334.6,297.0H344.3Q348.3,297.0 348.3,301.0V307.0Q348.3,311.0 344.3,311.0H334.6Z"/>
-<text x="354.3" y="308.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.5×</text>
-<path fill="#2a78d6" d="M334.6,325.0H361.7Q365.7,325.0 365.7,329.0V335.0Q365.7,339.0 361.7,339.0H334.6Z"/>
-<text x="371.7" y="336.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">2.6×</text>
-<path fill="#2a78d6" d="M334.6,353.0H389.6Q393.6,353.0 393.6,357.0V363.0Q393.6,367.0 389.6,367.0H334.6Z"/>
-<text x="399.6" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">6.1×</text>
-<text x="481.3" y="108.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Windows, WinFsp</text>
-<line x1="526.6" x2="526.6" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="526.6" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">¼×</text>
-<line x1="571.9" x2="571.9" y1="122" y2="374" stroke="#c3c2b7"/>
-<text x="571.9" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">1×</text>
-<line x1="617.2" x2="617.2" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="617.2" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">4×</text>
-<line x1="662.4" x2="662.4" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="662.4" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">16×</text>
-<path fill="#898781" d="M571.9,129.0H571.9Q569.9,129.0 569.9,133.0V139.0Q569.9,143.0 571.9,143.0H571.9Z"/>
-<text x="563.9" y="140.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.99×</text>
-<path fill="#2a78d6" d="M571.9,157.0H571.9Q575.2,157.0 575.2,161.0V167.0Q575.2,171.0 571.9,171.0H571.9Z"/>
-<text x="581.2" y="168.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.1×</text>
-<path fill="#2a78d6" d="M571.9,185.0H604.0Q608.0,185.0 608.0,189.0V195.0Q608.0,199.0 604.0,199.0H571.9Z"/>
-<text x="614.0" y="196.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.0×</text>
-<path fill="#2a78d6" d="M571.9,213.0H619.0Q623.0,213.0 623.0,217.0V223.0Q623.0,227.0 619.0,227.0H571.9Z"/>
-<text x="629.0" y="224.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">4.8×</text>
-<path fill="#2a78d6" d="M571.9,241.0H647.4Q651.4,241.0 651.4,245.0V251.0Q651.4,255.0 647.4,255.0H571.9Z"/>
-<text x="657.4" y="252.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">11×</text>
-<path fill="#2a78d6" d="M571.9,269.0H605.0Q609.0,269.0 609.0,273.0V279.0Q609.0,283.0 605.0,283.0H571.9Z"/>
-<text x="615.0" y="280.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.1×</text>
-<path fill="#2a78d6" d="M571.9,297.0H604.7Q608.7,297.0 608.7,301.0V307.0Q608.7,311.0 604.7,311.0H571.9Z"/>
-<text x="614.7" y="308.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.1×</text>
-<path fill="#2a78d6" d="M571.9,325.0H571.9Q573.9,325.0 573.9,329.0V335.0Q573.9,339.0 571.9,339.0H571.9Z"/>
-<text x="579.9" y="336.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
-<path fill="#2a78d6" d="M571.9,353.0H652.2Q656.2,353.0 656.2,357.0V363.0Q656.2,367.0 652.2,367.0H571.9Z"/>
-<text x="662.2" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">13×</text>
-<text x="718.7" y="108.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Linux, FUSE</text>
-<line x1="763.9" x2="763.9" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="763.9" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">¼×</text>
-<line x1="809.2" x2="809.2" y1="122" y2="374" stroke="#c3c2b7"/>
-<text x="809.2" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">1×</text>
-<line x1="854.5" x2="854.5" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="854.5" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">4×</text>
-<line x1="899.8" x2="899.8" y1="122" y2="374" stroke="#e1e0d9"/>
-<text x="899.8" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">16×</text>
-<path fill="#898781" d="M809.2,129.0H809.2Q807.2,129.0 807.2,133.0V139.0Q807.2,143.0 809.2,143.0H809.2Z"/>
-<text x="801.2" y="140.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">1.0×</text>
-<path fill="#898781" d="M809.2,157.0H809.2Q807.2,157.0 807.2,161.0V167.0Q807.2,171.0 809.2,171.0H809.2Z"/>
-<text x="801.2" y="168.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">1.0×</text>
-<path fill="#2a78d6" d="M809.2,185.0H900.8Q904.8,185.0 904.8,189.0V195.0Q904.8,199.0 900.8,199.0H809.2Z"/>
-<text x="910.8" y="196.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">19×</text>
-<path fill="#2a78d6" d="M809.2,213.0H811.9Q815.9,213.0 815.9,217.0V223.0Q815.9,227.0 811.9,227.0H809.2Z"/>
-<text x="821.9" y="224.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.2×</text>
-<path fill="#2a78d6" d="M809.2,241.0H856.1Q860.1,241.0 860.1,245.0V251.0Q860.1,255.0 856.1,255.0H809.2Z"/>
-<text x="866.1" y="252.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">4.7×</text>
-<path fill="#e34948" d="M809.2,269.0H788.0Q784.0,269.0 784.0,273.0V279.0Q784.0,283.0 788.0,283.0H809.2Z"/>
-<text x="778.0" y="280.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.46×</text>
-<path fill="#e34948" d="M809.2,297.0H788.4Q784.4,297.0 784.4,301.0V307.0Q784.4,311.0 788.4,311.0H809.2Z"/>
-<text x="778.4" y="308.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.47×</text>
-<path fill="#e34948" d="M809.2,325.0H795.9Q791.9,325.0 791.9,329.0V335.0Q791.9,339.0 795.9,339.0H809.2Z"/>
-<text x="785.9" y="336.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.59×</text>
-<path fill="#2a78d6" d="M809.2,353.0H813.8Q817.8,353.0 817.8,357.0V363.0Q817.8,367.0 813.8,367.0H809.2Z"/>
-<text x="823.8" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.3×</text>
-<text x="24.0" y="416.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">CarryFS format revision 1, code at commit 7dfae3d. OCZ Vertex 4 SSD over USB on all three hosts. Data: benchmarks/macos.tsv, windows.tsv, linux.tsv.</text>
+<line x1="260.5" x2="260.5" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="260.5" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">¼×</text>
+<line x1="293.4" x2="293.4" y1="122" y2="374" stroke="#c3c2b7"/>
+<text x="293.4" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">1×</text>
+<line x1="326.3" x2="326.3" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="326.3" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">4×</text>
+<line x1="359.2" x2="359.2" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="359.2" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">16×</text>
+<path fill="#2a78d6" d="M293.4,129.0H293.4Q295.4,129.0 295.4,133.0V139.0Q295.4,143.0 293.4,143.0H293.4Z"/>
+<text x="301.4" y="140.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
+<path fill="#898781" d="M293.4,157.0H293.4Q291.4,157.0 291.4,161.0V167.0Q291.4,171.0 293.4,171.0H293.4Z"/>
+<text x="285.4" y="168.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">1.0×</text>
+<path fill="#2a78d6" d="M293.4,185.0H319.3Q323.3,185.0 323.3,189.0V195.0Q323.3,199.0 319.3,199.0H293.4Z"/>
+<text x="329.3" y="196.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.5×</text>
+<path fill="#2a78d6" d="M293.4,213.0H323.4Q327.4,213.0 327.4,217.0V223.0Q327.4,227.0 323.4,227.0H293.4Z"/>
+<text x="333.4" y="224.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">4.2×</text>
+<path fill="#2a78d6" d="M293.4,241.0H309.1Q313.1,241.0 313.1,245.0V251.0Q313.1,255.0 309.1,255.0H293.4Z"/>
+<text x="319.1" y="252.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">2.3×</text>
+<path fill="#2a78d6" d="M293.4,269.0H308.4Q312.4,269.0 312.4,273.0V279.0Q312.4,283.0 308.4,283.0H293.4Z"/>
+<text x="318.4" y="280.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">2.2×</text>
+<path fill="#2a78d6" d="M293.4,297.0H299.4Q303.4,297.0 303.4,301.0V307.0Q303.4,311.0 299.4,311.0H293.4Z"/>
+<text x="309.4" y="308.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.5×</text>
+<path fill="#2a78d6" d="M293.4,325.0H312.0Q316.0,325.0 316.0,329.0V335.0Q316.0,339.0 312.0,339.0H293.4Z"/>
+<text x="322.0" y="336.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">2.6×</text>
+<path fill="#2a78d6" d="M293.4,353.0H332.3Q336.3,353.0 336.3,357.0V363.0Q336.3,367.0 332.3,367.0H293.4Z"/>
+<text x="342.3" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">6.1×</text>
+<text x="422.0" y="108.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Windows, WinFsp</text>
+<line x1="438.5" x2="438.5" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="438.5" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">¼×</text>
+<line x1="471.4" x2="471.4" y1="122" y2="374" stroke="#c3c2b7"/>
+<text x="471.4" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">1×</text>
+<line x1="504.3" x2="504.3" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="504.3" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">4×</text>
+<line x1="537.2" x2="537.2" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="537.2" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">16×</text>
+<path fill="#898781" d="M471.4,129.0H471.4Q469.4,129.0 469.4,133.0V139.0Q469.4,143.0 471.4,143.0H471.4Z"/>
+<text x="463.4" y="140.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.99×</text>
+<path fill="#2a78d6" d="M471.4,157.0H471.4Q473.8,157.0 473.8,161.0V167.0Q473.8,171.0 471.4,171.0H471.4Z"/>
+<text x="479.8" y="168.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.1×</text>
+<path fill="#2a78d6" d="M471.4,185.0H493.6Q497.6,185.0 497.6,189.0V195.0Q497.6,199.0 493.6,199.0H471.4Z"/>
+<text x="503.6" y="196.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.0×</text>
+<path fill="#2a78d6" d="M471.4,213.0H504.5Q508.5,213.0 508.5,217.0V223.0Q508.5,227.0 504.5,227.0H471.4Z"/>
+<text x="514.5" y="224.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">4.8×</text>
+<path fill="#2a78d6" d="M471.4,241.0H525.2Q529.2,241.0 529.2,245.0V251.0Q529.2,255.0 525.2,255.0H471.4Z"/>
+<text x="535.2" y="252.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">11×</text>
+<path fill="#2a78d6" d="M471.4,269.0H494.4Q498.4,269.0 498.4,273.0V279.0Q498.4,283.0 494.4,283.0H471.4Z"/>
+<text x="504.4" y="280.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.1×</text>
+<path fill="#2a78d6" d="M471.4,297.0H494.1Q498.1,297.0 498.1,301.0V307.0Q498.1,311.0 494.1,311.0H471.4Z"/>
+<text x="504.1" y="308.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">3.1×</text>
+<path fill="#2a78d6" d="M471.4,325.0H471.4Q473.4,325.0 473.4,329.0V335.0Q473.4,339.0 471.4,339.0H471.4Z"/>
+<text x="479.4" y="336.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
+<path fill="#2a78d6" d="M471.4,353.0H528.7Q532.7,353.0 532.7,357.0V363.0Q532.7,367.0 528.7,367.0H471.4Z"/>
+<text x="538.7" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">13×</text>
+<text x="600.0" y="108.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Linux, FUSE</text>
+<line x1="616.5" x2="616.5" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="616.5" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">¼×</text>
+<line x1="649.4" x2="649.4" y1="122" y2="374" stroke="#c3c2b7"/>
+<text x="649.4" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">1×</text>
+<line x1="682.3" x2="682.3" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="682.3" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">4×</text>
+<line x1="715.2" x2="715.2" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="715.2" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">16×</text>
+<path fill="#898781" d="M649.4,129.0H649.4Q651.4,129.0 651.4,133.0V139.0Q651.4,143.0 649.4,143.0H649.4Z"/>
+<text x="657.4" y="140.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
+<path fill="#898781" d="M649.4,157.0H649.4Q647.4,157.0 647.4,161.0V167.0Q647.4,171.0 649.4,171.0H649.4Z"/>
+<text x="641.4" y="168.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">1.0×</text>
+<path fill="#2a78d6" d="M649.4,185.0H720.5Q724.5,185.0 724.5,189.0V195.0Q724.5,199.0 720.5,199.0H649.4Z"/>
+<text x="730.5" y="196.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">24×</text>
+<path fill="#2a78d6" d="M649.4,213.0H658.0Q662.0,213.0 662.0,217.0V223.0Q662.0,227.0 658.0,227.0H649.4Z"/>
+<text x="668.0" y="224.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.7×</text>
+<path fill="#2a78d6" d="M649.4,241.0H687.2Q691.2,241.0 691.2,245.0V251.0Q691.2,255.0 687.2,255.0H649.4Z"/>
+<text x="697.2" y="252.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">5.8×</text>
+<path fill="#e34948" d="M649.4,269.0H648.2Q644.2,269.0 644.2,273.0V279.0Q644.2,283.0 648.2,283.0H649.4Z"/>
+<text x="638.2" y="280.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.80×</text>
+<path fill="#e34948" d="M649.4,297.0H638.0Q634.0,297.0 634.0,301.0V307.0Q634.0,311.0 638.0,311.0H649.4Z"/>
+<text x="628.0" y="308.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.52×</text>
+<path fill="#e34948" d="M649.4,325.0H639.5Q635.5,325.0 635.5,329.0V335.0Q635.5,339.0 639.5,339.0H649.4Z"/>
+<text x="629.5" y="336.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.56×</text>
+<path fill="#2a78d6" d="M649.4,353.0H653.5Q657.5,353.0 657.5,357.0V363.0Q657.5,367.0 653.5,367.0H649.4Z"/>
+<text x="663.5" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.4×</text>
+<text x="778.0" y="108.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Linux, kernel driver</text>
+<line x1="794.5" x2="794.5" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="794.5" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">¼×</text>
+<line x1="827.4" x2="827.4" y1="122" y2="374" stroke="#c3c2b7"/>
+<text x="827.4" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">1×</text>
+<line x1="860.3" x2="860.3" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="860.3" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">4×</text>
+<line x1="893.2" x2="893.2" y1="122" y2="374" stroke="#e1e0d9"/>
+<text x="893.2" y="390.0" font-size="11" font-weight="400" text-anchor="middle" fill="#898781">16×</text>
+<path fill="#898781" d="M827.4,129.0H827.4Q829.4,129.0 829.4,133.0V139.0Q829.4,143.0 827.4,143.0H827.4Z"/>
+<text x="835.4" y="140.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
+<path fill="#898781" d="M827.4,157.0H827.4Q829.4,157.0 829.4,161.0V167.0Q829.4,171.0 827.4,171.0H827.4Z"/>
+<text x="835.4" y="168.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
+<path fill="#2a78d6" d="M827.4,185.0H900.3Q904.3,185.0 904.3,189.0V195.0Q904.3,199.0 900.3,199.0H827.4Z"/>
+<text x="910.3" y="196.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">26×</text>
+<path fill="#2a78d6" d="M827.4,213.0H833.8Q837.8,213.0 837.8,217.0V223.0Q837.8,227.0 833.8,227.0H827.4Z"/>
+<text x="843.8" y="224.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.6×</text>
+<path fill="#2a78d6" d="M827.4,241.0H865.8Q869.8,241.0 869.8,245.0V251.0Q869.8,255.0 865.8,255.0H827.4Z"/>
+<text x="875.8" y="252.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">6.0×</text>
+<path fill="#2a78d6" d="M827.4,269.0H827.4Q830.0,269.0 830.0,273.0V279.0Q830.0,283.0 827.4,283.0H827.4Z"/>
+<text x="836.0" y="280.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.1×</text>
+<path fill="#e34948" d="M827.4,297.0H815.9Q811.9,297.0 811.9,301.0V307.0Q811.9,311.0 815.9,311.0H827.4Z"/>
+<text x="805.9" y="308.0" font-size="11" font-weight="400" text-anchor="end" fill="#52514e">0.52×</text>
+<path fill="#898781" d="M827.4,325.0H827.4Q829.4,325.0 829.4,329.0V335.0Q829.4,339.0 827.4,339.0H827.4Z"/>
+<text x="835.4" y="336.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">1.0×</text>
+<path fill="#2a78d6" d="M827.4,353.0H840.4Q844.4,353.0 844.4,357.0V363.0Q844.4,367.0 840.4,367.0H827.4Z"/>
+<text x="850.4" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#52514e">2.0×</text>
+<text x="24.0" y="416.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">macOS, Windows: CarryFS format revision 1, commit 7dfae3d. Linux: revision 2, commit 425fafc. OCZ Vertex 4 SSD over USB. Data: benchmarks/*.tsv.</text>
 </svg>

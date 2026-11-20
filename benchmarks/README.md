@@ -414,8 +414,10 @@ A chart needs a full run. A run of one metric lacks the other workloads, and
 
 ## Published results
 
-`macos.tsv`, `windows.tsv` and `linux.tsv` hold full runs on one OCZ Vertex 4
-SSD connected over USB, with three rounds for each filesystem. `charts.json`
+`macos.tsv`, `windows.tsv`, `linux.tsv` and `linux-native.tsv` hold full runs
+on one OCZ Vertex 4 SSD connected over USB, with three rounds for each
+filesystem. `linux.tsv` measures the FUSE adapter and `linux-native.tsv` the
+kernel driver; both share the exFAT, ext4 and Btrfs rows. `charts.json`
 draws them into `charts/`. The charts show nine of the 92 metrics each run
 records, and the `.tsv` files hold the rest:
 
@@ -438,8 +440,13 @@ python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
   <img alt="CarryFS, exFAT, ext4 and Btrfs on Linux" src="charts/linux-light.svg">
 </picture>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/linux-native-dark.svg">
+  <img alt="CarryFS kernel driver, exFAT, ext4 and Btrfs on Linux" src="charts/linux-native-light.svg">
+</picture>
+
 [charts/vs-exfat-light.svg](charts/vs-exfat-light.svg) compares CarryFS with
-exFAT on the three hosts in one chart.
+exFAT on all hosts, with both Linux adapters, in one chart.
 
 ## FreeBSD adapter benchmarks
 

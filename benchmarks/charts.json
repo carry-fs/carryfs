@@ -4,10 +4,23 @@
       "name": "linux",
       "system": "Linux, FUSE",
       "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
-      "note": "CarryFS format revision 1, code at commit 7dfae3d. Data: benchmarks/linux.tsv.",
+      "note": "CarryFS format revision 2, code at commit 425fafc; exFAT, ext4 and Btrfs from the revision 1 run. Data: benchmarks/linux.tsv.",
       "results": "benchmarks/linux.tsv",
       "columns": {
         "CarryFS": "carryfs",
+        "exFAT": "exfat",
+        "ext4": "ext4",
+        "Btrfs": "btrfs"
+      }
+    },
+    {
+      "name": "linux-native",
+      "system": "Linux, kernel driver",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
+      "note": "CarryFS format revision 2, code at commit 425fafc; exFAT, ext4 and Btrfs from the revision 1 run. Data: benchmarks/linux-native.tsv.",
+      "results": "benchmarks/linux-native.tsv",
+      "columns": {
+        "CarryFS": "carryfs-kernel",
         "exFAT": "exfat",
         "ext4": "ext4",
         "Btrfs": "btrfs"
@@ -44,10 +57,11 @@
     "charts": [
       "macos",
       "windows",
-      "linux"
+      "linux",
+      "linux-native"
     ],
     "title": "CarryFS against exFAT",
     "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of three fresh-format rounds.",
-    "note": "CarryFS format revision 1, code at commit 7dfae3d. OCZ Vertex 4 SSD over USB on all three hosts. Data: benchmarks/macos.tsv, windows.tsv, linux.tsv."
+    "note": "macOS, Windows: CarryFS format revision 1, commit 7dfae3d. Linux: revision 2, commit 425fafc. OCZ Vertex 4 SSD over USB. Data: benchmarks/*.tsv."
   }
 }

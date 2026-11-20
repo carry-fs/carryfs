@@ -106,8 +106,16 @@ jobs:
             image: archlinux:latest
             install: pacman -Syu --noconfirm --needed base-devel linux-headers rust pahole
           - distro: fedora
-            image: fedora:latest
-            install: dnf -y install make gcc gawk binutils kmod kernel-devel rust dwarves
+            image: fedora:45
+            install: |
+              dnf -y install make gcc gawk binutils kmod kernel-devel dwarves
+              # The exact rust build that built the kernel, e.g. "(Fedora 1.99.1-2.fc45)".
+              # The repos keep only the newest rust; Koji keeps every build.
+              conf=$(ls -d /usr/src/kernels/*/include/config/auto.conf | sort -V | tail -1)
+              nvr=$(sed -n '/^CONFIG_RUSTC_VERSION_TEXT=/s/.*(Fedora \([^)]*\)).*/\1/p' "$conf")
+              test -n "$nvr"
+              koji=https://kojipkgs.fedoraproject.org/packages/rust/${nvr%-*}/${nvr##*-}/x86_64
+              dnf -y install "$koji/rust-$nvr.x86_64.rpm" "$koji/rust-std-static-$nvr.x86_64.rpm"
     steps:
       - uses: actions/checkout@v7
       - name: Kernel headers and rustc

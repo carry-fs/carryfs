@@ -34,6 +34,45 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace --all-features
 
+  netbsd:
+    name: NetBSD ${{ matrix.version }} (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['10.2', '11.1']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: |
+            build/cargo-netbsd
+            target
+          key: netbsd-${{ matrix.version }}-amd64-${{ hashFiles('Cargo.lock') }}
+      - name: NetBSD VM
+        uses: cross-platform-actions/action@82668f1fbd89d9c99487604f822cbf6716f124d3 # v1.7.0
+        with:
+          operating_system: netbsd
+          # The action default image bundle predates NetBSD 11.1.
+          image_url: https://github.com/cross-platform-actions/netbsd-builder/releases/download/v1.3.0/netbsd-${{ matrix.version }}-x86-64.tar.zst
+          version: ${{ matrix.version }}
+          architecture: x86-64
+      - name: Build and test on NetBSD
+        shell: cpa.sh {0}
+        run: |
+          export PATH="$HOME/.cargo/bin:/usr/pkg/bin:/usr/pkg/sbin:/sbin:/usr/sbin:$PATH"
+          sudo pkgin -y install python312
+          curl -fsSL -o /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-netbsd/rustup-init
+          chmod +x /tmp/rustup-init
+          /tmp/rustup-init -y --profile minimal --component rustfmt --component clippy
+          CARGO_HOME="$PWD/build/cargo-netbsd" make check
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: netbsd-${{ matrix.version }}-amd64
+          path: build/netbsd-*/daemon.log
+
   freebsd:
     name: FreeBSD ${{ matrix.version }} (${{ matrix.architecture }})
     runs-on: ubuntu-24.04

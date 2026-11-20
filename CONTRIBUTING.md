@@ -225,6 +225,12 @@ Run the additional checks for the adapter you touch:
   CI runs this on FreeBSD 14.5 and 15.1, on amd64 and arm64. On macOS, edit
   locally and synchronize the checkout into a FreeBSD QEMU VM; build and run
   this script inside the guest. Keep the checkout on the guest filesystem.
+- NetBSD: install the stable Rust toolchain through rustup, with rustfmt and
+  Clippy, and `python312` through pkgin, then run `make check`.
+  It runs formatting, Clippy, workspace and installer tests, then the shared BSD
+  mounted contract through `perfused` on disposable vnd disks. Mounted tests
+  require root or passwordless sudo. CI tests NetBSD 10.2 and 11.1 on amd64.
+  Keep the checkout and Cargo target directory on the guest filesystem.
 - macOS: `bash macos/tests/layout.sh` checks the ioctl constants in
   `macos/src/raw.rs` against the macOS SDK.
 - Windows: `windows/tests/layout.sh` compares the struct layouts in

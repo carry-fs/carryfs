@@ -9,7 +9,7 @@ Unix installations provide `fsck.carryfs`. From a checkout, build the core with
 `cargo build --locked -p carryfs-core` and use `target/debug/fsck-carryfs`.
 `carryfs fsck` accepts the same options. On Windows, use `carryfs.exe fsck` for
 image diagnosis, repair, and recovery to a new image. Directory export requires
-Linux, macOS, or FreeBSD.
+Linux, macOS, FreeBSD, or NetBSD.
 
 ## Diagnose without writing
 
@@ -166,7 +166,7 @@ In-place raw-device repair requires an explicit report path on another filesyste
 With `--repair --output NEW_IMAGE`, the default report is beside the new image. Use the
 partition that contains CarryFS, rather than the whole disk. Device access must
 exclude mounts and other writers. The CLI uses exclusive device access on Linux,
-macOS, FreeBSD, and Windows, and refuses writable raw access on other platforms.
+macOS, FreeBSD, NetBSD, and Windows, and refuses writable raw access on other platforms.
 
 ## Recovery limits
 

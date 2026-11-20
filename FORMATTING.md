@@ -40,6 +40,19 @@ partitions, because formatting the disk would erase its partition table. Format
 one of the partitions instead. To put CarryFS on the whole disk, first remove
 the table with `sudo wipefs -a /dev/sdX`.
 
+### NetBSD
+
+Use an unmounted partition, such as the raw GPT wedge `/dev/rdk2`:
+
+```sh
+sudo newfs_carryfs -L NAME /dev/rdk2
+```
+
+The helper refuses existing data unless `-f` is supplied. It rejects mounted
+partitions and whole disks containing partitions, including with `-f`.
+Use `sudo newfs_carryfs --wipe /dev/rdk2` to remove only CarryFS's signatures
+before formatting the partition with another filesystem.
+
 ### macOS
 
 In Disk Utility, select the partition, click **Erase**, and choose CarryFS as

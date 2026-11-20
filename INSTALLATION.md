@@ -14,6 +14,7 @@ If you'd rather not run the installer, [install by hand](#install-by-hand).
 | 1 | Linux, x86-64 | FUSE |
 | 1 | Windows\*, x86-64 | WinFsp |
 | 2 | FreeBSD\*\* 14.5 and 15.1, amd64 and arm64 | fusefs |
+| 2 | NetBSD\*\* 10.2 and 11.1, amd64 | perfused / PUFFS |
 | 2 | Android\*\*\* 8 and later, arm64 | [CarryFS app](android/README.md) |
 
 Tier 0 runs with the native driver for the best performance.
@@ -25,7 +26,7 @@ Tier 2 has the core features and best-effort performance.
 
 \*Windows can't create new [hard links](#limits-and-data-safety).
 
-\*\*FreeBSD is tested only in virtual machines and can't set the
+\*\*FreeBSD and NetBSD are tested only in virtual machines and can't set the
 [hidden flag](#limits-and-data-safety).
 
 \*\*\*Android has no release package yet; build the app from source. It shows
@@ -148,6 +149,45 @@ Other raw-device programs must honor these locks to coordinate with CarryFS;
 root access can otherwise overwrite a mounted volume. Writable GEOM opens also
 conflict with writable native mounts. Unmount other filesystems before accessing
 a provider through CarryFS, including for offline inspection.
+
+### NetBSD
+
+NetBSD 10.2 and 11.1 are supported on amd64. Packages are built separately for
+NetBSD 10 and 11. The adapter uses the base system's `libperfuse` and `perfused`
+to serve FUSE requests through PUFFS. The GENERIC kernel includes PUFFS;
+custom kernels need `file-system PUFFS`. No libfuse package is required.
+
+Install with `install.sh`, or build the checkout with `./install.sh --local`.
+Source builds require Rust 1.89 or newer (`pkgin install rust-bin`). The CLI lives
+in `/usr/local/bin`; the mount and format helpers live in `/usr/sbin` because
+NetBSD's `mount(8)` searches system helper directories.
+
+Use an unmounted raw disk or partition node, such as `/dev/rdk2` for a GPT
+wedge. Block nodes and symlinks resolve to the same raw-device lease:
+
+```sh
+sudo newfs_carryfs -L Shared /dev/rdk2
+sudo mkdir -p /mnt/carryfs
+sudo mount -t carryfs /dev/rdk2 /mnt/carryfs
+sudo umount /mnt/carryfs
+```
+
+For an optional fstab entry:
+
+```fstab
+/dev/rdk2 /mnt/carryfs carryfs rw,noauto 0 0
+```
+
+The formatter rejects whole disks containing partitions, including with `-f`.
+Device drivers must support cache flushes; an unsupported or failed flush is
+reported as an error. CarryFS tools share raw-device and volume UUID leases.
+Other raw-device programs must honor those leases to coordinate with CarryFS.
+NetBSD uses ordinary directory listings and conservative name and attribute
+caching. Namespace and data changes publish synchronously because libperfuse
+can omit directory fsync requests. The adapter includes a compatibility shim
+for libperfuse access checks and root ownership, and it keeps the relay running
+until the kernel has finished an unmount. It loads only into the adapter's
+relay process. Hidden flags and rename exchange are unsupported.
 
 ### macOS
 
@@ -352,7 +392,7 @@ CarryFS has no self-healing. Restore damaged files from an independent backup.
 For metadata damage, use [offline diagnosis, repair, and recovery](RECOVERY.md).
 
 A volume stores each object's Unix permission bits (`rwxrwxrwx`) and a hidden
-attribute. Linux, macOS, and FreeBSD show and enforce the permission bits for
+attribute. Linux, macOS, FreeBSD, and NetBSD show and enforce the permission bits for
 the account that mounted the volume; Windows shows a file without the owner
 write bit as read-only, and setting read-only there clears the write bits.
 Hidden maps to Finder's hidden flag and to Windows' hidden attribute; FreeBSD's
@@ -362,8 +402,8 @@ hidden. For images, `carryfs put` and `carryfs get` keep modes, and
 `carryfs attr IMAGE /PATH [mode=OCTAL] [hidden=yes|no]` shows or changes them.
 
 A volume formatted by CarryFS 0.1.0 mounts only read-only until upgraded with
-`carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE` on Linux, macOS, and
-FreeBSD, or `carryfs-windows upgrade VOLUME` on Windows. Upgrading takes a
+`carryfs upgrade IMAGE`, `carryfs-fuse upgrade DEVICE` on Linux, macOS,
+FreeBSD, and NetBSD, or `carryfs-windows upgrade VOLUME` on Windows. Upgrading takes a
 moment and rewrites no files. CarryFS 0.1.0 cannot mount an upgraded volume or
 one a newer CarryFS formatted, so update CarryFS on every computer that uses
 the volume before upgrading it.
@@ -372,7 +412,7 @@ Linux `fallocate`, macOS `F_PREALLOCATE`, and a Windows allocation size given
 at create or set later reserve space. Preallocated space reads as zeros until
 written.
 
-Files and symlinks can have hard links: `ln` on Linux, macOS, and FreeBSD, up
+Files and symlinks can have hard links: `ln` on Linux, macOS, FreeBSD, and NetBSD, up
 to 65,535 names each. Directories cannot be hard linked.
 Windows opens, renames, and deletes existing names. It can't create new ones
 because WinFsp rejects hard link creation. WinFsp also reports a link count of

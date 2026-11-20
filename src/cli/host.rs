@@ -47,6 +47,16 @@ mod flags {
     pub type Mode = u16;
     pub type OpenMode = i32;
 }
+#[cfg(target_os = "netbsd")]
+mod flags {
+    pub const DIRECTORY: i32 = 0x00200000;
+    pub const NOFOLLOW: i32 = 0x100;
+    pub const CLOEXEC: i32 = 0x00400000;
+    pub const CREATE: i32 = 0x200 | 0x800 | 1;
+    pub const NONBLOCK: i32 = 4;
+    pub type Mode = u32;
+    pub type OpenMode = u32;
+}
 use flags::*;
 
 unsafe extern "C" {
@@ -156,10 +166,12 @@ pub(super) struct Sink {
     held: HashMap<Vec<Vec<u8>>, Held>,
 }
 
-/// An extracted object kept open so its inode, and so its identity, cannot
-/// be freed and reused while later names may link to it.
+/// An extracted object held by a descriptor or a private symlink pin, so its
+/// inode cannot be freed and reused while later names may link to it.
 struct Held {
     _object: File,
+    #[cfg(target_os = "netbsd")]
+    _pin: Option<SymlinkPin>,
     identity: (u64, u64),
     /// Names still to link before the descriptor can close.
     remaining: u32,
@@ -177,6 +189,8 @@ impl Held {
             .map_err(|e| io_error("inspect extracted entry", e))?;
         Ok(Self {
             _object: object,
+            #[cfg(target_os = "netbsd")]
+            _pin: None,
             identity: (metadata.dev(), metadata.ino()),
             remaining: links - 1,
         })
@@ -184,12 +198,137 @@ impl Held {
 }
 
 /// The device and inode `name` in `directory` names, without following it.
+#[cfg(not(target_os = "netbsd"))]
 fn identity(directory: &File, name: &CString) -> Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     let metadata = open_at(directory, name, IDENTITY)?
         .metadata()
         .map_err(|e| io_error("inspect extracted entry", e))?;
     Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(target_os = "netbsd")]
+fn identity(directory: &File, name: &CString) -> Result<(u64, u64)> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the directory and name are live; fstatat initializes metadata
+    // on success, without following a symlink.
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io_error(
+            "inspect extracted entry",
+            io::Error::last_os_error(),
+        ));
+    }
+    // SAFETY: fstatat succeeded and initialized the complete stat value.
+    let metadata = unsafe { metadata.assume_init() };
+    Ok((metadata.st_dev, metadata.st_ino))
+}
+
+/// NetBSD cannot open a symlink itself. A private sibling directory holds an
+/// extra hard link instead, preventing inode reuse during extraction.
+#[cfg(target_os = "netbsd")]
+struct Pins {
+    parent: File,
+    name: CString,
+    directory: File,
+}
+
+#[cfg(target_os = "netbsd")]
+fn pin_name() -> CString {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    CString::new(format!(
+        ".carryfs-links-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+    .unwrap()
+}
+
+#[cfg(target_os = "netbsd")]
+impl Pins {
+    fn new(parent: &File) -> Result<Self> {
+        let parent = parent
+            .try_clone()
+            .map_err(|e| io_error("hold extraction parent", e))?;
+        loop {
+            let name = pin_name();
+            // SAFETY: the directory and name are live; the new directory is private.
+            if unsafe { mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0 {
+                let directory = match open_at(&parent, &name, DIRECTORY) {
+                    Ok(directory) => directory,
+                    Err(error) => {
+                        // SAFETY: this removes only the empty directory just created.
+                        if unsafe {
+                            unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR)
+                        } != 0
+                        {
+                            eprintln!(
+                                "carryfs: removing failed extraction pin directory: {}",
+                                io::Error::last_os_error()
+                            );
+                        }
+                        return Err(error);
+                    }
+                };
+                return Ok(Self {
+                    parent,
+                    name,
+                    directory,
+                });
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::AlreadyExists {
+                return Err(io_error("create extraction pin directory", error));
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "netbsd")]
+impl Drop for Pins {
+    fn drop(&mut self) {
+        // SAFETY: both the parent and the NUL-terminated name remain live.
+        if unsafe {
+            unlinkat(
+                self.parent.as_raw_fd(),
+                self.name.as_ptr(),
+                libc::AT_REMOVEDIR,
+            )
+        } != 0
+        {
+            eprintln!(
+                "carryfs: removing extraction pin directory: {}",
+                io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "netbsd")]
+struct SymlinkPin {
+    pins: Pins,
+    name: CString,
+}
+
+#[cfg(target_os = "netbsd")]
+impl Drop for SymlinkPin {
+    fn drop(&mut self) {
+        // SAFETY: the held directory and NUL-terminated name remain live.
+        if unsafe { unlinkat(self.pins.directory.as_raw_fd(), self.name.as_ptr(), 0) } != 0 {
+            eprintln!(
+                "carryfs: removing extraction symlink pin: {}",
+                io::Error::last_os_error()
+            );
+        }
+    }
 }
 
 fn path_key(path: &[Name]) -> Vec<Vec<u8>> {
@@ -358,7 +497,48 @@ impl ExtractionSink for Sink {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = hidden;
+        #[cfg(target_os = "netbsd")]
+        if hold {
+            let object_identity = identity(parent, &name)?;
+            let parent = parent
+                .try_clone()
+                .map_err(|e| io_error("hold symlink parent", e))?;
+            let pins = Pins::new(&self.parent)?;
+            let pin_name = pin_name();
+            // SAFETY: both directories and names are live. Flags 0 pins the
+            // symlink itself, including a dangling link.
+            if unsafe {
+                linkat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    pins.directory.as_raw_fd(),
+                    pin_name.as_ptr(),
+                    0,
+                )
+            } != 0
+            {
+                let error = io::Error::last_os_error();
+                return Err(io_error("pin extracted symlink", error));
+            }
+            let pin = SymlinkPin {
+                pins,
+                name: pin_name,
+            };
+            if identity(&pin.pins.directory, &pin.name)? != object_identity {
+                return Err(Error::InvalidInput("extracted symlink was replaced"));
+            }
+            self.held.insert(
+                path_key(path),
+                Held {
+                    _object: parent,
+                    _pin: Some(pin),
+                    identity: object_identity,
+                    remaining: attributes.links - 1,
+                },
+            );
+        }
         // An object not held has its later names extracted as copies.
+        #[cfg(not(target_os = "netbsd"))]
         if hold && let Ok(object) = open_at(parent, &name, IDENTITY) {
             self.held
                 .insert(path_key(path), Held::new(object, attributes.links)?);
@@ -525,6 +705,39 @@ mod tests {
         if sink.create_link(&second, &first).is_ok() {
             assert_eq!(std::fs::read(held.join("second")).unwrap(), b"verified");
         }
+    }
+
+    #[cfg(target_os = "netbsd")]
+    #[test]
+    fn extraction_pins_dangling_symlinks_and_cleans_up_the_pins() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = Temp::new();
+        let root = temp.0.join("output");
+        let linked = Attributes {
+            kind: ObjectKind::Symlink,
+            links: 2,
+            ..attributes()
+        };
+        let mut sink = Sink::new(&root).unwrap();
+        sink.create_directory(&[], &attributes()).unwrap();
+        let first = [Name::parse("first").unwrap()];
+        let second = [Name::parse("second").unwrap()];
+        sink.create_symlink(&first, b"missing", &linked).unwrap();
+        sink.create_link(&second, &first).unwrap();
+        sink.finish().unwrap();
+        let metadata = std::fs::symlink_metadata(root.join("first")).unwrap();
+        assert_eq!(
+            metadata.ino(),
+            std::fs::symlink_metadata(root.join("second"))
+                .unwrap()
+                .ino()
+        );
+        assert_eq!(metadata.nlink(), 2);
+        assert_eq!(
+            std::fs::read_link(root.join("second")).unwrap(),
+            Path::new("missing")
+        );
+        assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 1);
     }
 
     #[test]

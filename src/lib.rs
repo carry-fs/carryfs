@@ -23,6 +23,8 @@ mod format;
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 mod name;
+#[cfg(target_os = "netbsd")]
+pub mod netbsd;
 mod tree;
 mod volume;
 mod workspace;

@@ -322,7 +322,12 @@ fn record_finding(report: &mut File, finding: &carryfs_core::Finding<'_>) -> io:
     report.sync_all()
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 fn recover(
     repair: &mut Repair<ImageDevice>,
     output: &Path,
@@ -341,11 +346,16 @@ fn recover(
     Ok(summary)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
 fn recover(
     _: &mut Repair<ImageDevice>,
     _: &Path,
     _: &mut File,
 ) -> Result<carryfs_core::ExtractionSummary> {
-    Err("secure recovery export requires Linux, macOS, or FreeBSD".into())
+    Err("secure recovery export requires Linux, macOS, FreeBSD, or NetBSD".into())
 }

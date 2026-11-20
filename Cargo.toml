@@ -17,7 +17,7 @@ version = "0.2.0"
 [dependencies]
 carryfs-ondisk = { path = "ondisk", features = ["std"] }
 
-[target.'cfg(any(target_os = "freebsd", target_os = "macos"))'.dependencies]
+[target.'cfg(any(target_os = "freebsd", target_os = "netbsd", target_os = "macos"))'.dependencies]
 libc = "0.2"
 
 [[bin]]
@@ -65,6 +65,8 @@ codegen-units = 1
 # publication finishes before the unmount reply (cberner/fuser#757), and
 # separate name/attribute TTLs for create and readdirplus (cberner/fuser#756),
 # and a spin budget for the event loop (`Config::spin`).
-# Return to upstream once all five are available.
+# On NetBSD it also converts the nodev mount flag, which nix lacks, and
+# retries replies the relay socket rejects with EMSGSIZE until it has room.
+# Return to upstream once these fixes are available.
 [patch.crates-io]
 fuser = { git = "https://github.com/carry-fs/fuser", branch = "master" }

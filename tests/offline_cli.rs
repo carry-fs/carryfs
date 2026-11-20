@@ -1,5 +1,10 @@
 //! Exercise the actual CLI with disposable images and host directories.
-#![cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#![cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -225,7 +230,7 @@ fn cli_reports_damaged_ranges_and_keeps_verified_output() {
     assert!(report.contains("offset Some(0), length 65536"));
     assert!(report.contains("path [\"data\"]"));
     assert!(report.contains("unreadable_ranges: 1"));
-    let parsed = Command::new("python3").args(["-c", "import json,sys; d=json.load(open(sys.argv[1])); assert d['state']=='partial'; f=d['files'][0]; assert f['path']==['data']; assert f['status']=='partial'; assert f['source_damage'][0]['offset']==0; assert f['source_damage'][0]['length']==65536", temp.0.join("partial-image.recovery.json").to_str().unwrap()]).output().unwrap();
+    let parsed = Command::new(std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into())).args(["-c", "import json,sys; d=json.load(open(sys.argv[1])); assert d['state']=='partial'; f=d['files'][0]; assert f['path']==['data']; assert f['status']=='partial'; assert f['source_damage'][0]['offset']==0; assert f['source_damage'][0]['length']==65536", temp.0.join("partial-image.recovery.json").to_str().unwrap()]).output().unwrap();
     assert!(
         parsed.status.success(),
         "{}",
@@ -653,7 +658,7 @@ fn fsck_rebuilds_a_new_image_without_repairing_the_source() {
         fs::read(temp.0.join("embedded.json")).unwrap(),
         fs::read(temp.0.join("new-image.recovery.json")).unwrap()
     );
-    let parsed = Command::new("python3").args(["-c", "import json,sys; d=json.load(open(sys.argv[1])); assert d['state']=='complete'; assert d['verification']=='passed'; assert d['source']['metadata_complete']; assert d['files'][0]['path']==['notes']; assert d['files'][0]['copied_bytes']==150001; assert d['files'][0]['destination_verified_bytes']==150001", temp.0.join("embedded.json").to_str().unwrap()]).output().unwrap();
+    let parsed = Command::new(std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into())).args(["-c", "import json,sys; d=json.load(open(sys.argv[1])); assert d['state']=='complete'; assert d['verification']=='passed'; assert d['source']['metadata_complete']; assert d['files'][0]['path']==['notes']; assert d['files'][0]['copied_bytes']==150001; assert d['files'][0]['destination_verified_bytes']==150001", temp.0.join("embedded.json").to_str().unwrap()]).output().unwrap();
     assert!(
         parsed.status.success(),
         "{}",

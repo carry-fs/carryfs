@@ -156,7 +156,27 @@ prerequisites() {
             done
             [ -c /dev/fuse ] || die 'Load the FreeBSD FUSE module first: kldload fusefs'
             ;;
-        *) die 'Use install.sh on Linux, macOS, or FreeBSD. On Windows, use install.ps1 from PowerShell.' ;;
+        NetBSD)
+            [ "$native" = 0 ] || die '--native is supported on Linux only.'
+            release=$(uname -r)
+            major=${release%%.*}
+            minor=${release#*.}
+            case $major in 10|11) ;; *) die 'NetBSD packages support 10.2 and 11.1 or later within those major versions.' ;; esac
+            case $minor in ''|*[!0-9]*) die 'Use a stable NetBSD release.' ;; esac
+            if { [ "$major" = 10 ] && [ "$minor" -lt 2 ]; } || { [ "$major" = 11 ] && [ "$minor" -lt 1 ]; }; then
+                die 'NetBSD packages require 10.2 or 11.1 or later within those major versions.'
+            fi
+            [ "$(uname -m)" = amd64 ] || die 'NetBSD packages support amd64 only.'
+            platform=netbsd$major-x86_64
+            unpackaged_through=0.1.0
+            marker=/usr/local/libexec/carryfs/VERSION
+            adapter=/usr/local/libexec/carryfs/carryfs-fuse
+            for tool in sha256 pgrep; do
+                command -v "$tool" >/dev/null 2>&1 || die "Missing $tool."
+            done
+            [ -x /usr/sbin/perfused ] && [ -c /dev/puffs ] || die 'NetBSD requires perfused and PUFFS support.'
+            ;;
+        *) die 'Use install.sh on Linux, macOS, FreeBSD, or NetBSD. On Windows, use install.ps1 from PowerShell.' ;;
     esac
     [ "$missing" = 0 ] || die 'Install the missing prerequisites and run the installer again.'
     if [ "$(id -u)" != 0 ]; then
@@ -218,7 +238,7 @@ verify_package() {
     case $expected in *[!0-9a-f]*) die 'Invalid SHA-256 checksum.' ;; esac
     if [ "$platform" = linux-x86_64 ]; then
         actual=$(sha256sum "$work/$asset")
-    elif [ "${platform#freebsd}" != "$platform" ]; then
+    elif [ "${platform#freebsd}" != "$platform" ] || [ "${platform#netbsd}" != "$platform" ]; then
         actual=$(sha256 -q "$work/$asset")
     else
         actual=$(shasum -a 256 "$work/$asset")
@@ -239,7 +259,7 @@ verify_package() {
             for file in carryfs-fuse 61-carryfs.rules mount_options.conf; do
                 [ -f "$work/payload/$file" ] || die "The release package is missing $file."
             done ;;
-        freebsd14-*|freebsd15-*)
+        freebsd14-*|freebsd15-*|netbsd10-*|netbsd11-*)
             [ -f "$work/payload/carryfs-fuse" ] || die 'The release package is missing carryfs-fuse.'
             ;;
         macos-arm64)
@@ -268,7 +288,7 @@ build_local() {
                 cp linux/carryfs.ko "$work/payload/" &&
                 printf '%s\n' "$kernel_release" > "$work/payload/KERNEL_RELEASE"
             fi
-        elif [ "${platform#freebsd}" != "$platform" ]; then
+        elif [ "${platform#freebsd}" != "$platform" ] || [ "${platform#netbsd}" != "$platform" ]; then
             cargo build --release --locked -p carryfs-core -p carryfs-fuse &&
             cp "$target/carryfs" "$target/carryfs-fuse" "$work/payload/"
         else
@@ -429,11 +449,11 @@ main() {
                 adapter=/usr/libexec/carryfs
                 question="Remove CarryFS from /usr/local/bin/carryfs and $adapter, with its helper links, udev rule, UDisks options, and recorded native modules?"
                 kept='Disk contents' ;;
-            FreeBSD)
+            FreeBSD|NetBSD)
                 adapter=/usr/local/libexec/carryfs
-                question="Remove CarryFS and its mount and format helpers from /usr/local?"
-                kept='Disk contents and the fusefs module' ;;
-            *) die '--uninstall is supported on Linux, macOS, and FreeBSD only.' ;;
+                question="Remove CarryFS and its mount and format helpers?"
+                kept='Disk contents and the system filesystem framework' ;;
+            *) die '--uninstall is supported on Linux, macOS, FreeBSD, and NetBSD only.' ;;
         esac
         command -v pgrep >/dev/null 2>&1 || die 'Missing pgrep.'
         for process in carryfs-fuse mount_carryfs; do
@@ -455,11 +475,18 @@ main() {
         case $answer in y|Y|yes|YES) ;; *) printf 'Uninstall cancelled.\n'; return ;; esac
         if [ "$system" = Linux ]; then
             uninstall_linux
-        elif [ "$system" = FreeBSD ]; then
+        elif [ "$system" = FreeBSD ] || [ "$system" = NetBSD ]; then
             sudo=
             [ "$(id -u)" = 0 ] || sudo=sudo
             if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then $sudo rm -f /usr/local/bin/fsck.carryfs; fi
-            $sudo rm -f /usr/local/bin/carryfs /usr/local/sbin/mount_carryfs /usr/local/sbin/newfs_carryfs
+            bsd_sbin=/usr/local/sbin
+            [ "$system" != NetBSD ] || bsd_sbin=/usr/sbin
+            for link in "$bsd_sbin/mount_carryfs" "$bsd_sbin/newfs_carryfs"; do
+                if [ -L "$link" ] && [ "$(readlink "$link")" = /usr/local/libexec/carryfs/carryfs-fuse ]; then
+                    $sudo rm -f "$link"
+                fi
+            done
+            $sudo rm -f /usr/local/bin/carryfs
             $sudo rm -rf /usr/local/libexec/carryfs
         elif [ "$(id -u)" = 0 ]; then
             if [ -L /usr/local/bin/fsck.carryfs ] && [ "$(readlink /usr/local/bin/fsck.carryfs)" = carryfs ]; then rm -f /usr/local/bin/fsck.carryfs; fi

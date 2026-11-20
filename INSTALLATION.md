@@ -183,11 +183,14 @@ Device drivers must support cache flushes; an unsupported or failed flush is
 reported as an error. CarryFS tools share raw-device and volume UUID leases.
 Other raw-device programs must honor those leases to coordinate with CarryFS.
 NetBSD uses ordinary directory listings and conservative name and attribute
-caching. Namespace and data changes publish synchronously because libperfuse
-can omit directory fsync requests. The adapter includes a compatibility shim
-for libperfuse access checks and root ownership, and it keeps the relay running
-until the kernel has finished an unmount. It loads only into the adapter's
-relay process. Hidden flags and rename exchange are unsupported.
+caching. Changes publish at fsync, as on the other platforms. The adapter
+includes a compatibility shim for libperfuse. It handles access checks and root
+ownership, forwards directory fsync after a create or link, and keeps
+libperfuse from syncing every written file on close. It also keeps the relay
+running until the kernel has finished an unmount. It loads only into the
+adapter's relay process and refuses to mount if libperfuse's node layout
+differs from NetBSD 10 and 11. Hidden flags and rename exchange are
+unsupported.
 
 ### macOS
 

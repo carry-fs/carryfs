@@ -983,11 +983,8 @@ fn fetch(
     // between is overlaid with the same bytes rather than missed.
     let queued = queue.overlapping(offset, out.len())?;
     // Held bytes are newer than every queued run; the failure check still applies.
-    if let Some((&at, data)) = pending.range(..=offset).next_back()
-        && let Ok(skip) = usize::try_from(offset - at)
-        && let Some(bytes) = data.get(skip..).and_then(|bytes| bytes.get(..out.len()))
-    {
-        out.copy_from_slice(bytes);
+    if held_without_gap(pending, offset, out.len()) {
+        overlay(pending, offset, out);
         return Ok(());
     }
     read_device(file, offset, out).map_err(|source| Error::Io {
@@ -999,6 +996,27 @@ fn fetch(
     }
     overlay(pending, offset, out);
     Ok(())
+}
+
+/// Whether held writes cover `len` bytes from `offset` without a gap, so a
+/// read needs nothing from the device. Held writes never overlap one another.
+fn held_without_gap(pending: &BTreeMap<u64, Vec<u8>>, offset: u64, len: usize) -> bool {
+    let end = offset + len as u64;
+    let first = pending
+        .range(..=offset)
+        .next_back()
+        .map_or(offset, |(&at, _)| at);
+    let mut reached = offset;
+    for (&at, data) in pending.range(first..end) {
+        if at > reached {
+            return false;
+        }
+        reached = reached.max(at + data.len() as u64);
+        if reached >= end {
+            return true;
+        }
+    }
+    false
 }
 
 /// Copy held writes over `out`, which was just read from the device at
@@ -1089,10 +1107,11 @@ fn overlay_run(run: &Run, offset: u64, out: &mut [u8]) {
 fn write_run(file: &File, mut offset: u64, pieces: &[Vec<u8>]) -> io::Result<()> {
     #[cfg(feature = "fault-injection")]
     injected_failure("CARRYFS_FAIL_WRITES")?;
-    // FreeBSD physio waits for each iovec separately; give GEOM one contiguous run.
-    #[cfg(target_os = "freebsd")]
+    // BSD physio waits for each iovec separately: a 1 MiB run of 4 KiB pages
+    // ran at 17-27 MiB/s on NetBSD, against 214 MiB/s written whole.
+    #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
     let contiguous = (pieces.len() > 1).then(|| pieces.concat());
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
     let pieces = contiguous.as_ref().map_or(pieces, std::slice::from_ref);
     let mut slices: Vec<IoSlice<'_>> = pieces.iter().map(|piece| IoSlice::new(piece)).collect();
     let mut slices = &mut slices[..];
@@ -1608,6 +1627,30 @@ mod tests {
         let mut out = [0; 4096];
         fetch(&disk.file, &queue, &pending, 6144, &mut out).unwrap();
         assert_eq!(out, [3; 4096]);
+        drop(disk);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// libperfuse splits a 64 KiB write into 60 KiB and 4 KiB requests, and
+    /// the core then reads the first back as pages held separately.
+    #[test]
+    fn a_read_across_adjacent_held_writes_needs_no_device_read() {
+        let path = std::env::temp_dir().join(format!("carryfs-held-span-{}", std::process::id()));
+        let disk = disk_over(&path);
+        let queue = Queue::default();
+        let pending = BTreeMap::from([
+            (4096, vec![1; 4096]),
+            (8192, vec![2; 8192]),
+            (20480, vec![3; 4096]),
+        ]);
+        // A zero-length backing file makes any device read fail.
+        disk.file.set_len(0).unwrap();
+        let mut out = [0; 12288];
+        fetch(&disk.file, &queue, &pending, 4096, &mut out).unwrap();
+        assert!(out[..4096].iter().all(|&byte| byte == 1));
+        assert!(out[4096..].iter().all(|&byte| byte == 2));
+        // A gap at 16384 still needs the device.
+        assert!(fetch(&disk.file, &queue, &pending, 12288, &mut [0; 12288]).is_err());
         drop(disk);
         std::fs::remove_file(path).unwrap();
     }

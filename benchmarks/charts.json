@@ -49,6 +49,30 @@
         "exFAT": "exfat",
         "APFS": "apfs"
       }
+    },
+    {
+      "name": "freebsd-14.5",
+      "system": "FreeBSD 14.5, fusefs",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. exFAT is the FUSE port. Data: benchmarks/freebsd-14.5.tsv.",
+      "results": "benchmarks/freebsd-14.5.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "UFS": "ufs",
+        "exFAT": "exfat"
+      }
+    },
+    {
+      "name": "freebsd-15.1",
+      "system": "FreeBSD 15.1, fusefs",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. exFAT is the FUSE port. Data: benchmarks/freebsd-15.1.tsv.",
+      "results": "benchmarks/freebsd-15.1.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "UFS": "ufs",
+        "exFAT": "exfat"
+      }
     }
   ],
   "comparison": {
@@ -58,10 +82,11 @@
       "macos",
       "windows",
       "linux",
-      "linux-native"
+      "linux-native",
+      "freebsd-15.1"
     ],
     "title": "CarryFS against exFAT",
     "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of three fresh-format rounds.",
-    "note": "macOS, Windows: CarryFS format revision 1, commit 7dfae3d. Linux: revision 2, commit 425fafc. OCZ Vertex 4 SSD over USB. Data: benchmarks/*.tsv."
+    "note": "macOS, Windows: CarryFS format revision 1, commit 7dfae3d. Linux, FreeBSD: revision 2, commit 425fafc. OCZ Vertex 4 SSD over USB. Data: benchmarks/*.tsv."
   }
 }

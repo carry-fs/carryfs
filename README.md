@@ -82,7 +82,7 @@ for methods, raw results, and comparisons with native filesystems.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/charts/vs-exfat-dark.svg">
-  <img alt="CarryFS speed relative to exFAT on macOS, Windows and Linux (FUSE and kernel driver)" src="benchmarks/charts/vs-exfat-light.svg">
+  <img alt="CarryFS speed relative to exFAT on macOS, Windows, Linux (FUSE and kernel driver) and FreeBSD" src="benchmarks/charts/vs-exfat-light.svg">
 </picture>
 
 ## Current status

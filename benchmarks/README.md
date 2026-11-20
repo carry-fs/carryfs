@@ -1,9 +1,10 @@
 # Filesystem benchmarks
 
 `run.py` builds CarryFS, checks the targets you picked, runs one workload on
-each filesystem, and compares saved results. It runs on Linux, macOS and
-Windows with the same workload and metric names, so you can compare CarryFS
-with exFAT, ext4, Btrfs, APFS or NTFS on your own drive.
+each filesystem, and compares saved results. It runs on Linux, macOS,
+Windows, FreeBSD and NetBSD with the same workload and metric names, so you
+can compare CarryFS with exFAT, ext4, Btrfs, APFS, NTFS, UFS or FFS on your
+own drive.
 
 Offline repair and new-image recovery have a separate
 [benchmark and results](recovery.md), including embedded manifests and
@@ -22,6 +23,7 @@ benchmarks/
   run.py                    command line
   full.py, focused.py       the suite, and running one metric of it
   native.py, native_io.py   macOS and Windows mounting and flushing
+  bsd.py                    FreeBSD and NetBSD disks, formatting and mounting
   freebsd.py, freebsd_write.py  FreeBSD adapter benchmarks
   mount.rs                  source of the Linux user-mount helper
   workloads/                file operations, usable on any mounted filesystem
@@ -198,6 +200,18 @@ A root run turns Spotlight indexing off on each freshly formatted native
 volume, because indexing blocks unmounts. A user run cannot, so it leaves a
 `.metadata_never_index` file in the volume root and retries the first unmount
 for up to 30 seconds.
+
+### FreeBSD and NetBSD
+
+Run as root with `"mount_mode": "root"`, on physical disks only. Give
+`device` as the raw disk node, such as `/dev/vtbd1` on FreeBSD or
+`/dev/rld0d` on NetBSD. A disk that holds any mounted volume is refused.
+Targets can share one disk, because each sample formats it. The native
+targets are `ufs` (UFS2 with soft updates) on FreeBSD, `ffs` (FFSv2 with the
+WAPBL log) on NetBSD, and `exfat` through the FUSE exFAT port on both.
+FreeBSD needs `fusefs` loaded and the `exfat-utils` and `fusefs-exfat`
+packages. NetBSD needs the `fuse-exfat` package. The BSD runner reads no
+per-disk I/O counters, so the `sample_*` rows are marked unavailable.
 
 ### Windows
 
@@ -414,10 +428,13 @@ A chart needs a full run. A run of one metric lacks the other workloads, and
 
 ## Published results
 
-`macos.tsv`, `windows.tsv`, `linux.tsv` and `linux-native.tsv` hold full runs
-on one OCZ Vertex 4 SSD connected over USB, with three rounds for each
-filesystem. `linux.tsv` measures the FUSE adapter and `linux-native.tsv` the
-kernel driver; both share the exFAT, ext4 and Btrfs rows. `charts.json`
+`macos.tsv`, `windows.tsv`, `linux.tsv`, `linux-native.tsv`,
+`freebsd-14.5.tsv` and `freebsd-15.1.tsv` hold full runs on one OCZ Vertex 4
+SSD connected over USB, with three rounds for each filesystem. `linux.tsv`
+measures the FUSE adapter and `linux-native.tsv` the kernel driver; both
+share the exFAT, ext4 and Btrfs rows. The FreeBSD runs ran in a KVM guest on
+the Linux host, with the SSD partition passed through raw (virtio-blk,
+host cache off). `charts.json`
 draws them into `charts/`. The charts show nine of the 92 metrics each run
 records, and the `.tsv` files hold the rest:
 
@@ -445,8 +462,18 @@ python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
   <img alt="CarryFS kernel driver, exFAT, ext4 and Btrfs on Linux" src="charts/linux-native-light.svg">
 </picture>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/freebsd-15.1-dark.svg">
+  <img alt="CarryFS, UFS and exFAT on FreeBSD 15.1" src="charts/freebsd-15.1-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/freebsd-14.5-dark.svg">
+  <img alt="CarryFS, UFS and exFAT on FreeBSD 14.5" src="charts/freebsd-14.5-light.svg">
+</picture>
+
 [charts/vs-exfat-light.svg](charts/vs-exfat-light.svg) compares CarryFS with
-exFAT on all hosts, with both Linux adapters, in one chart.
+exFAT on all hosts, with both Linux adapters and FreeBSD 15.1, in one chart.
 
 ## FreeBSD adapter benchmarks
 

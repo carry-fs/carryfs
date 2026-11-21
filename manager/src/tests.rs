@@ -642,15 +642,15 @@ fn long_directories_scroll_to_files_below_the_viewport() {
     });
     rt.frame(0.01);
     let ([x, y, width, height], _) = rt.presented("file-list").unwrap();
-    let before = rt.presented(&last).unwrap().0[1];
+    assert!(rt.presented(&last).is_none(), "An offscreen row was built");
     rt.wheel(x + width / 2.0, y + height / 2.0, -10000.0);
     for _ in 0..60 {
         rt.frame(1.0 / 60.0);
     }
     let after = rt.presented(&last).unwrap().0[1];
     assert!(
-        after < before - 100.0 && after < y + height,
-        "Last file is unreachable: {before} -> {after}"
+        after >= y && after < y + height,
+        "Last file is unreachable: row {after}, viewport {y}..{}", y + height
     );
 }
 

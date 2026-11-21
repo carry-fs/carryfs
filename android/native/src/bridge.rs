@@ -104,11 +104,13 @@ fn release(drive: i64, eject: bool) -> Result<(), Error> {
         return Ok(());
     };
     let mut state = session.lock().map_err(|_| Error::Faulted)?;
-    if eject {
-        state.eject(drive)?;
+    // Eject removes the session's volumes even when publishing fails.
+    let result = if eject {
+        state.eject(drive)
     } else {
         state.detach(drive);
-    }
+        Ok(())
+    };
     let mut registry = REGISTRY.lock().map_err(|_| Error::Faulted)?;
     if registry
         .drives
@@ -118,7 +120,7 @@ fn release(drive: i64, eject: bool) -> Result<(), Error> {
         registry.drives.remove(&drive);
         registry.volumes.retain(|_, key| *key != drive);
     }
-    Ok(())
+    result
 }
 
 enum Failure {
@@ -559,5 +561,31 @@ mod tests {
         assert!(result.unwrap().is_ok());
         release(1, false).unwrap();
         release(2, false).unwrap();
+    }
+
+    #[test]
+    fn failed_eject_allows_the_drive_to_remount() {
+        let usb = crate::scsi::fake::FakeUsb::new(512, 300 * MIB);
+        let media = usb.media.clone();
+        let disk: SharedDisk = Arc::new(Mutex::new(Disk::open(usb).unwrap()));
+        format(&disk, 0, 300 * MIB);
+        let drive = 3;
+        let volume = mount(drive, disk.clone()).unwrap()[0];
+        with_volume(volume, |session| {
+            session.create(volume, 1, "pending", false)
+        })
+        .unwrap();
+
+        media.lock().unwrap().fail_flush = true;
+        assert!(matches!(release(drive, true), Err(Error::Io { .. })));
+        media.lock().unwrap().fail_flush = false;
+
+        let remounted = mount(drive, disk).unwrap();
+        assert_eq!(remounted.len(), 1);
+        assert!(matches!(
+            with_volume(volume, |session| session.label(volume)),
+            Err(Error::Ejected)
+        ));
+        release(drive, false).unwrap();
     }
 }

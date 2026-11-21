@@ -563,6 +563,35 @@ mod tests {
     }
 
     #[test]
+    fn failed_eject_keeps_the_drive_and_its_volumes_mounted() {
+        use crate::scsi::{Disk, fake::FakeUsb};
+        use std::sync::{Arc, Mutex};
+
+        let transport = FakeUsb::new(512, 650 * MIB);
+        let media = transport.media.clone();
+        let disk: SharedDisk = Arc::new(Mutex::new(Disk::open(transport).unwrap()));
+        write_gpt(&disk, &[(MIB, 300 * MIB), (301 * MIB, 300 * MIB)]);
+        format(&disk, MIB, 300 * MIB);
+        format(&disk, 301 * MIB, 300 * MIB);
+        let mut session = Session::default();
+        let volumes = session.mount(7, disk.clone()).unwrap();
+        assert_eq!(volumes.len(), 2);
+        session
+            .create(volumes[0], ROOT.get() as i64, "pending", false)
+            .unwrap();
+
+        media.lock().unwrap().fail_flush = true;
+        assert!(matches!(session.eject(7), Err(Error::Io { .. })));
+        assert!(matches!(session.mount(7, disk.clone()), Err(Error::Busy)));
+        assert!(session.volume(volumes[0]).unwrap().is_faulted());
+        assert!(session.read_only(volumes[1]).is_ok());
+
+        session.detach(7);
+        media.lock().unwrap().fail_flush = false;
+        assert_eq!(session.mount(7, disk).unwrap().len(), 2);
+    }
+
+    #[test]
     fn create_numbers_taken_names() {
         let (mut session, volume, _) = mounted();
         let root = ROOT.get() as i64;

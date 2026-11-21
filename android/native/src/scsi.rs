@@ -382,6 +382,7 @@ pub(crate) mod fake {
         pub reads: usize,
         /// Reject SYNCHRONIZE CACHE as an unknown command, as some flash drives do.
         pub no_cache: bool,
+        pub fail_flush: bool,
         /// Commands left to fail with UNIT ATTENTION.
         pub attentions: usize,
     }
@@ -403,6 +404,7 @@ pub(crate) mod fake {
                     writes: 0,
                     reads: 0,
                     no_cache: false,
+                    fail_flush: false,
                     attentions: 1,
                 })),
                 block_bytes,
@@ -484,6 +486,12 @@ pub(crate) mod fake {
                     let (lba, count) = range(cdb);
                     assert_eq!(count * bs, len);
                     Phase::DataOut(lba, len, Self::csw(tag, 0, 0))
+                }
+                0x35 if media.fail_flush => {
+                    self.sense = [0; 18];
+                    self.sense[2] = 0x04; // Hardware error.
+                    self.sense[12] = 0x44; // Internal target failure.
+                    Phase::Status(Self::csw(tag, 0, 1))
                 }
                 0x35 if media.no_cache => {
                     self.sense = [0; 18];

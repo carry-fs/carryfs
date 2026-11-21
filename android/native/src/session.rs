@@ -177,15 +177,48 @@ impl Session {
         old.eject()
     }
 
-    pub fn list(&mut self, volume: i64, directory: i64) -> Result<Vec<Entry>> {
+    #[cfg(test)]
+    fn list(&mut self, volume: i64, directory: i64) -> Result<Vec<Entry>> {
         let mounted = self.mounted_mut(volume)?;
         let parent = object(directory)?;
+        let children = entries(&mut mounted.volume, parent)?;
+        Self::describe_children(mounted, parent, children)
+    }
+
+    pub fn list_page(
+        &mut self,
+        volume: i64,
+        directory: i64,
+        after: Option<Name>,
+    ) -> Result<(Vec<Entry>, Option<Name>)> {
+        let mounted = self.mounted_mut(volume)?;
+        let parent = object(directory)?;
+        let handle = mounted.volume.open_directory(parent)?;
+        let page = if let Some(after) = &after {
+            mounted.volume.read_directory_after(&handle, after)
+        } else {
+            mounted.volume.read_directory(&handle, None)
+        };
+        mounted.volume.close_handle(handle)?;
+        let page = page?;
+        let next = page
+            .cursor
+            .and_then(|_| page.entries.last().map(|entry| entry.name.clone()));
+        let entries = Self::describe_children(mounted, parent, page.entries)?;
+        Ok((entries, next))
+    }
+
+    fn describe_children(
+        mounted: &mut Mounted,
+        parent: ObjectId,
+        children: Vec<DirectoryEntry>,
+    ) -> Result<Vec<Entry>> {
         let mut listed = Vec::new();
         // Documents have no symlinks; they stay reachable from desktops.
-        for child in entries(&mut mounted.volume, parent)? {
+        for child in children {
             if child.kind != ObjectKind::Symlink {
                 let (mut entry, links) = entry(&mut mounted.volume, child.object, &child.name)?;
-                entry.parent = directory;
+                entry.parent = parent.get() as i64;
                 let key = (parent, child.name.stored().to_vec());
                 if let Some(&id) = mounted.link_ids.get(&key) {
                     entry.id = id;

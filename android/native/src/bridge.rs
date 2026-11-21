@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use carryfs_core::Error;
+use carryfs_core::{Error, Name};
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jlongArray, jstring};
@@ -245,15 +245,25 @@ pub extern "system" fn Java_com_carryfs_android_Native_upgrade<'local>(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_carryfs_android_Native_list<'local>(
+pub extern "system" fn Java_com_carryfs_android_Native_listPage<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     volume: jlong,
     directory: jlong,
+    after: JString<'local>,
 ) -> jbyteArray {
     call(&mut env, null_mut(), |env| {
-        let entries = session().list(volume, directory)?;
-        Ok(env.byte_array_from_slice(&encode(&entries))?.into_raw())
+        let after: String = env.get_string(&after)?.into();
+        let after = (!after.is_empty())
+            .then(|| Name::parse(&after))
+            .transpose()?;
+        let (entries, next) = session().list_page(volume, directory, after)?;
+        let name = next.as_ref().map_or(&[][..], Name::stored);
+        let mut page = Vec::new();
+        page.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        page.extend_from_slice(name);
+        page.extend_from_slice(&encode(&entries));
+        Ok(env.byte_array_from_slice(&page)?.into_raw())
     })
 }
 

@@ -90,8 +90,15 @@ class CarryProvider : DocumentsProvider() {
         val parent = parse(parentDocumentId)
         val cursor = MatrixCursor(projection ?: DOCUMENT_COLUMNS)
         val writable = writable(parent.volume)
-        for (entry in call { Native.children(parent.volume, parent.id) }) {
-            addRow(cursor, parent.volume, entry, writable)
+        try {
+            call {
+                Native.visitChildren(parent.volume, parent.id) { entry ->
+                    addRow(cursor, parent.volume, entry, writable)
+                }
+            }
+        } catch (error: Exception) {
+            cursor.close()
+            throw error
         }
         cursor.setNotificationUri(context!!.contentResolver, childrenUri(parentDocumentId))
         return cursor

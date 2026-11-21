@@ -131,16 +131,21 @@ impl Browser {
 
     pub fn export(&self, object: ObjectId, destination: &Path) -> Result<String> {
         let mut volume = self.volume()?;
-        if volume.attributes(object)?.kind != ObjectKind::File {
+        let attributes = volume.attributes(object)?;
+        if attributes.kind != ObjectKind::File {
             return Err("Select a regular file to export.".into());
         }
         let handle = volume.open_object(object, Access::Read)?;
         let result = (|| -> Result<()> {
             // create_new prevents overwriting the source image, links, or an existing export.
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(destination)?;
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut output = options.open(destination)?;
             let copied = (|| -> Result<()> {
                 let mut buffer = vec![0; 1024 * 1024];
                 let mut offset = 0;
@@ -151,6 +156,13 @@ impl Browser {
                     }
                     output.write_all(&buffer[..n])?;
                     offset += n as u64;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    output.set_permissions(fs::Permissions::from_mode(u32::from(
+                        attributes.mode.bits(),
+                    )))?;
                 }
                 output.sync_all()?;
                 Ok(())

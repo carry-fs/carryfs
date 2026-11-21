@@ -245,6 +245,15 @@ fn exports_stream_large_files_and_refuse_existing_destinations() {
     let file = volume
         .create_file(ROOT, Name::parse("large.bin").unwrap())
         .unwrap();
+    volume
+        .set_attributes(
+            &file,
+            carryfs_core::AttributeChange {
+                mode: Some(carryfs_core::Mode::from_host(0o600)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let mut offset = 0;
     while offset < data.len() {
         offset += volume.write(&file, offset as u64, &data[offset..]).unwrap();
@@ -262,6 +271,14 @@ fn exports_stream_large_files_and_refuse_existing_destinations() {
         .object;
     let output = fixture.0.join("large.bin");
     browser.export(object, &output).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     assert_eq!(fs::read(&output).unwrap(), data);
     assert!(browser.export(object, &output).is_err());
     assert_eq!(fs::read(&output).unwrap(), data);

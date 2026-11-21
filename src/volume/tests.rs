@@ -1812,6 +1812,7 @@ fn ownership_windows_agree_across_group_and_window_boundaries() {
     let device = volume.device.as_mut().unwrap();
     let whole = crate::check::validate_ownership(device, &root).unwrap();
     assert!(whole.data_blocks > 0);
+    assert_eq!(crate::check::ownership_compact(device, &root).unwrap(), Some(whole.clone()));
     for window in [4096, 12_288, 16_384, 24_576] {
         let windowed = crate::check::ownership_in_windows(device, &root, window).unwrap();
         assert_eq!(windowed, whole, "window {window}");
@@ -1819,6 +1820,7 @@ fn ownership_windows_agree_across_group_and_window_boundaries() {
     // A free count that disagrees with ownership fails at any window size.
     let mut damaged = root.clone();
     damaged.free_blocks += 1;
+    assert!(crate::check::ownership_compact(device, &damaged).is_err());
     for window in [4096, 1 << 28] {
         assert!(crate::check::ownership_in_windows(device, &damaged, window).is_err());
     }

@@ -113,6 +113,12 @@ class MainActivity : Activity() {
         super.onResume()
         Drives.onChange = ::render
         render()
+        for (drive in Drives.all()) {
+            thread {
+                drive.refresh()
+                runOnUiThread { if (!isDestroyed) render() }
+            }
+        }
     }
 
     override fun onPause() {
@@ -181,10 +187,8 @@ class MainActivity : Activity() {
     }
 
     private fun volume(drive: Drives.Drive, volume: Long, number: Int?) {
-        val name = runCatching { Native.label(volume) }.getOrDefault("CarryFS")
-        val space = runCatching { Native.space(volume) }.getOrNull()
-        val legacy = runCatching { Native.needsUpgrade(volume) }.getOrDefault(false)
-        val readOnly = runCatching { Native.readOnly(volume) }.getOrDefault(true)
+        val snapshot = drive.status[volume] ?: return
+        val (name, space, legacy, readOnly) = snapshot
 
         if (drive.usb && number == null) labels["${drive.key}/${drive.name}"] = name
         list.addView(heading(name, 40f), margins(top = 24))

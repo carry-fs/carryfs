@@ -9,10 +9,12 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.provider.DocumentsContract
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 /** Mounted drives, shared by the activity, the service, and the provider. */
 object Drives {
@@ -27,22 +29,44 @@ object Drives {
         private val iface: UsbInterface?,
     ) {
         val usb get() = connection != null
+        private val worker = lazy { HandlerThread("carryfs-io-$key").apply { start() } }
+        val callbacks get() = Handler(worker.value.looper)
+        @Volatile var status = emptyMap<Long, VolumeStatus>()
+            private set
+
+        fun refresh() {
+            status = volumes.associateWith { volume ->
+                VolumeStatus(
+                    runCatching { Native.label(volume) }.getOrDefault("CarryFS"),
+                    runCatching { Native.space(volume) }.getOrNull(),
+                    runCatching { Native.needsUpgrade(volume) }.getOrDefault(false),
+                    runCatching { Native.readOnly(volume) }.getOrDefault(true),
+                )
+            }
+        }
 
         fun release() {
+            if (worker.isInitialized()) worker.value.quitSafely()
             connection?.releaseInterface(iface)
             connection?.close()
         }
     }
 
-    private val drives = LinkedHashMap<Long, Drive>()
+    data class VolumeStatus(val name: String, val space: LongArray?, val legacy: Boolean, val readOnly: Boolean)
+
+    private val drives = ConcurrentHashMap<Long, Drive>()
+    private val driveLocks = ConcurrentHashMap<Long, Any>()
+    private fun lock(key: Long) = driveLocks.computeIfAbsent(key) { Any() }
+
+    fun owner(volume: Long): Drive? = all().firstOrNull { volume in it.volumes }
     private val main = Handler(Looper.getMainLooper())
 
     /** Called on the main thread after any drive is mounted or released. */
     var onChange: (() -> Unit)? = null
 
-    @Synchronized fun all(): List<Drive> = drives.values.toList()
+    fun all(): List<Drive> = drives.values.toList()
 
-    @Synchronized fun volumes(): List<Long> = drives.values.flatMap { it.volumes }
+    fun volumes(): List<Long> = drives.values.flatMap { it.volumes }
 
     fun massStorage(device: UsbDevice): UsbInterface? =
         (0 until device.interfaceCount).map(device::getInterface).firstOrNull {
@@ -51,9 +75,9 @@ object Drives {
         }
 
     /** Claim the drive from the kernel and mount its CarryFS volumes. Blocks on I/O. */
-    @Synchronized fun mount(context: Context, device: UsbDevice) {
+    fun mount(context: Context, device: UsbDevice) = synchronized(lock(device.deviceId.toLong())) {
         val key = device.deviceId.toLong()
-        if (key in drives) return
+        if (drives.containsKey(key)) return@synchronized
         val iface = massStorage(device) ?: throw IOException("Not a USB mass-storage device")
         val bulk = (0 until iface.endpointCount).map(iface::getEndpoint)
             .filter { it.type == UsbConstants.USB_ENDPOINT_XFER_BULK }
@@ -70,7 +94,7 @@ object Drives {
             if (!connection.setInterface(iface)) throw IOException("Cannot select the drive's mass-storage mode")
             val volumes = Native.mountUsb(key, connection.fileDescriptor, iface.id, input.address, output.address)
             if (volumes.isEmpty()) throw IOException("No CarryFS volume on ${drive.name}")
-            drives[key] = Drive(key, drive.name, volumes.toList(), connection, iface)
+            drives[key] = Drive(key, drive.name, volumes.toList(), connection, iface).apply { refresh() }
         } catch (e: Exception) {
             drive.release()
             throw e
@@ -79,17 +103,17 @@ object Drives {
     }
 
     /** Mount a disk image from the app's files, for testing without USB. */
-    @Synchronized fun mountImage(context: Context, image: File) {
-        if (IMAGE in drives) return
+    fun mountImage(context: Context, image: File) = synchronized(lock(IMAGE)) {
+        if (drives.containsKey(IMAGE)) return@synchronized
         val volumes = Native.mountImage(IMAGE, image.path)
         if (volumes.isEmpty()) throw IOException("No CarryFS volume in ${image.name}")
-        drives[IMAGE] = Drive(IMAGE, image.name, volumes.toList(), null, null)
+        drives[IMAGE] = Drive(IMAGE, image.name, volumes.toList(), null, null).apply { refresh() }
         changed(context)
     }
 
     /** Publish and release a drive. It is released even if publishing fails. */
-    @Synchronized fun eject(context: Context, key: Long) {
-        val drive = drives.remove(key) ?: return
+    fun eject(context: Context, key: Long) = synchronized(lock(key)) {
+        val drive = drives.remove(key) ?: return@synchronized
         try {
             Native.eject(key)
         } finally {
@@ -99,15 +123,19 @@ object Drives {
     }
 
     /** Make a CarryFS 0.1.0 volume writable. */
-    @Synchronized fun upgrade(context: Context, volume: Long) {
-        Native.upgrade(volume)
-        changed(context)
+    fun upgrade(context: Context, volume: Long) {
+        val drive = owner(volume) ?: throw IOException("Drive disconnected")
+        synchronized(lock(drive.key)) {
+            Native.upgrade(volume)
+            drive.refresh()
+            changed(context)
+        }
     }
 
     /** Forget a USB drive that was unplugged before it was ejected. */
-    @Synchronized fun detached(context: Context, device: UsbDevice) {
+    fun detached(context: Context, device: UsbDevice) = synchronized(lock(device.deviceId.toLong())) {
         val key = device.deviceId.toLong()
-        val drive = drives.remove(key) ?: return
+        val drive = drives.remove(key) ?: return@synchronized
         Native.detach(key)
         drive.release()
         changed(context)
@@ -115,11 +143,13 @@ object Drives {
 
     private fun changed(context: Context) {
         val app = context.applicationContext
-        app.contentResolver.notifyChange(DocumentsContract.buildRootsUri(CarryProvider.AUTHORITY), null)
-        val service = Intent(app, DriveService::class.java)
-        // The service keeps the process, and so the mounts, alive while a USB drive is in use.
-        if (drives.values.any { it.usb }) app.startForegroundService(service) else app.stopService(service)
-        onChange?.let { main.post(it) }
+        main.post {
+            app.contentResolver.notifyChange(DocumentsContract.buildRootsUri(CarryProvider.AUTHORITY), null)
+            val service = Intent(app, DriveService::class.java)
+            // Read the current drives on the main thread so concurrent changes cannot reorder service starts and stops.
+            if (drives.values.any { it.usb }) app.startForegroundService(service) else app.stopService(service)
+            onChange?.invoke()
+        }
     }
 }
 

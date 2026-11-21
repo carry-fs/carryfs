@@ -2,6 +2,7 @@
 //! layer can pass them to Kotlin.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use carryfs_core::{
     Access, BlockDevice, DirectoryEntry, Error, Handle, MountMode, Name, ObjectId, ObjectKind,
@@ -41,7 +42,18 @@ struct Open {
 #[derive(Default)]
 pub struct Session {
     volumes: BTreeMap<i64, Mounted>,
-    next: i64,
+}
+
+fn next_handle() -> Result<i64> {
+    static NEXT: AtomicI64 = AtomicI64::new(1);
+    let mut current = NEXT.load(Ordering::Relaxed);
+    loop {
+        let following = current.checked_add(1).ok_or(Error::LimitExceeded)?;
+        match NEXT.compare_exchange_weak(current, following, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(id) => return Ok(id),
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 impl Session {
@@ -80,14 +92,12 @@ impl Session {
                 legacy,
             });
         }
-        Ok(opened
-            .into_iter()
-            .map(|mounted| {
-                self.next += 1;
-                self.volumes.insert(self.next, mounted);
-                self.next
-            })
-            .collect())
+        let ids: Vec<_> = opened
+            .iter()
+            .map(|_| next_handle())
+            .collect::<Result<_>>()?;
+        self.volumes.extend(ids.iter().copied().zip(opened));
+        Ok(ids)
     }
 
     /// Close every file, publish, and release the drive's volumes. All are
@@ -252,8 +262,7 @@ impl Session {
             mounted.volume.close_handle(handle)?;
             return Err(error);
         }
-        self.next += 1;
-        let file = self.next;
+        let file = next_handle()?;
         self.mounted_mut(volume)?.files.insert(
             file,
             Open {

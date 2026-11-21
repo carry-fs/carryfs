@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 486" width="960" height="486" role="img" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
-<title>CarryFS on FreeBSD 14.5, fusefs</title><desc>OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.</desc>
+<title>CarryFS on FreeBSD 14.5, fusefs</title><desc>OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds, CPU governor schedutil.</desc>
 <rect x="0.5" y="0.5" width="959" height="485" rx="8" fill="#fcfcfb" stroke="rgba(11,11,11,0.10)"/>
 <text x="24.0" y="36.0" font-size="16" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS on FreeBSD 14.5, fusefs</text>
-<text x="24.0" y="56.0" font-size="12" font-weight="400" text-anchor="start" fill="#52514e">OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.</text>
+<text x="24.0" y="56.0" font-size="12" font-weight="400" text-anchor="start" fill="#52514e">OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds, CPU governor schedutil.</text>
 <text x="24.0" y="96.0" font-size="12" font-weight="600" text-anchor="start" fill="#0b0b0b">Sequential write, durable</text>
 <text x="24.0" y="112.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">MiB/s · higher is better</text>
 <text x="24.0" y="135.0" font-size="11" font-weight="600" text-anchor="start" fill="#0b0b0b">CarryFS</text>

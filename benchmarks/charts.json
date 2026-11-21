@@ -3,8 +3,8 @@
     {
       "name": "linux",
       "system": "Linux, FUSE",
-      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
-      "note": "CarryFS format revision 2, code at commit 425fafc; exFAT, ext4 and Btrfs from the revision 1 run. Data: benchmarks/linux.tsv.",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of ten fresh-format rounds, CPU governor performance.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. Data: benchmarks/linux.tsv.",
       "results": "benchmarks/linux.tsv",
       "columns": {
         "CarryFS": "carryfs",
@@ -16,8 +16,8 @@
     {
       "name": "linux-native",
       "system": "Linux, kernel driver",
-      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
-      "note": "CarryFS format revision 2, code at commit 425fafc; exFAT, ext4 and Btrfs from the revision 1 run. Data: benchmarks/linux-native.tsv.",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of ten fresh-format rounds, CPU governor performance.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. Data: benchmarks/linux-native.tsv.",
       "results": "benchmarks/linux-native.tsv",
       "columns": {
         "CarryFS": "carryfs-kernel",
@@ -53,7 +53,7 @@
     {
       "name": "freebsd-14.5",
       "system": "FreeBSD 14.5, fusefs",
-      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds, CPU governor schedutil.",
       "note": "CarryFS format revision 2, code at commit 425fafc. exFAT is the FUSE port. Data: benchmarks/freebsd-14.5.tsv.",
       "results": "benchmarks/freebsd-14.5.tsv",
       "columns": {
@@ -65,7 +65,7 @@
     {
       "name": "freebsd-15.1",
       "system": "FreeBSD 15.1, fusefs",
-      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of ten fresh-format rounds, CPU governor performance.",
       "note": "CarryFS format revision 2, code at commit 425fafc. exFAT is the FUSE port. Data: benchmarks/freebsd-15.1.tsv.",
       "results": "benchmarks/freebsd-15.1.tsv",
       "columns": {
@@ -77,7 +77,7 @@
     {
       "name": "netbsd-10.2",
       "system": "NetBSD 10.2, PUFFS",
-      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds, CPU governor schedutil.",
       "note": "CarryFS format revision 2, code at commit b874a1c. exFAT is the FUSE port. Data: benchmarks/netbsd-10.2.tsv.",
       "results": "benchmarks/netbsd-10.2.tsv",
       "columns": {
@@ -89,7 +89,7 @@
     {
       "name": "netbsd-11.1",
       "system": "NetBSD 11.1, PUFFS",
-      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of ten fresh-format rounds, CPU governor performance.",
       "note": "CarryFS format revision 2, code at commit b874a1c. exFAT is the FUSE port. Data: benchmarks/netbsd-11.1.tsv.",
       "results": "benchmarks/netbsd-11.1.tsv",
       "columns": {
@@ -110,7 +110,7 @@
       "freebsd-15.1"
     ],
     "title": "CarryFS against exFAT",
-    "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of three fresh-format rounds.",
-    "note": "macOS, Windows: CarryFS format revision 1, commit 7dfae3d. Linux, FreeBSD: revision 2, commit 425fafc. OCZ Vertex 4 SSD over USB. Data: benchmarks/*.tsv."
+    "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of fresh-format rounds.",
+    "note": "macOS, Windows: revision 1, commit 7dfae3d, three rounds. Linux, FreeBSD: revision 2, commit 425fafc, ten rounds, performance governor. OCZ Vertex 4 SSD over USB. Data: benchmarks/*.tsv."
   }
 }

@@ -29,8 +29,8 @@
     {
       "name": "windows",
       "system": "Windows, WinFsp",
-      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
-      "note": "CarryFS format revision 1, code at commit 7dfae3d. Data: benchmarks/windows.tsv.",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of ten fresh-format rounds, High performance power plan.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. Data: benchmarks/windows.tsv.",
       "results": "benchmarks/windows.tsv",
       "columns": {
         "CarryFS": "carryfs",

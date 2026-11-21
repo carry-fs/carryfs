@@ -438,11 +438,12 @@ A chart needs a full run. A run of one metric lacks the other workloads, and
 `macos.tsv`, `windows.tsv`, `linux.tsv`, `linux-native.tsv`,
 `freebsd-14.5.tsv`, `freebsd-15.1.tsv`, `netbsd-10.2.tsv` and
 `netbsd-11.1.tsv` hold full runs on one OCZ Vertex 4 SSD connected over USB,
-with three rounds for each filesystem on macOS, Windows, FreeBSD 14.5 and
-NetBSD 10.2 and ten rounds on Linux, FreeBSD 15.1 and NetBSD 11.1. The Linux,
+with three rounds for each filesystem on macOS, FreeBSD 14.5 and NetBSD 10.2
+and ten rounds on Linux, Windows, FreeBSD 15.1 and NetBSD 11.1. The Linux,
 FreeBSD 15.1 and NetBSD 11.1 runs held the host CPU at the `performance`
-governor; the FreeBSD 14.5 and NetBSD 10.2 runs used `schedutil`, so compare
-their short listing rows with care. `linux.tsv` measures the FUSE adapter
+governor, and the Windows run used the High performance power plan (minimum
+and maximum processor state 100%); the FreeBSD 14.5 and NetBSD 10.2 runs used
+`schedutil`, so compare their short listing rows with care. `linux.tsv` measures the FUSE adapter
 and `linux-native.tsv` the kernel driver; both share the exFAT, ext4 and
 Btrfs rows. The FreeBSD and NetBSD runs ran in a KVM guest on the Linux host,
 with the SSD partition passed through raw (virtio-blk, host cache off). `charts.json`

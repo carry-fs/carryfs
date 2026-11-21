@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 486" width="960" height="486" role="img" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+<title>CarryFS on NetBSD 10.2, PUFFS</title><desc>OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.</desc>
+<rect x="0.5" y="0.5" width="959" height="485" rx="8" fill="#1a1a19" stroke="rgba(255,255,255,0.10)"/>
+<text x="24.0" y="36.0" font-size="16" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS on NetBSD 10.2, PUFFS</text>
+<text x="24.0" y="56.0" font-size="12" font-weight="400" text-anchor="start" fill="#c3c2b7">OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.</text>
+<text x="24.0" y="96.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">Sequential write, durable</text>
+<text x="24.0" y="112.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">MiB/s · higher is better</text>
+<text x="24.0" y="135.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M82.0,124.0H143.0Q147.0,124.0 147.0,128.0V134.0Q147.0,138.0 143.0,138.0H82.0Z"/>
+<text x="153.0" y="135.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">83.0</text>
+<text x="24.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M82.0,146.0H244.0Q248.0,146.0 248.0,150.0V156.0Q248.0,160.0 244.0,160.0H82.0Z"/>
+<text x="254.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">212</text>
+<text x="24.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M82.0,168.0H238.9Q242.9,168.0 242.9,172.0V178.0Q242.9,182.0 238.9,182.0H82.0Z"/>
+<text x="248.9" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">205</text>
+<line x1="82.0" x2="82.0" y1="120.0" y2="186.0" stroke="#383835"/>
+<text x="336.0" y="96.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">Sequential read, cold</text>
+<text x="336.0" y="112.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">MiB/s · higher is better</text>
+<text x="336.0" y="135.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M394.0,124.0H445.8Q449.8,124.0 449.8,128.0V134.0Q449.8,138.0 445.8,138.0H394.0Z"/>
+<text x="455.8" y="135.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">120</text>
+<text x="336.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M394.0,146.0H556.0Q560.0,146.0 560.0,150.0V156.0Q560.0,160.0 556.0,160.0H394.0Z"/>
+<text x="566.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">356</text>
+<text x="336.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M394.0,168.0H409.0Q413.0,168.0 413.0,172.0V178.0Q413.0,182.0 409.0,182.0H394.0Z"/>
+<text x="419.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">40.8</text>
+<line x1="394.0" x2="394.0" y1="120.0" y2="186.0" stroke="#383835"/>
+<text x="648.0" y="96.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">1,000 small files, durable</text>
+<text x="648.0" y="112.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">files/s · higher is better</text>
+<text x="648.0" y="135.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M706.0,124.0H722.7Q726.7,124.0 726.7,128.0V134.0Q726.7,138.0 722.7,138.0H706.0Z"/>
+<text x="732.7" y="135.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">263</text>
+<text x="648.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M706.0,146.0H868.0Q872.0,146.0 872.0,150.0V156.0Q872.0,160.0 868.0,160.0H706.0Z"/>
+<text x="878.0" y="157.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">2,108</text>
+<text x="648.0" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M706.0,168.0H747.2Q751.2,168.0 751.2,172.0V178.0Q751.2,182.0 747.2,182.0H706.0Z"/>
+<text x="757.2" y="179.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">575</text>
+<line x1="706.0" x2="706.0" y1="120.0" y2="186.0" stroke="#383835"/>
+<text x="24.0" y="222.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">Create a tree of 1,000 files</text>
+<text x="24.0" y="238.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">files/s · higher is better</text>
+<text x="24.0" y="261.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M82.0,250.0H91.2Q95.2,250.0 95.2,254.0V260.0Q95.2,264.0 91.2,264.0H82.0Z"/>
+<text x="101.2" y="261.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">424</text>
+<text x="24.0" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M82.0,272.0H244.0Q248.0,272.0 248.0,276.0V282.0Q248.0,286.0 244.0,286.0H82.0Z"/>
+<text x="254.0" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">5,330</text>
+<text x="24.0" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M82.0,294.0H99.1Q103.1,294.0 103.1,298.0V304.0Q103.1,308.0 99.1,308.0H82.0Z"/>
+<text x="109.1" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">677</text>
+<line x1="82.0" x2="82.0" y1="246.0" y2="312.0" stroke="#383835"/>
+<text x="336.0" y="222.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">Create 10,000, fsync every 128</text>
+<text x="336.0" y="238.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="336.0" y="261.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M394.0,250.0H556.0Q560.0,250.0 560.0,254.0V260.0Q560.0,264.0 556.0,264.0H394.0Z"/>
+<text x="566.0" y="261.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">21,146</text>
+<text x="336.0" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M394.0,272.0H413.7Q417.7,272.0 417.7,276.0V282.0Q417.7,286.0 413.7,286.0H394.0Z"/>
+<text x="423.7" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">3,025</text>
+<text x="336.0" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M394.0,294.0H507.1Q511.1,294.0 511.1,298.0V304.0Q511.1,308.0 507.1,308.0H394.0Z"/>
+<text x="517.1" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">14,917</text>
+<line x1="394.0" x2="394.0" y1="246.0" y2="312.0" stroke="#383835"/>
+<text x="648.0" y="222.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">Remove 1,000 small files</text>
+<text x="648.0" y="238.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="648.0" y="261.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M706.0,250.0H868.0Q872.0,250.0 872.0,254.0V260.0Q872.0,264.0 868.0,264.0H706.0Z"/>
+<text x="878.0" y="261.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">547</text>
+<text x="648.0" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M706.0,272.0H727.7Q731.7,272.0 731.7,276.0V282.0Q731.7,286.0 727.7,286.0H706.0Z"/>
+<text x="737.7" y="283.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">84.7</text>
+<text x="648.0" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M706.0,294.0H847.7Q851.7,294.0 851.7,298.0V304.0Q851.7,308.0 847.7,308.0H706.0Z"/>
+<text x="857.7" y="305.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">480</text>
+<line x1="706.0" x2="706.0" y1="246.0" y2="312.0" stroke="#383835"/>
+<text x="24.0" y="348.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">Remove 10,000, fsync every 128</text>
+<text x="24.0" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="24.0" y="387.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M82.0,376.0H244.0Q248.0,376.0 248.0,380.0V386.0Q248.0,390.0 244.0,390.0H82.0Z"/>
+<text x="254.0" y="387.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">11,809</text>
+<text x="24.0" y="409.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M82.0,398.0H108.0Q112.0,398.0 112.0,402.0V408.0Q112.0,412.0 108.0,412.0H82.0Z"/>
+<text x="118.0" y="409.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">2,132</text>
+<text x="24.0" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M82.0,420.0H192.7Q196.7,420.0 196.7,424.0V430.0Q196.7,434.0 192.7,434.0H82.0Z"/>
+<text x="202.7" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">8,158</text>
+<line x1="82.0" x2="82.0" y1="372.0" y2="438.0" stroke="#383835"/>
+<text x="336.0" y="348.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">List 10,000 names, cold</text>
+<text x="336.0" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="336.0" y="387.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M394.0,376.0H492.9Q496.9,376.0 496.9,380.0V386.0Q496.9,390.0 492.9,390.0H394.0Z"/>
+<text x="502.9" y="387.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">246</text>
+<text x="336.0" y="409.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M394.0,398.0H395.7Q399.7,398.0 399.7,402.0V408.0Q399.7,412.0 395.7,412.0H394.0Z"/>
+<text x="405.7" y="409.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">13.7</text>
+<text x="336.0" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M394.0,420.0H556.0Q560.0,420.0 560.0,424.0V430.0Q560.0,434.0 556.0,434.0H394.0Z"/>
+<text x="566.0" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">397</text>
+<line x1="394.0" x2="394.0" y1="372.0" y2="438.0" stroke="#383835"/>
+<text x="648.0" y="348.0" font-size="12" font-weight="600" text-anchor="start" fill="#f0efec">List and stat 10,000 files, cold</text>
+<text x="648.0" y="364.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">ms · lower is better</text>
+<text x="648.0" y="387.0" font-size="11" font-weight="600" text-anchor="start" fill="#f0efec">CarryFS</text>
+<path fill="#3987e5" d="M706.0,376.0H868.0Q872.0,376.0 872.0,380.0V386.0Q872.0,390.0 868.0,390.0H706.0Z"/>
+<text x="878.0" y="387.0" font-size="11" font-weight="400" text-anchor="start" fill="#f0efec">9,133</text>
+<text x="648.0" y="409.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">FFS</text>
+<path fill="#898781" d="M706.0,398.0H709.0Q713.0,398.0 713.0,402.0V408.0Q713.0,412.0 709.0,412.0H706.0Z"/>
+<text x="719.0" y="409.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">383</text>
+<text x="648.0" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">exFAT</text>
+<path fill="#898781" d="M706.0,420.0H815.1Q819.1,420.0 819.1,424.0V430.0Q819.1,434.0 815.1,434.0H706.0Z"/>
+<text x="825.1" y="431.0" font-size="11" font-weight="400" text-anchor="start" fill="#c3c2b7">6,220</text>
+<line x1="706.0" x2="706.0" y1="372.0" y2="438.0" stroke="#383835"/>
+<text x="24.0" y="468.0" font-size="11" font-weight="400" text-anchor="start" fill="#898781">CarryFS format revision 2, code at commit b874a1c. exFAT is the FUSE port. Data: benchmarks/netbsd-10.2.tsv.</text>
+</svg>

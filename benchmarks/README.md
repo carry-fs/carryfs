@@ -436,12 +436,12 @@ A chart needs a full run. A run of one metric lacks the other workloads, and
 ## Published results
 
 `macos.tsv`, `windows.tsv`, `linux.tsv`, `linux-native.tsv`,
-`freebsd-14.5.tsv` and `freebsd-15.1.tsv` hold full runs on one OCZ Vertex 4
-SSD connected over USB, with three rounds for each filesystem. `linux.tsv`
-measures the FUSE adapter and `linux-native.tsv` the kernel driver; both
-share the exFAT, ext4 and Btrfs rows. The FreeBSD runs ran in a KVM guest on
-the Linux host, with the SSD partition passed through raw (virtio-blk,
-host cache off). `charts.json`
+`freebsd-14.5.tsv`, `freebsd-15.1.tsv`, `netbsd-10.2.tsv` and
+`netbsd-11.1.tsv` hold full runs on one OCZ Vertex 4 SSD connected over USB,
+with three rounds for each filesystem. `linux.tsv` measures the FUSE adapter
+and `linux-native.tsv` the kernel driver; both share the exFAT, ext4 and
+Btrfs rows. The FreeBSD and NetBSD runs ran in a KVM guest on the Linux host,
+with the SSD partition passed through raw (virtio-blk, host cache off). `charts.json`
 draws them into `charts/`. The charts show nine of the 92 metrics each run
 records, and the `.tsv` files hold the rest:
 
@@ -477,6 +477,16 @@ python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="charts/freebsd-14.5-dark.svg">
   <img alt="CarryFS, UFS and exFAT on FreeBSD 14.5" src="charts/freebsd-14.5-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/netbsd-11.1-dark.svg">
+  <img alt="CarryFS, FFS and exFAT on NetBSD 11.1" src="charts/netbsd-11.1-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/netbsd-10.2-dark.svg">
+  <img alt="CarryFS, FFS and exFAT on NetBSD 10.2" src="charts/netbsd-10.2-light.svg">
 </picture>
 
 [charts/vs-exfat-light.svg](charts/vs-exfat-light.svg) compares CarryFS with

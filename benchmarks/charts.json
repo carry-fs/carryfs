@@ -73,6 +73,30 @@
         "UFS": "ufs",
         "exFAT": "exfat"
       }
+    },
+    {
+      "name": "netbsd-10.2",
+      "system": "NetBSD 10.2, PUFFS",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "note": "CarryFS format revision 2, code at commit b874a1c. exFAT is the FUSE port. Data: benchmarks/netbsd-10.2.tsv.",
+      "results": "benchmarks/netbsd-10.2.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "FFS": "ffs",
+        "exFAT": "exfat"
+      }
+    },
+    {
+      "name": "netbsd-11.1",
+      "system": "NetBSD 11.1, PUFFS",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds.",
+      "note": "CarryFS format revision 2, code at commit b874a1c. exFAT is the FUSE port. Data: benchmarks/netbsd-11.1.tsv.",
+      "results": "benchmarks/netbsd-11.1.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "FFS": "ffs",
+        "exFAT": "exfat"
+      }
     }
   ],
   "comparison": {

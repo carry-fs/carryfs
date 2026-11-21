@@ -700,6 +700,8 @@ fn fsck_new_image_refuses_existing_outputs_aliases_reports_and_invalid_flags() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
+    assert!(!temp.0.join("existing.recovery.txt").exists());
+    assert!(!temp.0.join("existing.recovery.json").exists());
     assert_eq!(fs::read(temp.0.join("existing")).unwrap(), b"keep");
     assert_eq!(
         fs::read_link(temp.0.join("symlink")).unwrap(),

@@ -559,6 +559,20 @@ impl ExtractionSink for Sink {
     }
 
     fn create_link(&mut self, path: &[Name], existing: &[Name]) -> Result<()> {
+        self.link_entry(path, existing).inspect_err(|error| {
+            let path = path.iter().map(|name| String::from_utf8_lossy(name.stored())).collect::<Vec<_>>().join("/");
+            match error {
+                Error::Io { source, .. } if source.kind() == io::ErrorKind::Unsupported => {
+                    eprintln!("carryfs: destination does not support linking {path:?}; trying a separate copy");
+                }
+                _ => eprintln!("carryfs: could not link {path:?}: {error}; trying a separate copy"),
+            }
+        })
+    }
+}
+
+impl Sink {
+    fn link_entry(&mut self, path: &[Name], existing: &[Name]) -> Result<()> {
         let key = path_key(existing);
         let held = self
             .held

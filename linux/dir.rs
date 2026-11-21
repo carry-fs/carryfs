@@ -105,7 +105,8 @@ impl Ahead {
             self.scanned = group;
             self.entries += count;
             if low <= high {
-                tree.prefetch_range(&low.to_be_bytes(), &high.saturating_add(1).to_be_bytes())?;
+                let _ =
+                    tree.prefetch_range(&low.to_be_bytes(), &high.saturating_add(1).to_be_bytes());
             }
         }
         Ok(())

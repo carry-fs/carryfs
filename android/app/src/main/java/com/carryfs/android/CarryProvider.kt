@@ -220,7 +220,9 @@ class CarryProvider : DocumentsProvider() {
     private fun addRow(cursor: MatrixCursor, volume: Long, entry: Entry, writable: Boolean) {
         var flags = 0
         if (writable) {
-            flags = Document.FLAG_SUPPORTS_DELETE or Document.FLAG_SUPPORTS_RENAME or Document.FLAG_SUPPORTS_MOVE
+            if (entry.id != Native.ROOT) {
+                flags = Document.FLAG_SUPPORTS_DELETE or Document.FLAG_SUPPORTS_RENAME or Document.FLAG_SUPPORTS_MOVE
+            }
             flags = flags or if (entry.directory) Document.FLAG_DIR_SUPPORTS_CREATE else Document.FLAG_SUPPORTS_WRITE
         }
         if (!entry.directory && mimeOf(entry.name).startsWith("image/")) flags = flags or Document.FLAG_SUPPORTS_THUMBNAIL

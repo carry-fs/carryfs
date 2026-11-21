@@ -27,8 +27,19 @@ struct Mounted {
     read_only: bool,
     volume: Volume<Partition>,
     files: HashMap<i64, Open>,
+    // Object IDs are positive. Give each hard-link name its own negative ID.
+    links: HashMap<i64, LinkName>,
+    link_ids: BTreeMap<(ObjectId, Vec<u8>), i64>,
+    next_link: i64,
     /// The writable range of a CarryFS 0.1.0 volume, mounted read-only until upgraded.
     legacy: Option<Partition>,
+}
+
+#[derive(Clone)]
+struct LinkName {
+    object: ObjectId,
+    parent: ObjectId,
+    name: Name,
 }
 
 struct Open {
@@ -77,6 +88,9 @@ impl Session {
                 read_only,
                 volume,
                 files: HashMap::new(),
+                links: HashMap::new(),
+                link_ids: BTreeMap::new(),
+                next_link: 0,
                 legacy,
             });
         }
@@ -164,29 +178,48 @@ impl Session {
     }
 
     pub fn list(&mut self, volume: i64, directory: i64) -> Result<Vec<Entry>> {
-        let volume = self.volume(volume)?;
+        let mounted = self.mounted_mut(volume)?;
+        let parent = object(directory)?;
         let mut listed = Vec::new();
         // Documents have no symlinks; they stay reachable from desktops.
-        for child in entries(volume, object(directory)?)? {
+        for child in entries(&mut mounted.volume, parent)? {
             if child.kind != ObjectKind::Symlink {
-                let mut listed_entry = entry(volume, child.object, &child.name)?;
-                // A file's stored parent is a hint; here the parent is known.
-                listed_entry.parent = directory;
-                listed.push(listed_entry);
+                let (mut entry, links) = entry(&mut mounted.volume, child.object, &child.name)?;
+                entry.parent = directory;
+                let key = (parent, child.name.stored().to_vec());
+                if let Some(&id) = mounted.link_ids.get(&key) {
+                    entry.id = id;
+                } else if links > 1 && child.kind == ObjectKind::File {
+                    mounted.next_link -= 1;
+                    let id = mounted.next_link;
+                    mounted.link_ids.insert(key, id);
+                    mounted.links.insert(
+                        id,
+                        LinkName {
+                            object: child.object,
+                            parent,
+                            name: child.name,
+                        },
+                    );
+                    entry.id = id;
+                }
+                listed.push(entry);
             }
         }
         Ok(listed)
     }
 
     pub fn stat(&mut self, volume: i64, id: i64) -> Result<Entry> {
-        let object = object(id)?;
-        if object == ROOT {
+        if id == ROOT.get() as i64 {
             let name = Name::parse(&self.label(volume)?)?;
-            return entry(self.volume(volume)?, ROOT, &name);
+            return entry(self.volume(volume)?, ROOT, &name).map(|(entry, _)| entry);
         }
-        let volume = self.volume(volume)?;
-        let name = name_of(volume, object)?;
-        entry(volume, object, &name)
+        let mounted = self.mounted_mut(volume)?;
+        let link = mounted.document_name(id)?;
+        let (mut entry, _) = entry(&mut mounted.volume, link.object, &link.name)?;
+        entry.id = id;
+        entry.parent = link.parent.get() as i64;
+        Ok(entry)
     }
 
     /// Create a file or directory, adding " (n)" to the name if it is taken.
@@ -211,32 +244,27 @@ impl Session {
     }
 
     pub fn rename(&mut self, volume: i64, id: i64, name: &str) -> Result<()> {
-        let volume = self.volume(volume)?;
-        let object = object(id)?;
-        let parent = volume.attributes(object)?.parent;
-        let old = name_of(volume, object)?;
+        let mounted = self.mounted_mut(volume)?;
+        let link = mounted.document_name(id)?;
         let new = Name::parse(name)?;
-        with_space(volume, |v| {
-            v.rename(parent, &old, parent, new.clone(), Replace::Forbidden)
-        })
+        mounted.rename(id, &link, link.parent, new)
     }
 
     pub fn move_to(&mut self, volume: i64, id: i64, from: i64, to: i64) -> Result<()> {
-        let volume = self.volume(volume)?;
-        let (object, from, to) = (object(id)?, object(from)?, object(to)?);
-        let name = find(volume, from, object)?;
-        with_space(volume, |v| {
-            v.rename(from, &name, to, name.clone(), Replace::Forbidden)
-        })
+        let mounted = self.mounted_mut(volume)?;
+        let link = mounted.document_name(id)?;
+        if link.parent != object(from)? {
+            return Err(Error::NotFound);
+        }
+        mounted.rename(id, &link, object(to)?, link.name.clone())
     }
 
     /// Delete a file, or a directory and everything in it.
     pub fn delete(&mut self, volume: i64, id: i64) -> Result<()> {
-        let volume = self.volume(volume)?;
-        let object = object(id)?;
-        let attributes = volume.attributes(object)?;
-        let name = name_of(volume, object)?;
-        remove_tree(volume, attributes.parent, &name, object, attributes.kind)
+        let mounted = self.mounted_mut(volume)?;
+        let link = mounted.document_name(id)?;
+        let kind = mounted.volume.attributes(link.object)?.kind;
+        mounted.remove_tree(link.parent, &link.name, link.object, kind)
     }
 
     pub fn open(&mut self, volume: i64, id: i64, write: bool, truncate: bool) -> Result<i64> {
@@ -246,7 +274,12 @@ impl Session {
             Access::Read
         };
         let mounted = self.mounted_mut(volume)?;
-        let handle = mounted.volume.open_object(object(id)?, access)?;
+        let object = if id < 0 {
+            mounted.document_name(id)?.object
+        } else {
+            object(id)?
+        };
+        let handle = mounted.volume.open_object(object, access)?;
         if truncate && let Err(error) = with_space(&mut mounted.volume, |v| v.truncate(&handle, 0))
         {
             mounted.volume.close_handle(handle)?;
@@ -350,6 +383,75 @@ impl Session {
     }
 }
 
+impl Mounted {
+    fn document_name(&mut self, id: i64) -> Result<LinkName> {
+        if id < 0 {
+            let link = self.links.get(&id).cloned().ok_or(Error::NotFound)?;
+            if self.volume.lookup(link.parent, &link.name)? != link.object {
+                return Err(Error::NotFound);
+            }
+            return Ok(link);
+        }
+        let object = object(id)?;
+        let attributes = self.volume.attributes(object)?;
+        if attributes.kind != ObjectKind::Directory && attributes.links > 1 {
+            return Err(Error::NotFound);
+        }
+        let name = find(&mut self.volume, attributes.parent, object)?;
+        Ok(LinkName {
+            object,
+            parent: attributes.parent,
+            name,
+        })
+    }
+
+    fn rename(&mut self, id: i64, link: &LinkName, parent: ObjectId, name: Name) -> Result<()> {
+        with_space(&mut self.volume, |v| {
+            v.rename(
+                link.parent,
+                &link.name,
+                parent,
+                name.clone(),
+                Replace::Forbidden,
+            )
+        })?;
+        if id < 0 {
+            self.link_ids
+                .remove(&(link.parent, link.name.stored().to_vec()));
+            self.link_ids.insert((parent, name.stored().to_vec()), id);
+            self.links.insert(
+                id,
+                LinkName {
+                    object: link.object,
+                    parent,
+                    name,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn remove_tree(
+        &mut self,
+        parent: ObjectId,
+        name: &Name,
+        object: ObjectId,
+        kind: ObjectKind,
+    ) -> Result<()> {
+        if kind == ObjectKind::Directory {
+            for child in entries(&mut self.volume, object)? {
+                self.remove_tree(object, &child.name, child.object, child.kind)?;
+            }
+            return self.volume.remove(parent, name, RemoveKind::Directory);
+        }
+        self.volume.remove(parent, name, RemoveKind::File)?;
+        if let Some(id) = self.link_ids.remove(&(parent, name.stored().to_vec())) {
+            self.links.remove(&id);
+        }
+        Ok(())
+    }
+}
+
 fn object(id: i64) -> Result<ObjectId> {
     ObjectId::new(u64::try_from(id).map_err(|_| Error::InvalidInput("object ID is negative"))?)
 }
@@ -365,16 +467,19 @@ fn numbered(name: &str, attempt: u32) -> String {
     }
 }
 
-fn entry(volume: &mut Volume<Partition>, object: ObjectId, name: &Name) -> Result<Entry> {
+fn entry(volume: &mut Volume<Partition>, object: ObjectId, name: &Name) -> Result<(Entry, u32)> {
     let attributes = volume.attributes(object)?;
-    Ok(Entry {
-        id: object.get() as i64,
-        parent: attributes.parent.get() as i64,
-        name: String::from_utf8_lossy(name.stored()).into_owned(),
-        directory: attributes.kind == ObjectKind::Directory,
-        size: attributes.size,
-        modified_ms: millis(attributes.modification),
-    })
+    Ok((
+        Entry {
+            id: object.get() as i64,
+            parent: attributes.parent.get() as i64,
+            name: String::from_utf8_lossy(name.stored()).into_owned(),
+            directory: attributes.kind == ObjectKind::Directory,
+            size: attributes.size,
+            modified_ms: millis(attributes.modification),
+        },
+        attributes.links,
+    ))
 }
 
 fn millis(time: Timestamp) -> i64 {
@@ -403,35 +508,27 @@ fn entries(volume: &mut Volume<Partition>, directory: ObjectId) -> Result<Vec<Di
     result
 }
 
-/// The name of `object` in its parent directory.
-fn name_of(volume: &mut Volume<Partition>, object: ObjectId) -> Result<Name> {
-    let parent = volume.attributes(object)?.parent;
-    find(volume, parent, object)
-}
-
-// ponytail: scans the whole parent; cache names if huge folders get slow.
 fn find(volume: &mut Volume<Partition>, parent: ObjectId, object: ObjectId) -> Result<Name> {
-    entries(volume, parent)?
-        .into_iter()
-        .find(|entry| entry.object == object)
-        .map(|entry| entry.name)
-        .ok_or(Error::NotFound)
-}
-
-fn remove_tree(
-    volume: &mut Volume<Partition>,
-    parent: ObjectId,
-    name: &Name,
-    object: ObjectId,
-    kind: ObjectKind,
-) -> Result<()> {
-    if kind != ObjectKind::Directory {
-        return volume.remove(parent, name, RemoveKind::File);
-    }
-    for child in entries(volume, object)? {
-        remove_tree(volume, object, &child.name, child.object, child.kind)?;
-    }
-    volume.remove(parent, name, RemoveKind::Directory)
+    let handle = volume.open_directory(parent)?;
+    let result = (|| {
+        let mut cursor = None;
+        loop {
+            let page = volume.read_directory(&handle, cursor.as_ref())?;
+            if let Some(entry) = page
+                .entries
+                .into_iter()
+                .find(|entry| entry.object == object)
+            {
+                return Ok(entry.name);
+            }
+            cursor = page.cursor;
+            if cursor.is_none() {
+                return Err(Error::NotFound);
+            }
+        }
+    })();
+    volume.close_handle(handle)?;
+    result
 }
 
 /// Retry once after publishing and draining cleanup, which frees space.
@@ -589,6 +686,58 @@ mod tests {
         session.delete(volume, a).unwrap();
         assert_eq!(names(&mut session, volume, root), ["g.txt"]);
         assert!(matches!(session.stat(volume, b), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn hard_link_documents_keep_their_own_names_and_parents() {
+        let (mut session, volume, _) = mounted();
+        let root = ROOT.get() as i64;
+        let a = session.create(volume, root, "a", true).unwrap();
+        let b = session.create(volume, root, "b", true).unwrap();
+        let file = session.create(volume, a, "original", false).unwrap();
+        let disk = session.volume(volume).unwrap();
+        for (parent, name) in [(a, "sibling"), (b, "other")] {
+            disk.link(
+                object(file).unwrap(),
+                object(parent).unwrap(),
+                Name::parse(name).unwrap(),
+            )
+            .unwrap();
+        }
+        let id_for = |session: &mut Session, parent, name| {
+            session
+                .list(volume, parent)
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.name == name)
+                .unwrap()
+                .id
+        };
+        let original = id_for(&mut session, a, "original");
+        let sibling = id_for(&mut session, a, "sibling");
+        let other = id_for(&mut session, b, "other");
+        assert_ne!(original, sibling);
+        assert_ne!(sibling, other);
+        assert_eq!(session.stat(volume, original).unwrap().parent, a);
+        assert_eq!(session.stat(volume, other).unwrap().name, "other");
+        let open = session.open(volume, sibling, true, false).unwrap();
+        session.write(volume, open, 0, b"shared").unwrap();
+        session.close(volume, open).unwrap();
+        assert_eq!(session.stat(volume, other).unwrap().size, 6);
+
+        session.rename(volume, sibling, "renamed").unwrap();
+        session.move_to(volume, sibling, a, b).unwrap();
+        assert_eq!(session.stat(volume, sibling).unwrap().parent, b);
+        assert_eq!(id_for(&mut session, b, "renamed"), sibling);
+        session.delete(volume, sibling).unwrap();
+        session.delete(volume, other).unwrap();
+        assert_eq!(names(&mut session, volume, a), ["original"]);
+        assert!(names(&mut session, volume, b).is_empty());
+        assert_eq!(id_for(&mut session, a, "original"), original);
+        assert!(matches!(
+            session.stat(volume, sibling),
+            Err(Error::NotFound)
+        ));
     }
 
     #[test]

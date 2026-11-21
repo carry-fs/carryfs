@@ -192,10 +192,23 @@ fn run_status(mut command: Command, control: Arc<Control>) -> Result<(ExitStatus
         .map_err(|_| "Operation output reader stopped")??;
     let stderr = err.join().map_err(|_| "Operation error reader stopped")??;
     if control.cancelled.load(Ordering::Relaxed) && !status.success() {
-        return Err("Cancelled. The source was not modified. Recovery may have left incomplete files at the destination.".into());
+        return Err(
+            "Cancelled. Recovery may have left incomplete files at the destination.".into(),
+        );
     }
     Ok((status, format!("{stdout}\n{stderr}").trim().to_owned()))
 }
+
+#[derive(Debug)]
+pub struct ScanFinding(pub String);
+
+impl std::fmt::Display for ScanFinding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ScanFinding {}
 
 pub fn inspect(browser: Browser, scrub: bool, cancel: Arc<Control>) -> Result<String> {
     // Validate the selected snapshot, then release its lease before the CLI opens it.
@@ -210,7 +223,24 @@ pub fn inspect(browser: Browser, scrub: bool, cancel: Arc<Control>) -> Result<St
         Some(device) => device_source(&mut command, device)?,
         None => drop(command.arg(&browser.path)),
     }
-    run(command, cancel)
+    let (status, report) = run_status(command, cancel)?;
+    if status.success() {
+        Ok(report)
+    } else if scrub
+        && report
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with("Scrub: "))
+    {
+        Err(ScanFinding(report).into())
+    } else {
+        Err(if report.is_empty() {
+            format!("Check exited with {status}")
+        } else {
+            report
+        }
+        .into())
+    }
 }
 
 /// Let an image store permissions and the hidden attribute, then reopen it.
@@ -295,8 +325,15 @@ pub fn fsck(source: Source, mode: Fsck, cancel: Arc<Control>) -> Result<String> 
     };
     if status.code() == Some(success) {
         Ok(report)
+    } else if matches!(mode, Fsck::Plan) && status.code() == Some(4) {
+        Err(ScanFinding(report).into())
     } else {
-        Err(report.into())
+        Err(if report.is_empty() {
+            format!("First Aid exited with {status}")
+        } else {
+            report
+        }
+        .into())
     }
 }
 

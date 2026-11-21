@@ -158,9 +158,12 @@ fn run(options: Options) -> Result<u8> {
         let path = options
             .report
             .unwrap_or_else(|| suffix(&output, ".recovery.txt"));
+        require_absent(&output)?;
+        let json_path = suffix(&output, ".recovery.json");
+        require_absent(&path)?;
+        require_absent(&json_path)?;
         text.push_str(&format!("Rebuild destination: {output:?}; {image_bytes} bytes\nImage recovery starting; a missing completion entry means the output is partial.\n"));
         let mut report = new_report(&path, &text)?;
-        let json_path = suffix(&output, ".recovery.json");
         let mut json_report =
             new_report(&json_path, "{\"version\":1,\"state\":\"in_progress\"}\n")?;
         let destination = ImageDevice::create_new(&output, image_bytes)?;
@@ -264,6 +267,16 @@ fn run(options: Options) -> Result<u8> {
         new_report(&path, &text)?;
     }
     Ok(if plan.clean { 0 } else { 4 })
+}
+
+// Creation still uses create_new. This check keeps a known destination or
+// report collision from creating files that would block the next attempt.
+fn require_absent(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(format!("{} already exists; choose a new path", path.display()).into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn suffix(path: &Path, suffix: &str) -> PathBuf {

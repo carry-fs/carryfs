@@ -258,9 +258,13 @@ fn exports_stream_large_files_and_refuse_existing_destinations() {
     while offset < data.len() {
         offset += volume.write(&file, offset as u64, &data[offset..]).unwrap();
     }
+    let sparse_size = 64 * 1024 * 1024;
+    volume.truncate(&file, sparse_size).unwrap();
     volume.close_handle(file).unwrap();
     volume.eject().unwrap();
     drop(volume);
+    let mut data = data;
+    data.resize(sparse_size as usize, 0);
     let browser = Browser::open(fixture.image()).unwrap();
     let object = browser
         .entries
@@ -273,7 +277,8 @@ fn exports_stream_large_files_and_refuse_existing_destinations() {
     browser.export(object, &output).unwrap();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert!(fs::metadata(&output).unwrap().blocks() * 512 < sparse_size);
         assert_eq!(
             fs::metadata(&output).unwrap().permissions().mode() & 0o777,
             0o600

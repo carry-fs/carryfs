@@ -722,6 +722,32 @@ mod tests {
     }
 
     #[test]
+    fn directory_pages_preserve_entries_at_page_boundaries() {
+        let (mut session, volume, _) = mounted();
+        for index in 0..70 {
+            session
+                .create(volume, 1, &format!("file-{index:02}"), false)
+                .unwrap();
+        }
+        let (first, marker) = session.list_page(volume, 1, None).unwrap();
+        assert_eq!(first.len(), 63);
+        let (second, marker) = session.list_page(volume, 1, marker).unwrap();
+        assert_eq!(second.len(), 7);
+        assert!(marker.is_none());
+        let names: Vec<_> = first
+            .into_iter()
+            .chain(second)
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(
+            names,
+            (0..70)
+                .map(|index| format!("file-{index:02}"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn hard_link_documents_keep_their_own_names_and_parents() {
         let (mut session, volume, _) = mounted();
         let root = ROOT.get() as i64;

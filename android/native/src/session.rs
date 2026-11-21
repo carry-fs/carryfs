@@ -31,6 +31,32 @@ struct Mounted {
     legacy: Option<Partition>,
 }
 
+impl Mounted {
+    fn open(drive: i64, partition: Partition) -> Result<Self> {
+        let write_protected = partition.mode() == MountMode::ReadOnly;
+        let (legacy, mut volume) = match Volume::open(partition.clone()) {
+            Err(Error::NeedsUpgrade) => (
+                Some(partition.clone()),
+                Volume::open(partition.read_only())?,
+            ),
+            volume => (None, volume?),
+        };
+        let read_only = write_protected || legacy.is_some();
+        if read_only {
+            volume.enable_readonly_metadata_cache()?;
+        } else {
+            volume.set_deferred_checkpoints(true)?;
+        }
+        Ok(Self {
+            drive,
+            read_only,
+            volume,
+            files: HashMap::new(),
+            legacy,
+        })
+    }
+}
+
 struct Open {
     handle: Handle,
     written: bool,
@@ -42,6 +68,7 @@ struct Open {
 pub struct Session {
     volumes: BTreeMap<i64, Mounted>,
     next: i64,
+    mount_warnings: BTreeMap<i64, String>,
 }
 
 impl Session {
@@ -56,29 +83,27 @@ impl Session {
             source,
         })?;
         let mut opened = Vec::new();
-        for partition in partitions {
-            let write_protected = partition.mode() == MountMode::ReadOnly;
-            // A volume CarryFS 0.1.0 formatted takes writes only after an upgrade.
-            let (legacy, mut volume) = match Volume::open(partition.clone()) {
-                Err(Error::NeedsUpgrade) => (
-                    Some(partition.clone()),
-                    Volume::open(partition.read_only())?,
-                ),
-                volume => (None, volume?),
-            };
-            let read_only = write_protected || legacy.is_some();
-            if read_only {
-                volume.enable_readonly_metadata_cache()?;
-            } else {
-                volume.set_deferred_checkpoints(true)?;
+        let mut warnings = Vec::new();
+        if partitions.iter().any(|partition| partition.degraded_gpt) {
+            warnings.push("One GPT copy is damaged. Volumes are mounted read-only.".to_owned());
+        }
+        for (index, partition) in partitions.into_iter().enumerate() {
+            match Mounted::open(drive, partition) {
+                Ok(mounted) => opened.push(mounted),
+                Err(error) => warnings.push(format!(
+                    "CarryFS volume {} could not be opened: {error}",
+                    index + 1
+                )),
             }
-            opened.push(Mounted {
-                drive,
-                read_only,
-                volume,
-                files: HashMap::new(),
-                legacy,
+        }
+        if opened.is_empty() && !warnings.is_empty() {
+            return Err(Error::Io {
+                operation: "mount CarryFS volumes",
+                source: std::io::Error::other(warnings.join(" ")),
             });
+        }
+        if !warnings.is_empty() {
+            self.mount_warnings.insert(drive, warnings.join(" "));
         }
         Ok(opened
             .into_iter()
@@ -88,6 +113,10 @@ impl Session {
                 self.next
             })
             .collect())
+    }
+
+    pub fn take_mount_warning(&mut self, drive: i64) -> String {
+        self.mount_warnings.remove(&drive).unwrap_or_default()
     }
 
     /// Close every file, publish, and release the drive's volumes. All are

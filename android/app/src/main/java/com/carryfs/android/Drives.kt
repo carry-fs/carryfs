@@ -25,6 +25,7 @@ object Drives {
         val volumes: List<Long>,
         private val connection: UsbDeviceConnection?,
         private val iface: UsbInterface?,
+        val mountWarning: String = "",
     ) {
         val usb get() = connection != null
 
@@ -70,7 +71,7 @@ object Drives {
             if (!connection.setInterface(iface)) throw IOException("Cannot select the drive's mass-storage mode")
             val volumes = Native.mountUsb(key, connection.fileDescriptor, iface.id, input.address, output.address)
             if (volumes.isEmpty()) throw IOException("No CarryFS volume on ${drive.name}")
-            drives[key] = Drive(key, drive.name, volumes.toList(), connection, iface)
+            drives[key] = Drive(key, drive.name, volumes.toList(), connection, iface, Native.takeMountWarning(key))
         } catch (e: Exception) {
             drive.release()
             throw e
@@ -83,7 +84,7 @@ object Drives {
         if (IMAGE in drives) return
         val volumes = Native.mountImage(IMAGE, image.path)
         if (volumes.isEmpty()) throw IOException("No CarryFS volume in ${image.name}")
-        drives[IMAGE] = Drive(IMAGE, image.name, volumes.toList(), null, null)
+        drives[IMAGE] = Drive(IMAGE, image.name, volumes.toList(), null, null, Native.takeMountWarning(IMAGE))
         changed(context)
     }
 

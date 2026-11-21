@@ -29,6 +29,7 @@ object Native {
     @JvmStatic external fun mountUsb(drive: Long, fd: Int, iface: Int, endpointIn: Int, endpointOut: Int): LongArray
     /** Mount the CarryFS volumes of a disk image, standing in for a USB drive. */
     @JvmStatic external fun mountImage(drive: Long, path: String): LongArray
+    @JvmStatic external fun takeMountWarning(drive: Long): String
     /** Close every file, publish, and release the drive. */
     @JvmStatic external fun eject(drive: Long)
     /** Forget a drive that was unplugged. Unpublished changes are lost. */

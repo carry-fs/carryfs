@@ -176,6 +176,18 @@ pub extern "system" fn Java_com_carryfs_android_Native_mountImage<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_carryfs_android_Native_takeMountWarning<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    drive: jlong,
+) -> jstring {
+    call(&mut env, null_mut(), |env| {
+        let warning = session().take_mount_warning(drive);
+        Ok(env.new_string(warning)?.into_raw())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_carryfs_android_Native_eject<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,

@@ -92,6 +92,7 @@ pub struct Partition {
     start: u64,
     geometry: Geometry,
     mode: MountMode,
+    pub(crate) degraded_gpt: bool,
     /// Consecutive writes not yet sent, starting at `pending_at`.
     pending: Vec<u8>,
     pending_at: u64,
@@ -118,6 +119,7 @@ impl Partition {
             } else {
                 MountMode::ReadWrite
             },
+            degraded_gpt: false,
             pending: Vec::new(),
             pending_at: 0,
             recent: Vec::new(),
@@ -232,6 +234,7 @@ pub fn volumes(disk: &SharedDisk) -> io::Result<Vec<Partition>> {
         let mut partition = Partition::new(disk, start, len);
         if read_only {
             partition = partition.read_only();
+            partition.degraded_gpt = true;
         }
         if has_root_magic(&mut partition) {
             found.push(partition);

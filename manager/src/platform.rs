@@ -304,7 +304,7 @@ pub fn details(device: &Device) -> Result<Device> {
 pub fn device_file(device: &Device) -> Result<fs::File> {
     #[cfg(target_os = "macos")]
     {
-        crate::privileged::open_device(&device.id, false)
+        crate::privileged::open_device(&device.id)
     }
     #[cfg(not(target_os = "macos"))]
     {

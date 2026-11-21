@@ -162,8 +162,20 @@ fn run(options: Options) -> Result<u8> {
         let json_path = suffix(&output, ".recovery.json");
         require_absent(&path)?;
         require_absent(&json_path)?;
+        let mut report = create_report(&path)?;
+        // Let the host filesystem detect alternate spellings of the same path.
+        if let Err(error) = require_absent(&output).and_then(|()| require_absent(&json_path)) {
+            drop(report);
+            std::fs::remove_file(&path).map_err(|cleanup| {
+                format!(
+                    "{error}. Could not remove empty report {}: {cleanup}",
+                    path.display()
+                )
+            })?;
+            return Err(error);
+        }
         text.push_str(&format!("Rebuild destination: {output:?}; {image_bytes} bytes\nImage recovery starting; a missing completion entry means the output is partial.\n"));
-        let mut report = new_report(&path, &text)?;
+        write_report(&mut report, &path, &text)?;
         let mut json_report =
             new_report(&json_path, "{\"version\":1,\"state\":\"in_progress\"}\n")?;
         let destination = ImageDevice::create_new(&output, image_bytes)?;
@@ -286,6 +298,12 @@ fn suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn new_report(path: &Path, text: &str) -> Result<File> {
+    let mut file = create_report(path)?;
+    write_report(&mut file, path, text)?;
+    Ok(file)
+}
+
+fn create_report(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -293,12 +311,16 @@ fn new_report(path: &Path, text: &str) -> Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|error| {
+    options.open(path).map_err(|error| {
         format!(
             "create report {}: {error}; choose a new --report path",
             path.display()
         )
-    })?;
+        .into()
+    })
+}
+
+fn write_report(file: &mut File, path: &Path, text: &str) -> Result<()> {
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     let parent = path
@@ -318,7 +340,7 @@ fn new_report(path: &Path, text: &str) -> Result<File> {
     }
     #[cfg(not(any(unix, windows)))]
     return Err("durable report directory synchronization is unsupported on this platform".into());
-    Ok(file)
+    Ok(())
 }
 
 fn record_finding(report: &mut File, finding: &carryfs_core::Finding<'_>) -> io::Result<()> {

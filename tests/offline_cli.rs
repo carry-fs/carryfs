@@ -669,6 +669,33 @@ fn fsck_rebuilds_a_new_image_without_repairing_the_source() {
 }
 
 #[test]
+fn fsck_rebuild_report_aliases_leave_no_output_or_journals() {
+    use std::os::unix::fs::symlink;
+
+    let temp = Temp::new();
+    temp.pass(&["mkfs", "image", "268435456"]);
+    symlink(".", temp.0.join("here")).unwrap();
+    let mut reports = vec!["rebuild", "here/rebuild", "rebuild.recovery.json"];
+    if temp.0.join("IMAGE").exists() {
+        reports.push("REBUILD");
+    }
+    for report in reports {
+        let result = fsck(
+            &temp,
+            &[
+                "--repair", "--output", "rebuild", "--report", report, "image",
+            ],
+        );
+        assert_eq!(result.status.code(), Some(8), "{report}");
+        for path in ["rebuild", "rebuild.recovery.json", report] {
+            assert!(!temp.0.join(path).exists(), "{report} left {path}");
+        }
+    }
+    let result = fsck(&temp, &["--repair", "--output", "rebuild", "image"]);
+    assert_eq!(result.status.code(), Some(1));
+}
+
+#[test]
 fn fsck_new_image_refuses_existing_outputs_aliases_reports_and_invalid_flags() {
     use std::os::unix::fs::symlink;
     let temp = Temp::new();

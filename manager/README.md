@@ -83,3 +83,12 @@ The `overview`, `files`, `activity`, `software`, `first-aid`, and `erase` captur
 The tests use disposable CarryFS images to drive Rune's real runtime and file dialogs. They cover paginated browsing, First Aid, repair of a damaged image, recovery and rebuilds, format upgrades, exports, source-generation changes, overwrite refusal, unchanged source bytes, process cancellation, descriptor passing for the root helper, malformed device metadata, and erase guards. They do not mount, eject, erase, or update any physical device, and never start the root helper.
 
 Rune follows its `examples/hello` state/view/AppSpec pattern and uses Rune Kit controls. The Rune revision and its required crate patches are pinned together. This package has a separate workspace and lockfile so its UI dependencies do not change the filesystem workspace's minimum Rust version. The verified compiler is Rust 1.99.0 on macOS.
+
+### Signed releases
+
+Build Manager with `CARRYFS_RELEASE_PUBLIC_KEY_PEM` set to the trusted RSA
+public key in PEM format. Set the corresponding private key as the
+`CARRYFS_RELEASE_SIGNING_KEY_PEM` release-workflow secret. Keep the private
+key out of source control. Manager verifies the signed checksum manifest
+and the archive before prompting for administrator permission. Its helper
+repeats verification using the same pinned key before installing.

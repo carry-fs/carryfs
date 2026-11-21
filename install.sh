@@ -232,6 +232,13 @@ verify_package() {
     base=https://github.com/$repository/releases/download/$tag
     download "$base/$asset" "$work/$asset"
     download "$base/SHA256SUMS" "$work/SHA256SUMS"
+    if [ -n "${CARRYFS_RELEASE_PUBLIC_KEY_PEM:-}" ]; then
+        download "$base/SHA256SUMS.sig" "$work/SHA256SUMS.sig"
+        printf '%s\n' "$CARRYFS_RELEASE_PUBLIC_KEY_PEM" > "$work/release-key.pem"
+        /usr/bin/openssl dgst -sha256 -verify "$work/release-key.pem" \
+            -signature "$work/SHA256SUMS.sig" "$work/SHA256SUMS" >/dev/null ||
+            die 'Release signature verification failed.'
+    fi
     expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { hash=tolower($1); count++ }
         END { if(count != 1) exit 1; print hash }' "$work/SHA256SUMS") || die "Missing or duplicate checksum for $asset."
     [ "${#expected}" = 64 ] || die 'Invalid SHA-256 checksum.'
@@ -244,6 +251,7 @@ verify_package() {
         actual=$(shasum -a 256 "$work/$asset")
     fi
     [ "${actual%% *}" = "$expected" ] || die "Checksum mismatch for $asset; nothing was installed."
+    [ "${CARRYFS_VERIFY_ONLY:-0}" != 1 ] || return 0
     tar -tzf "$work/$asset" > "$work/entries" || die 'Cannot list the release archive.'
     awk '
         /^\// || /(^|\/)\.\.(\/|$)/ || /[^a-zA-Z0-9_.\/-]/ { exit 1 }
@@ -523,6 +531,7 @@ main() {
     else
         select_release
         verify_package
+        [ "${CARRYFS_VERIFY_ONLY:-0}" != 1 ] || return 0
         origin='The package is verified.'
     fi
     printf 'Install CarryFS %s for %s (current: %s).\n' "$selected" "$platform" "${installed:-unrecorded}"

@@ -1,55 +1,99 @@
 package com.carryfs.android
 
+import android.content.res.AssetFileDescriptor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import android.os.CancellationSignal
+import android.os.ParcelFileDescriptor
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 /** Small upright JPEG previews of images on a volume, cached on the phone. */
 object Thumbnails {
-    /** A preview of `entry` at most `size` pixels on its long side. Blocks on drive I/O. */
-    fun file(cacheDir: File, volume: Long, entry: Entry, size: Int): File {
+    private const val MAX_CACHE_BYTES = 32L * 1024 * 1024
+    private const val READ_CHUNK = 64 * 1024
+    private val cache = Any()
+    private val namespace = UUID.randomUUID()
+
+    /** Open a preview at most `size` pixels on its long side. Blocks on drive I/O. */
+    fun open(cacheDir: File, volume: Long, entry: Entry, size: Int, signal: CancellationSignal?): AssetFileDescriptor {
+        signal?.throwIfCanceled()
         val dir = File(cacheDir, "thumbnails").apply { mkdirs() }
-        // The size and modification time change whenever the file does, so a stale preview is never served.
-        // ponytail: never evicted; Android clears app caches when storage runs low.
-        val cached = File(dir, "$volume-${entry.id}-${entry.size}-${entry.modified}-$size.jpg")
-        if (cached.exists()) return cached
+        val version = Native.previewVersion(volume)
+        val cached = File(dir, "$namespace-$volume-${entry.id}-$version-$size.jpg")
+        synchronized(cache) {
+            if (cached.isFile) return openCached(cached)
+        }
 
         // Camera photos carry a small preview in their EXIF header, which costs only the first few kB to read.
         val exif = try {
-            stream(volume, entry.id).use { ExifInterface(it) }
+            stream(volume, entry.id, signal).use { ExifInterface(it) }
         } catch (e: IOException) {
             null
         }
+        signal?.throwIfCanceled()
         val embedded = exif?.thumbnail?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
         val bitmap = embedded?.takeIf { max(it.width, it.height) >= size / 2 }
-            ?: decode(volume, entry.id, size)
+            ?: decode(volume, entry.id, size, signal)
             ?: throw FileNotFoundException("${entry.name} has no readable image")
         val orientation = exif?.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
             ?: ExifInterface.ORIENTATION_NORMAL
 
+        signal?.throwIfCanceled()
         val temp = File.createTempFile("preview", ".tmp", dir)
-        temp.outputStream().use { upright(scaled(bitmap, size), orientation).compress(Bitmap.CompressFormat.JPEG, 85, it) }
-        if (!temp.renameTo(cached)) temp.delete()
-        return cached
+        try {
+            val success = temp.outputStream().use {
+                upright(scaled(bitmap, size), orientation).compress(Bitmap.CompressFormat.JPEG, 85, it)
+            }
+            if (!success) throw IOException("Could not encode a preview")
+            signal?.throwIfCanceled()
+            if (Native.previewVersion(volume) != version) throw IOException("The volume changed during preview")
+            return synchronized(cache) {
+                if (!cached.isFile && !temp.renameTo(cached)) throw IOException("Could not store a preview")
+                val preview = openCached(cached)
+                trim(dir, cached)
+                preview
+            }
+        } finally {
+            temp.delete()
+        }
+    }
+
+    private fun openCached(file: File): AssetFileDescriptor {
+        val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        file.setLastModified(System.currentTimeMillis())
+        return AssetFileDescriptor(descriptor, 0, descriptor.statSize)
+    }
+
+    private fun trim(dir: File, keep: File) {
+        val files = dir.listFiles { file -> file.extension == "jpg" } ?: return
+        var remaining = files.sumOf { it.length() }
+        for (file in files.sortedBy { it.lastModified() }) {
+            if (remaining <= MAX_CACHE_BYTES) break
+            if (file == keep) continue
+            val bytes = file.length()
+            if (file.delete()) remaining -= bytes
+        }
     }
 
     /** Decode the whole image, sampled down to about `size`. */
-    private fun decode(volume: Long, id: Long, size: Int): Bitmap? {
+    private fun decode(volume: Long, id: Long, size: Int, signal: CancellationSignal?): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        stream(volume, id).use { BitmapFactory.decodeStream(it, null, bounds) }
+        stream(volume, id, signal).use { BitmapFactory.decodeStream(it, null, bounds) }
+        signal?.throwIfCanceled()
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         var sample = 1
         while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= size) sample *= 2
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
-        return stream(volume, id).use { BitmapFactory.decodeStream(it, null, options) }
+        return stream(volume, id, signal).use { BitmapFactory.decodeStream(it, null, options) }
     }
 
     private fun scaled(bitmap: Bitmap, size: Int): Bitmap {
@@ -72,10 +116,13 @@ object Thumbnails {
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
 
-    private fun stream(volume: Long, id: Long): InputStream = BufferedInputStream(FileStream(volume, id), 256 shl 10)
+    private fun stream(volume: Long, id: Long, signal: CancellationSignal?): InputStream {
+        signal?.throwIfCanceled()
+        return BufferedInputStream(FileStream(volume, id, signal), READ_CHUNK)
+    }
 
     /** A file on a volume read from the start. */
-    private class FileStream(private val volume: Long, id: Long) : InputStream() {
+    private class FileStream(private val volume: Long, id: Long, private val signal: CancellationSignal?) : InputStream() {
         private val file = Native.open(volume, id, false, false)
         private var offset = 0L
 
@@ -85,9 +132,11 @@ object Thumbnails {
         }
 
         override fun read(buffer: ByteArray, start: Int, length: Int): Int {
+            signal?.throwIfCanceled()
             if (length == 0) return 0
-            val target = if (start == 0) buffer else ByteArray(length)
-            val read = Native.read(volume, file, offset, length, target)
+            val count = length.coerceAtMost(READ_CHUNK)
+            val target = if (start == 0) buffer else ByteArray(count)
+            val read = Native.read(volume, file, offset, count, target)
             if (read <= 0) return -1
             if (start != 0) System.arraycopy(target, 0, buffer, start, read)
             offset += read
@@ -95,6 +144,7 @@ object Thumbnails {
         }
 
         override fun skip(count: Long): Long {
+            signal?.throwIfCanceled()
             val skipped = count.coerceIn(0, Native.size(volume, file) - offset)
             offset += skipped
             return skipped

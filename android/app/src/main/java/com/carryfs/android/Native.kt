@@ -35,6 +35,7 @@ object Native {
     @JvmStatic external fun detach(drive: Long)
 
     @JvmStatic external fun label(volume: Long): String
+    @JvmStatic external fun previewVersion(volume: Long): Long
     /** Available and total bytes. */
     @JvmStatic external fun space(volume: Long): LongArray
     @JvmStatic external fun readOnly(volume: Long): Boolean

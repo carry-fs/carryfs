@@ -338,6 +338,17 @@ pub extern "system" fn Java_com_carryfs_android_Native_open<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_carryfs_android_Native_previewVersion<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    volume: jlong,
+) -> jlong {
+    call(&mut env, 0, |_| {
+        Ok(session().preview_version(volume)? as jlong)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_carryfs_android_Native_read<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,

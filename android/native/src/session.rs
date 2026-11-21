@@ -27,6 +27,7 @@ struct Mounted {
     read_only: bool,
     volume: Volume<Partition>,
     files: HashMap<i64, Open>,
+    preview_version: u64,
     /// The writable range of a CarryFS 0.1.0 volume, mounted read-only until upgraded.
     legacy: Option<Partition>,
 }
@@ -77,6 +78,7 @@ impl Session {
                 read_only,
                 volume,
                 files: HashMap::new(),
+                preview_version: 0,
                 legacy,
             });
         }
@@ -239,6 +241,10 @@ impl Session {
         remove_tree(volume, attributes.parent, &name, object, attributes.kind)
     }
 
+    pub fn preview_version(&mut self, volume: i64) -> Result<u64> {
+        Ok(self.mounted_mut(volume)?.preview_version)
+    }
+
     pub fn open(&mut self, volume: i64, id: i64, write: bool, truncate: bool) -> Result<i64> {
         let access = if write {
             Access::ReadWrite
@@ -247,10 +253,12 @@ impl Session {
         };
         let mounted = self.mounted_mut(volume)?;
         let handle = mounted.volume.open_object(object(id)?, access)?;
-        if truncate && let Err(error) = with_space(&mut mounted.volume, |v| v.truncate(&handle, 0))
-        {
-            mounted.volume.close_handle(handle)?;
-            return Err(error);
+        if truncate {
+            mounted.preview_version = mounted.preview_version.wrapping_add(1);
+            if let Err(error) = with_space(&mut mounted.volume, |v| v.truncate(&handle, 0)) {
+                mounted.volume.close_handle(handle)?;
+                return Err(error);
+            }
         }
         self.next += 1;
         let file = self.next;
@@ -284,6 +292,7 @@ impl Session {
         let mounted = self.mounted_mut(volume)?;
         let open = mounted.files.get_mut(&file).ok_or(Error::NotFound)?;
         open.written = true;
+        mounted.preview_version = mounted.preview_version.wrapping_add(1);
         let mut done = 0;
         while done < data.len() {
             done += with_space(&mut mounted.volume, |v| {

@@ -78,6 +78,13 @@ and `btrfs`. macOS supports `carryfs`, `exfat` and `apfs`. Windows supports
 `carryfs`, `exfat` and `ntfs`. `--size-mib` sets the image size, 1024 by
 default. `--rounds` sets how many times each filesystem runs, 3 by default.
 
+On Linux the run switches every CPU to the `performance` governor and restores
+the previous governors when it ends, so this needs root. Under `schedutil`, a
+timed region of a few milliseconds can finish before the clock rises: the same
+build listed 1,000 files in 2.6 ms in some rounds and 6.0 ms in others.
+`--governor NAME` picks another governor, and `--governor keep` leaves the
+host's setting. `metadata.json` records the governors the run used.
+
 Run one benchmark at a time and keep the host otherwise idle. The runner takes
 a host lock and refuses a second run.
 

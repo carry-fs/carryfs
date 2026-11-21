@@ -12,6 +12,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import stat
 import statistics
 import subprocess
@@ -263,6 +264,50 @@ def preflight_output(args, check_access):
         writable_directory(out.parent if args.out else out)
 
 
+def governor_files():
+    return sorted(Path("/sys/devices/system/cpu").glob("cpu[0-9]*/cpufreq/scaling_governor"))
+
+
+def check_governor(args):
+    """Fail before any work if the requested governor cannot be set on every CPU."""
+    if args.governor == "keep":
+        return
+    files = governor_files()
+    if not files:
+        raise ValueError("this host exposes no cpufreq governors; pass --governor keep")
+    for path in files:
+        if args.governor not in (path.parent / "scaling_available_governors").read_text().split():
+            raise ValueError(f"{path.parent.parent.name} has no {args.governor} governor")
+        if args.command == "run" and not os.access(path, os.W_OK):
+            raise ValueError(f"setting the {args.governor} governor needs root; or pass --governor keep")
+
+
+def set_governor(name):
+    """Run every CPU under `name` and return a function that restores the previous governors.
+
+    Short timed regions finish before schedutil raises the clock in some rounds
+    and not others, so the same code measured 2.6 or 6.0 ms per round.
+    """
+    if name == "keep" or sys.platform != "linux":
+        return lambda: None
+    previous = {path: path.read_text().strip() for path in governor_files()}
+    # SIGTERM would kill the run without its finally blocks; unwind like Ctrl-C.
+    handler = signal.signal(signal.SIGTERM, lambda *_: sys.exit(128 + signal.SIGTERM))
+
+    def restore():
+        for path, value in previous.items():
+            path.write_text(value)
+        signal.signal(signal.SIGTERM, handler)
+
+    try:
+        for path in previous:
+            path.write_text(name)
+    except OSError:
+        restore()
+        raise
+    return restore
+
+
 def preflight(config, args):
     from benchmarks import native
     if HOST in ("freebsd", "netbsd"):
@@ -272,7 +317,8 @@ def preflight(config, args):
         return native.preflight(config, args)
     if args.command == "run" and config["mount_mode"] == "root" and os.geteuid() != 0:
         raise ValueError("root mount mode needs root; user mode uses fusermount3 and fstab user entries")
-    required = [(("lsblk", "findmnt", "mount", "umount", "wipefs"), "Linux disk/mount tools; install util-linux"),
+    check_governor(args)
+    required =[(("lsblk", "findmnt", "mount", "umount", "wipefs"), "Linux disk/mount tools; install util-linux"),
                 (("git",), "source revision metadata; install Git")]
     if args.images:
         required.extend([(("losetup",), "disposable loop images; install util-linux"),
@@ -872,12 +918,15 @@ def run(args):
     devices = preflight(config, args)
     print("Preflight passed for all selected targets.", flush=True)
     lock = native.windows_lock() if sys.platform == "win32" else host_lock()
+    restore_governor = lambda: None
     try:
         if sys.platform != "win32":
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise ValueError("another full benchmark is running on this host") from None
+        # After the lock, so a refused second run cannot change the first's governor.
+        restore_governor = set_governor(args.governor)
         if args.out:
             out = args.out.resolve()
             out.mkdir(parents=True, exist_ok=False)
@@ -959,6 +1008,7 @@ def run(args):
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
         print(f"Benchmark passed. Summary: {out / 'summary.md'}", flush=True)
     finally:
+        restore_governor()
         if sys.platform == "win32":
             native.windows_unlock(lock)
         else:

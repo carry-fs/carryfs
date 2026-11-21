@@ -582,6 +582,34 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_partition_does_not_hide_a_healthy_volume() {
+        let disk = usb_disk(650 * MIB);
+        let size = 300 * MIB;
+        let damaged = 301 * MIB;
+        write_gpt(&disk, &[(MIB, size), (damaged, size)]);
+        format(&disk, MIB, size);
+        format(&disk, damaged, size);
+        {
+            let mut disk = disk.lock().unwrap();
+            for offset in [damaged + MIB, damaged + size - 257 * 4096] {
+                let mut page = [0; 4096];
+                disk.read_at(offset, &mut page).unwrap();
+                page[24] ^= 1; // Retain the volume magic, invalidate the root checksum.
+                disk.write_at(offset, &page).unwrap();
+            }
+        }
+        let mut session = Session::default();
+        let volumes = session.mount(7, disk).unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert!(
+            session
+                .take_mount_warning(7)
+                .contains("volume 2 could not be opened")
+        );
+        assert!(session.label(volumes[0]).is_ok());
+    }
+
+    #[test]
     fn create_numbers_taken_names() {
         let (mut session, volume, _) = mounted();
         let root = ROOT.get() as i64;

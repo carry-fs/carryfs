@@ -178,6 +178,7 @@ fn open_volume(device: ImageDevice) -> Result<Volume<ImageDevice>> {
 }
 
 fn list(volume: &mut Volume<ImageDevice>, directory: ObjectId) -> Result<Vec<Entry>> {
+    volume.enable_readonly_metadata_cache()?;
     let handle = volume.open_directory(directory)?;
     let result = (|| -> Result<Vec<Entry>> {
         let mut entries = Vec::new();

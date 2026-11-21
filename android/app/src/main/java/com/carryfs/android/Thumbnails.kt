@@ -17,9 +17,8 @@ object Thumbnails {
     /** A preview of `entry` at most `size` pixels on its long side. Blocks on drive I/O. */
     fun file(cacheDir: File, volume: Long, entry: Entry, size: Int): File {
         val dir = File(cacheDir, "thumbnails").apply { mkdirs() }
-        // The size and modification time change whenever the file does, so a stale preview is never served.
         // ponytail: never evicted; Android clears app caches when storage runs low.
-        val cached = File(dir, "$volume-${entry.id}-${entry.size}-${entry.modified}-$size.jpg")
+        val cached = File(dir, "${CarryProvider.volumeKey(volume)}-${entry.id}-${entry.size}-${entry.modified}-$size.jpg")
         if (cached.exists()) return cached
 
         // Camera photos carry a small preview in their EXIF header, which costs only the first few kB to read.

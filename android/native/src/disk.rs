@@ -227,8 +227,12 @@ impl BlockDevice for Partition {
 /// whole disk.
 pub fn volumes(disk: &SharedDisk) -> io::Result<Vec<Partition>> {
     let mut found = Vec::new();
-    for (start, len) in partitions(disk)? {
+    let (ranges, read_only) = partitions(disk)?;
+    for (start, len) in ranges {
         let mut partition = Partition::new(disk, start, len);
+        if read_only {
+            partition = partition.read_only();
+        }
         if has_root_magic(&mut partition) {
             found.push(partition);
         }
@@ -236,8 +240,10 @@ pub fn volumes(disk: &SharedDisk) -> io::Result<Vec<Partition>> {
     Ok(found)
 }
 
-/// Candidate byte ranges: the partitions, or the whole disk if it has none.
-fn partitions(disk: &SharedDisk) -> io::Result<Vec<(u64, u64)>> {
+/// Candidate byte ranges and whether a damaged GPT forces read-only access.
+type Ranges = Vec<(u64, u64)>;
+
+fn partitions(disk: &SharedDisk) -> io::Result<(Ranges, bool)> {
     let mut disk = disk
         .lock()
         .map_err(|_| io::Error::other("disk lock poisoned"))?;
@@ -246,62 +252,173 @@ fn partitions(disk: &SharedDisk) -> io::Result<Vec<(u64, u64)>> {
     let mut sector = vec![0; block as usize];
     disk.read_at(0, &mut sector)?;
 
+    if sector[510..512] != [0x55, 0xaa] {
+        return Ok((vec![(0, disk_len)], false));
+    }
+    let entries = || sector[446..510].chunks_exact(16);
+    if entries().any(|entry| entry[4] == 0xee) {
+        return gpt(&mut *disk, block);
+    }
     let mut ranges = Vec::new();
-    if sector[510..512] == [0x55, 0xaa] {
-        let entries: Vec<&[u8]> = sector[446..510].chunks(16).collect();
-        if entries.iter().any(|entry| entry[4] == 0xee) {
-            ranges = gpt(&mut *disk, block)?;
-        } else {
-            // ponytail: primary partitions only; read the extended chain if users need it.
-            for entry in entries {
-                let kind = entry[4];
-                let first = u32::from_le_bytes(entry[8..12].try_into().unwrap());
-                let count = u32::from_le_bytes(entry[12..16].try_into().unwrap());
-                if kind != 0 && !matches!(kind, 0x05 | 0x0f | 0x85) && count != 0 {
-                    ranges.push((u64::from(first) * block, u64::from(count) * block));
-                }
-            }
+    let mut primary = Vec::new();
+    for entry in entries().filter(|entry| entry[4] != 0) {
+        let first = u64::from(le32(entry, 8));
+        let count = u64::from(le32(entry, 12));
+        if first == 0 || count == 0 || first + count > disk_len / block {
+            return Err(invalid_map("MBR partition is outside the disk"));
+        }
+        let range = (first * block, count * block);
+        ranges.push(range);
+        // Extended partitions reserve space, but their logical partitions are unsupported.
+        if !matches!(entry[4], 0x05 | 0x0f | 0x85) {
+            primary.push(range);
         }
     }
-    ranges.retain(|(start, len)| start.checked_add(*len).is_some_and(|end| end <= disk_len));
-    // A volume on the whole disk zeroes the first sector, so it has no table.
-    if ranges.is_empty() {
-        ranges.push((0, disk_len));
-    }
-    Ok(ranges)
+    validate_disjoint(&mut ranges)?;
+    Ok((primary, false))
 }
 
-fn gpt(disk: &mut dyn Sectors, block: u64) -> io::Result<Vec<(u64, u64)>> {
+#[derive(Debug, PartialEq, Eq)]
+struct Gpt {
+    disk_guid: [u8; 16],
+    first_usable: u64,
+    last_usable: u64,
+    count: u32,
+    size: u32,
+    entries_crc: u32,
+    ranges: Ranges,
+}
+
+fn gpt(disk: &mut dyn Sectors, block: u64) -> io::Result<(Ranges, bool)> {
+    let last = disk
+        .byte_len()
+        .checked_div(block)
+        .and_then(|sectors| sectors.checked_sub(1))
+        .filter(|last| *last > 2)
+        .ok_or_else(|| invalid_map("Disk is too small for GPT"))?;
+    match (
+        gpt_copy(disk, block, 1, last),
+        gpt_copy(disk, block, last, 1),
+    ) {
+        (Ok(primary), Ok(backup)) if primary == backup => Ok((primary.ranges, false)),
+        (Ok(_), Ok(_)) => Err(invalid_map("Primary and backup GPT disagree")),
+        (Ok(map), Err(_)) | (Err(_), Ok(map)) => Ok((map.ranges, true)),
+        (Err(primary), Err(backup)) => Err(invalid_map(format!(
+            "Both GPT copies are invalid (primary: {primary}; backup: {backup})"
+        ))),
+    }
+}
+
+fn gpt_copy(disk: &mut dyn Sectors, block: u64, at: u64, alternate: u64) -> io::Result<Gpt> {
     let mut header = vec![0; block as usize];
-    disk.read_at(block, &mut header)?;
-    if &header[0..8] != b"EFI PART" {
-        return Err(io::Error::new(
-            ErrorKind::InvalidData,
-            "protective MBR without a GPT header",
-        ));
+    disk.read_at(at * block, &mut header)?;
+    let header_len = le32(&header, 12) as usize;
+    if &header[0..8] != b"EFI PART"
+        || le32(&header, 8) != 0x0001_0000
+        || !(92..=header.len()).contains(&header_len)
+        || le64(&header, 24) != at
+        || le64(&header, 32) != alternate
+    {
+        return Err(invalid_map("GPT header fields are invalid"));
     }
-    let table = u64::from_le_bytes(header[72..80].try_into().unwrap());
-    let count = u32::from_le_bytes(header[80..84].try_into().unwrap()) as u64;
-    let size = u32::from_le_bytes(header[84..88].try_into().unwrap()) as u64;
-    if size < 128 || count > 1024 {
-        return Err(io::Error::new(
-            ErrorKind::InvalidData,
-            "GPT header is invalid",
-        ));
+    let expected = le32(&header, 16);
+    header[16..20].fill(0);
+    if gpt_crc(&header[..header_len]) != expected {
+        return Err(invalid_map("GPT header checksum mismatch"));
     }
-    let bytes = (count * size).div_ceil(block) * block;
-    let mut entries = vec![0; bytes as usize];
+
+    let first_usable = le64(&header, 40);
+    let last_usable = le64(&header, 48);
+    let disk_guid = header[56..72].try_into().unwrap();
+    let table = le64(&header, 72);
+    let count = le32(&header, 80);
+    let size = le32(&header, 84);
+    let entries_crc = le32(&header, 88);
+    if !(1..=1024).contains(&count) || !(128..=4096).contains(&size) || !size.is_power_of_two() {
+        return Err(invalid_map("Unsupported GPT entry count or size"));
+    }
+    let bytes = u64::from(count) * u64::from(size);
+    let sectors = bytes.div_ceil(block);
+    let last_header = at.max(alternate);
+    let table_end = table.checked_add(sectors);
+    let table_fits = match (at, table_end) {
+        (1, Some(end)) => table >= 2 && end <= first_usable,
+        (_, Some(end)) => table > last_usable && end <= last_header,
+        (_, None) => false,
+    };
+    if first_usable < 2 || first_usable > last_usable || last_usable >= last_header || !table_fits {
+        return Err(invalid_map("GPT metadata is outside the reserved region"));
+    }
+
+    let mut entries = Vec::new();
+    let rounded = (sectors * block) as usize;
+    entries
+        .try_reserve_exact(rounded)
+        .map_err(io::Error::other)?;
+    entries.resize(rounded, 0);
     disk.read_at(table * block, &mut entries)?;
-    Ok(entries
-        .chunks(size as usize)
-        .take(count as usize)
-        .filter(|entry| entry[0..16] != [0; 16])
-        .filter_map(|entry| {
-            let first = u64::from_le_bytes(entry[32..40].try_into().unwrap());
-            let last = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-            (last >= first).then(|| (first * block, (last - first + 1) * block))
-        })
-        .collect())
+    let entries = &entries[..bytes as usize];
+    if gpt_crc(entries) != entries_crc {
+        return Err(invalid_map("GPT entry array checksum mismatch"));
+    }
+
+    let mut ranges = Vec::new();
+    for entry in entries.chunks_exact(size as usize) {
+        if entry[..16] == [0; 16] {
+            continue;
+        }
+        let first = le64(entry, 32);
+        let last = le64(entry, 40);
+        if first < first_usable || first > last || last > last_usable {
+            return Err(invalid_map("GPT partition is outside the usable range"));
+        }
+        ranges.push((first * block, (last - first + 1) * block));
+    }
+    validate_disjoint(&mut ranges)?;
+    Ok(Gpt {
+        disk_guid,
+        first_usable,
+        last_usable,
+        count,
+        size,
+        entries_crc,
+        ranges,
+    })
+}
+
+fn validate_disjoint(ranges: &mut [(u64, u64)]) -> io::Result<()> {
+    ranges.sort_unstable_by_key(|&(start, _)| start);
+    if ranges
+        .windows(2)
+        .any(|pair| pair[0].0 + pair[0].1 > pair[1].0)
+    {
+        return Err(invalid_map("Partition ranges overlap"));
+    }
+    Ok(())
+}
+
+fn invalid_map(message: impl Into<String>) -> io::Error {
+    io::Error::new(ErrorKind::InvalidData, message.into())
+}
+
+fn le32(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+fn le64(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+}
+
+// GPT uses IEEE CRC-32; the CarryFS on-disk metadata uses CRC-32C.
+fn gpt_crc(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
 }
 
 #[cfg(test)]
@@ -324,19 +441,32 @@ pub(crate) mod tests {
         mbr[510] = 0x55;
         mbr[511] = 0xaa;
         disk.write_at(0, &mbr).unwrap();
-        let mut header = vec![0; 512];
-        header[0..8].copy_from_slice(b"EFI PART");
-        header[72..80].copy_from_slice(&2u64.to_le_bytes());
-        header[80..84].copy_from_slice(&128u32.to_le_bytes());
-        header[84..88].copy_from_slice(&128u32.to_le_bytes());
-        disk.write_at(512, &header).unwrap();
+        let last = disk.byte_len() / 512 - 1;
         let mut entries = vec![0; 128 * 128];
         for (entry, (start, len)) in entries.chunks_mut(128).zip(ranges) {
             entry[0] = 1;
             entry[32..40].copy_from_slice(&(start / 512).to_le_bytes());
             entry[40..48].copy_from_slice(&((start + len) / 512 - 1).to_le_bytes());
         }
-        disk.write_at(1024, &entries).unwrap();
+        for (at, alternate, table) in [(1u64, last, 2u64), (last, 1, last - 32)] {
+            let mut header = [0; 512];
+            header[0..8].copy_from_slice(b"EFI PART");
+            header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+            header[12..16].copy_from_slice(&92u32.to_le_bytes());
+            header[24..32].copy_from_slice(&at.to_le_bytes());
+            header[32..40].copy_from_slice(&alternate.to_le_bytes());
+            header[40..48].copy_from_slice(&34u64.to_le_bytes());
+            header[48..56].copy_from_slice(&(last - 33).to_le_bytes());
+            header[56] = 1;
+            header[72..80].copy_from_slice(&table.to_le_bytes());
+            header[80..84].copy_from_slice(&128u32.to_le_bytes());
+            header[84..88].copy_from_slice(&128u32.to_le_bytes());
+            header[88..92].copy_from_slice(&gpt_crc(&entries).to_le_bytes());
+            let crc = gpt_crc(&header[..92]);
+            header[16..20].copy_from_slice(&crc.to_le_bytes());
+            disk.write_at(at * 512, &header).unwrap();
+            disk.write_at(table * 512, &entries).unwrap();
+        }
     }
 
     pub fn format(disk: &SharedDisk, start: u64, len: u64) {
@@ -408,6 +538,29 @@ pub(crate) mod tests {
 
         let found: Vec<_> = volumes(&disk).unwrap().iter().map(|p| p.start).collect();
         assert_eq!(found, [ranges[0].0, ranges[2].0]);
+    }
+
+    #[test]
+    fn refuses_overlapping_gpt_partitions() {
+        let disk = usb_disk(700 * MIB);
+        write_gpt(&disk, &[(MIB, 300 * MIB), (2 * MIB, 300 * MIB)]);
+        assert!(matches!(partitions(&disk), Err(error) if error.kind() == ErrorKind::InvalidData));
+    }
+
+    #[test]
+    fn a_damaged_primary_table_leaves_the_backup_read_only() {
+        let disk = usb_disk(350 * MIB);
+        write_gpt(&disk, &[(MIB, 300 * MIB)]);
+        format(&disk, MIB, 300 * MIB);
+        disk.lock().unwrap().write_at(512, &[0; 512]).unwrap();
+        let found = volumes(&disk).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].mode(), MountMode::ReadOnly);
+    }
+
+    #[test]
+    fn gpt_checksum_matches_the_ieee_check_value() {
+        assert_eq!(gpt_crc(b"123456789"), 0xcbf4_3926);
     }
 
     #[test]

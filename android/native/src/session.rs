@@ -34,6 +34,7 @@ struct Mounted {
 struct Open {
     handle: Handle,
     written: bool,
+    writable: bool,
 }
 
 /// Every mounted volume. Checkpoints are deferred: changes publish when a
@@ -90,34 +91,30 @@ impl Session {
             .collect())
     }
 
-    /// Close every file, publish, and release the drive's volumes. All are
-    /// released even if one fails; the first error is returned.
+    /// Keep all volumes and handles registered until the drive is safe to remove.
     pub fn eject(&mut self, drive: i64) -> Result<()> {
-        let mut result = Ok(());
-        for mut mounted in self.take(drive) {
-            for (_, open) in mounted.files.drain() {
-                result = result.and(mounted.volume.close_handle(open.handle));
-            }
-            result = result.and(mounted.volume.eject());
+        let volumes = || {
+            self.volumes
+                .values()
+                .filter(|mounted| mounted.drive == drive)
+        };
+        if volumes().any(|mounted| mounted.files.values().any(|file| file.writable)) {
+            return Err(Error::Busy);
         }
-        result
+        for mounted in self
+            .volumes
+            .values_mut()
+            .filter(|mounted| mounted.drive == drive)
+        {
+            mounted.volume.sync()?;
+        }
+        self.detach(drive);
+        Ok(())
     }
 
     /// Forget a drive that is already gone. Unpublished changes are lost.
     pub fn detach(&mut self, drive: i64) {
-        self.take(drive);
-    }
-
-    fn take(&mut self, drive: i64) -> Vec<Mounted> {
-        let ids: Vec<i64> = self
-            .volumes
-            .iter()
-            .filter(|(_, mounted)| mounted.drive == drive)
-            .map(|(id, _)| *id)
-            .collect();
-        ids.iter()
-            .filter_map(|id| self.volumes.remove(id))
-            .collect()
+        self.volumes.retain(|_, mounted| mounted.drive != drive);
     }
 
     pub fn label(&mut self, volume: i64) -> Result<String> {
@@ -259,6 +256,7 @@ impl Session {
             Open {
                 handle,
                 written: truncate,
+                writable: write,
             },
         );
         Ok(file)
@@ -550,6 +548,18 @@ mod tests {
             data.len()
         );
         assert_eq!(&back[..data.len()], &data[..]);
+    }
+
+    #[test]
+    fn refuses_eject_while_writers_are_open() {
+        let (mut session, volume, _) = mounted();
+        let doc = session.create(volume, 1, "busy", false).unwrap();
+        let handle = session.open(volume, doc, true, false).unwrap();
+        let drive = session.mounted_mut(volume).unwrap().drive;
+        assert!(matches!(session.eject(drive), Err(Error::Busy)));
+        session.write(volume, handle, 0, b"still open").unwrap();
+        session.close(volume, handle).unwrap();
+        session.eject(drive).unwrap();
     }
 
     #[test]

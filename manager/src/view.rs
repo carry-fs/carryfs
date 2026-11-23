@@ -1663,7 +1663,6 @@ fn files(s: &State, k: &Kit) -> El {
     body
 }
 
-/// Counts and sizes of the listed folder's direct entries.
 pub(crate) fn file_row(s: &State, index: usize, entry: &crate::model::Entry, k: &Kit) -> El {
     let busy = s.pending.is_some();
     let name = String::from_utf8_lossy(entry.item.name.stored()).into_owned();
@@ -1728,7 +1727,8 @@ pub(crate) fn file_row(s: &State, index: usize, entry: &crate::model::Entry, k: 
         .child(muted(size, k).w(80.0))
 }
 
-pub fn folder_summary(browser: &Browser) -> String {
+/// Counts and sizes of the listed folder's direct entries.
+pub(crate) fn folder_summary(browser: &Browser) -> String {
     let count = |wanted| {
         browser
             .entries

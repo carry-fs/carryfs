@@ -650,7 +650,8 @@ fn long_directories_scroll_to_files_below_the_viewport() {
     let after = rt.presented(&last).unwrap().0[1];
     assert!(
         after >= y && after < y + height,
-        "Last file is unreachable: row {after}, viewport {y}..{}", y + height
+        "Last file is unreachable: row {after}, viewport {y}..{}",
+        y + height
     );
 }
 

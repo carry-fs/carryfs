@@ -29,7 +29,14 @@ class DriveService : Service() {
     private val unplugged = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val device = intent.usbDevice() ?: return
-            Drives.detached(context, device)
+            val pending = goAsync()
+            thread {
+                try {
+                    Drives.detached(context.applicationContext, device)
+                } finally {
+                    pending.finish()
+                }
+            }
         }
     }
 

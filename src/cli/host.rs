@@ -157,6 +157,48 @@ pub(super) fn open_source(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+/// The next host data extent, or a sequential range on filesystems without sparse seeks.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+pub(super) fn data_range(
+    file: &File,
+    offset: u64,
+    size: u64,
+) -> io::Result<Option<std::ops::Range<u64>>> {
+    let seek = |offset: u64, whence| -> io::Result<u64> {
+        let offset = libc::off_t::try_from(offset).map_err(io::Error::other)?;
+        // SAFETY: the file descriptor remains open during lseek.
+        let result = unsafe { libc::lseek(file.as_raw_fd(), offset, whence) };
+        u64::try_from(result).map_err(|_| io::Error::last_os_error())
+    };
+    let unsupported = |e: &io::Error| {
+        e.raw_os_error() == Some(libc::EINVAL) || e.kind() == io::ErrorKind::Unsupported
+    };
+    let start = match seek(offset, libc::SEEK_DATA) {
+        Ok(start) if start >= size => return Ok(None),
+        Ok(start) if start >= offset => start,
+        Ok(_) => return Err(io::Error::other("sparse seek moved backwards")),
+        Err(e) if e.raw_os_error() == Some(libc::ENXIO) => return Ok(None),
+        Err(e) if unsupported(&e) => return Ok(Some(offset..size)),
+        Err(e) => return Err(e),
+    };
+    match seek(start, libc::SEEK_HOLE) {
+        Ok(end) if end > start => Ok(Some(start..end.min(size))),
+        Ok(_) => Err(io::Error::other("sparse seek made no progress")),
+        Err(e) if unsupported(&e) => Ok(Some(start..size)),
+        Err(e) => Err(e),
+    }
+}
+
+/// NetBSD has no sparse seeks; read the rest of the file sequentially.
+#[cfg(target_os = "netbsd")]
+pub(super) fn data_range(
+    _: &File,
+    offset: u64,
+    size: u64,
+) -> io::Result<Option<std::ops::Range<u64>>> {
+    Ok(Some(offset..size))
+}
+
 pub(super) struct Sink {
     parent: Rc<File>,
     name: CString,

@@ -8,7 +8,7 @@ use std::path::Path;
     target_os = "freebsd",
     target_os = "netbsd"
 ))]
-use std::{fs, io::Read, os::unix::ffi::OsStrExt};
+use std::{fs, os::unix::ffi::OsStrExt};
 
 #[cfg(any(
     target_os = "linux",
@@ -406,7 +406,7 @@ fn import_file(
     name: Name,
     image: &fs::Metadata,
 ) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{FileExt, MetadataExt};
     // A Linux write lease stops even this process from reopening its image.
     #[cfg(target_os = "linux")]
     {
@@ -415,7 +415,7 @@ fn import_file(
             return Err("cannot import the open image into itself".into());
         }
     }
-    let mut input = host::open_source(source)?;
+    let input = host::open_source(source)?;
     let metadata = input.metadata()?;
     if metadata.dev() == image.dev() && metadata.ino() == image.ino() {
         return Err("cannot import the open image into itself".into());
@@ -423,32 +423,43 @@ fn import_file(
     let handle = volume.create_file_with(parent, name, host_attributes(&metadata))?;
     let result = (|| -> Result<()> {
         let mut buffer = vec![0; 65_536];
-        let mut offset = 0_u64;
-        loop {
-            let len = match input.read(&mut buffer) {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if len == 0 {
+        let size = metadata.len();
+        let mut offset = 0;
+        while offset < size {
+            let Some(range) = host::data_range(&input, offset, size)? else {
                 break;
-            }
-            // Omit zero runs; truncate below establishes EOF even for trailing holes.
-            if buffer[..len].iter().any(|byte| *byte != 0) {
-                let mut written = 0;
-                while written < len {
-                    let n =
-                        volume.write(&handle, offset + written as u64, &buffer[written..len])?;
-                    if n == 0 {
-                        return Err("file write made no progress".into());
-                    }
-                    written += n;
+            };
+            offset = range.start;
+            while offset < range.end {
+                let wanted = (range.end - offset).min(buffer.len() as u64) as usize;
+                let len = match input.read_at(&mut buffer[..wanted], offset) {
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    result => result?,
+                };
+                if len == 0 {
+                    return Err("source was truncated during import".into());
                 }
+                if buffer[..len].iter().any(|byte| *byte != 0) {
+                    let mut written = 0;
+                    while written < len {
+                        let n = volume.write(
+                            &handle,
+                            offset + written as u64,
+                            &buffer[written..len],
+                        )?;
+                        if n == 0 {
+                            return Err("file write made no progress".into());
+                        }
+                        written += n;
+                    }
+                }
+                offset += len as u64;
             }
-            offset = offset
-                .checked_add(len as u64)
-                .ok_or("import file is too large")?;
         }
-        volume.truncate(&handle, offset)?;
+        if input.metadata()?.len() != size {
+            return Err("source size changed during import".into());
+        }
+        volume.truncate(&handle, size)?;
         Ok(())
     })();
     let close = volume.close_handle(handle);
@@ -476,6 +487,7 @@ pub(super) fn put(image: &Path, source: &Path, destination: &OsStr) -> Result<()
         Err(carryfs_core::Error::NotFound) => {}
         Err(error) => return Err(error.into()),
     }
+    volume.set_deferred_checkpoints(true)?;
     let mut pending = Some((source.to_path_buf(), parent, name.clone()));
     let mut stack: Vec<(fs::ReadDir, ObjectId)> = Vec::new();
     // Imported files and symlinks with other host names, by device and

@@ -487,18 +487,23 @@ impl<'a> Tree<'a> {
     /// `prefetch` reads a level, without waiting for them; the pages above
     /// them are read on the way.
     pub(crate) fn prefetch_range(&self, from: &[u8], to: &[u8]) -> Result {
-        self.read_ahead_merged(&self.leaves_in(from, to)?)
+        const MAX_SPECULATIVE_LEAVES: usize = 32;
+        self.read_ahead_merged(&self.leaves_in_limit(from, to, MAX_SPECULATIVE_LEAVES)?)
     }
 
     /// The leaves that hold keys in `from..to`, in key order, found by
     /// reading the pages above them; none when the root is a leaf.
     pub(crate) fn leaves_in(&self, from: &[u8], to: &[u8]) -> Result<KVec<Position>> {
+        self.leaves_in_limit(from, to, usize::MAX)
+    }
+
+    fn leaves_in_limit(&self, from: &[u8], to: &[u8], limit: usize) -> Result<KVec<Position>> {
         let mut level = KVec::new();
         level.push(self.root_position(), GFP_KERNEL)?;
         loop {
             let mut next = KVec::new();
             let mut above_leaves = false;
-            for at in level.iter() {
+            'frontier: for at in level.iter() {
                 let page = self.load(*at, None)?;
                 let view = self.view(&page, *at)?;
                 if view.level == 0 {
@@ -519,6 +524,9 @@ impl<'a> Tree<'a> {
                         break;
                     }
                     next.push(self.child(*at, view.level, value), GFP_KERNEL)?;
+                    if next.len() == limit {
+                        break 'frontier;
+                    }
                 }
             }
             if above_leaves {

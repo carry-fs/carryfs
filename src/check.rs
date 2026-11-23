@@ -859,6 +859,8 @@ struct Ownership {
     start: u64,
     end: u64,
     bits: Vec<u8>,
+    ranges: Option<Vec<(u64, u64, u64)>>,
+    ranges_full: bool,
     count: u64,
     pages: u64,
     data: u64,
@@ -889,6 +891,20 @@ impl Ownership {
             .ok_or(Error::Corrupt("ownership range overflow"))?;
         if count == 0 || start < 512 || end > blocks - 512 {
             return Err(Error::Corrupt("invalid ownership range").at_block(source));
+        }
+        if let Some(ranges) = &mut self.ranges {
+            // Keep this path within the memory budget of the dense bitmap.
+            const MAX_RANGES: usize = 1 << 20;
+            if ranges.len() == MAX_RANGES || ranges.try_reserve(1).is_err() {
+                self.ranges_full = true;
+                return Err(Error::LimitExceeded);
+            }
+            ranges.push((start, end, source));
+            self.count = self
+                .count
+                .checked_add(count)
+                .ok_or(Error::Corrupt("ownership total overflow"))?;
+            return Ok(());
         }
         for block in start.max(self.start)..end.min(self.end) {
             let bit = block - self.start;
@@ -931,7 +947,27 @@ pub(crate) fn validate_ownership(
     device: &mut impl BlockDevice,
     root: &Root,
 ) -> Result<CheckSummary> {
-    ownership_in_windows(device, root, WINDOW_BLOCKS)
+    // Tests use small volumes; check the compact path agrees on every call.
+    #[cfg(test)]
+    {
+        let compact = ownership_compact(device, root);
+        let windowed = ownership_in_windows(device, root, WINDOW_BLOCKS);
+        match (&compact, &windowed) {
+            (Ok(Some(compact)), Ok(windowed)) => assert_eq!(compact, windowed),
+            (Ok(None), _) | (Err(_), Err(_)) => {}
+            _ => panic!("ownership paths disagree: {compact:?} vs {windowed:?}"),
+        }
+        windowed
+    }
+    #[cfg(not(test))]
+    {
+        if root.blocks > WINDOW_BLOCKS
+            && let Some(summary) = ownership_compact(device, root)?
+        {
+            return Ok(summary);
+        }
+        ownership_in_windows(device, root, WINDOW_BLOCKS)
+    }
 }
 
 /// `validate_ownership` with `window` blocks per forest pass. Tests pass
@@ -963,145 +999,13 @@ pub(crate) fn ownership_in_windows(
             start,
             end,
             bits: std::mem::take(&mut bits),
+            ranges: None,
+            ranges_full: false,
             count: 0,
             pages: 0,
             data: 0,
         };
-        for block in &workspace {
-            ownership.mark(*block, 1, root.blocks, root.workspace.block)?;
-        }
-        let mut visits = 0;
-        for (reference, kind) in [
-            (root.catalog, TreeKind::Catalog),
-            (root.allocation, TreeKind::Allocation),
-        ] {
-            reader.walk(
-                reader.position(reference, kind),
-                &mut visits,
-                &mut |_, block, level, records| {
-                    ownership.page(block, root.blocks)?;
-
-                    if level == 0 && kind == TreeKind::Catalog {
-                        for (key, value) in records {
-                            if key[8] == 3 {
-                                let physical = u64_le(&value[..8])?;
-                                let count = u64::from(u32::from_le_bytes(
-                                    value[8..12]
-                                        .try_into()
-                                        .map_err(|_| Error::Corrupt("extent count"))?,
-                                ));
-                                ownership.data(physical, count, root.blocks, block)?;
-                            }
-                        }
-                    }
-                    Ok(())
-                },
-            )?;
-        }
-        reader.walk(
-            reader.position(root.cleanup, TreeKind::Cleanup),
-            &mut visits,
-            &mut |reader, block, level, records| {
-                ownership.page(block, root.blocks)?;
-
-                if level != 0 {
-                    return Ok(());
-                }
-                for (key, value) in records {
-                    match key[0] {
-                        1 => {
-                            let first = u64_be(&key[9..17])?;
-                            let count = u64::from(u32::from_le_bytes(
-                                value[..4]
-                                    .try_into()
-                                    .map_err(|_| Error::Corrupt("retirement count"))?,
-                            ));
-                            ownership.mark(first, count, root.blocks, block)?;
-                        }
-                        2 => {
-                            if u64_be(&key[1..])? >= root.next_job {
-                                return Err(
-                                    Error::Corrupt("job exceeds allocated IDs").at_block(block)
-                                );
-                            }
-                            let owner = u64_le(&value[..8])?;
-                            if owner >= root.next_object {
-                                return Err(Error::Corrupt("job owner exceeds allocated IDs")
-                                    .at_block(block));
-                            }
-                            let mut last_end = 0;
-                            let mut job_visits = 0;
-                            reader.walk(
-                                Position {
-                                    reference: tree_ref(&value[16..])?,
-                                    kind: TreeKind::Catalog,
-                                    parent_generation: root.generation,
-                                    level: None,
-                                },
-                                &mut job_visits,
-                                &mut |_, page, level, records| {
-                                    ownership.page(page, root.blocks)?;
-
-                                    if level != 0 {
-                                        return Ok(());
-                                    }
-                                    for (key, record) in records {
-                                        if u64_be(&key[..8])? != owner
-                                            || !(value[8]..=value[9]).contains(&key[8])
-                                        {
-                                            return Err(Error::Corrupt(
-                                                "detached tree owner or kind mismatch",
-                                            )
-                                            .at_block(page));
-                                        }
-                                        if key[8] == 3 {
-                                            let logical = u64_be(&key[9..])?;
-                                            let count = u64::from(u32::from_le_bytes(
-                                                record[8..12]
-                                                    .try_into()
-                                                    .map_err(|_| Error::Corrupt("extent count"))?,
-                                            ));
-                                            if logical < last_end {
-                                                return Err(Error::Corrupt(
-                                                    "detached extents overlap",
-                                                )
-                                                .at_block(page));
-                                            }
-                                            last_end = logical + count;
-                                            ownership.data(
-                                                u64_le(&record[..8])?,
-                                                count,
-                                                root.blocks,
-                                                page,
-                                            )?;
-                                        }
-                                        if key[8] == 2 {
-                                            crate::name::validate_disk_name(
-                                                &record[12..],
-                                                &key[9..],
-                                            )
-                                            .map_err(|error| error.at_block(page))?;
-                                        }
-                                    }
-                                    Ok(())
-                                },
-                            )?;
-                        }
-                        3 => {
-                            let owner = u64_be(&key[1..])?;
-                            if owner == 1
-                                || owner >= root.next_object
-                                || reader.inode(owner)?[1] & 1 == 0
-                            {
-                                return Err(Error::Corrupt("invalid orphan marker").at_block(block));
-                            }
-                        }
-                        _ => return Err(Error::Corrupt("unknown cleanup kind").at_block(block)),
-                    }
-                }
-                Ok(())
-            },
-        )?;
+        walk_ownership(&mut reader, root, &workspace, &mut ownership)?;
         if start == 0 {
             summary.metadata_pages = ownership.pages;
             summary.data_blocks = ownership.data;
@@ -1159,6 +1063,232 @@ pub(crate) fn ownership_in_windows(
         return Err(Error::Corrupt("root free count disagrees with ownership"));
     }
     Ok(summary)
+}
+
+fn walk_ownership(
+    reader: &mut Reader<'_, impl BlockDevice>,
+    root: &Root,
+    workspace: &[u64],
+    ownership: &mut Ownership,
+) -> Result<()> {
+    for block in workspace {
+        ownership.mark(*block, 1, root.blocks, root.workspace.block)?;
+    }
+    let mut visits = 0;
+    for (reference, kind) in [
+        (root.catalog, TreeKind::Catalog),
+        (root.allocation, TreeKind::Allocation),
+    ] {
+        reader.walk(
+            reader.position(reference, kind),
+            &mut visits,
+            &mut |_, block, level, records| {
+                ownership.page(block, root.blocks)?;
+
+                if level == 0 && kind == TreeKind::Catalog {
+                    for (key, value) in records {
+                        if key[8] == 3 {
+                            let physical = u64_le(&value[..8])?;
+                            let count = u64::from(u32::from_le_bytes(
+                                value[8..12]
+                                    .try_into()
+                                    .map_err(|_| Error::Corrupt("extent count"))?,
+                            ));
+                            ownership.data(physical, count, root.blocks, block)?;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+    }
+    reader.walk(
+        reader.position(root.cleanup, TreeKind::Cleanup),
+        &mut visits,
+        &mut |reader, block, level, records| {
+            ownership.page(block, root.blocks)?;
+
+            if level != 0 {
+                return Ok(());
+            }
+            for (key, value) in records {
+                match key[0] {
+                    1 => {
+                        let first = u64_be(&key[9..17])?;
+                        let count = u64::from(u32::from_le_bytes(
+                            value[..4]
+                                .try_into()
+                                .map_err(|_| Error::Corrupt("retirement count"))?,
+                        ));
+                        ownership.mark(first, count, root.blocks, block)?;
+                    }
+                    2 => {
+                        if u64_be(&key[1..])? >= root.next_job {
+                            return Err(Error::Corrupt("job exceeds allocated IDs").at_block(block));
+                        }
+                        let owner = u64_le(&value[..8])?;
+                        if owner >= root.next_object {
+                            return Err(
+                                Error::Corrupt("job owner exceeds allocated IDs").at_block(block)
+                            );
+                        }
+                        let mut last_end = 0;
+                        let mut job_visits = 0;
+                        reader.walk(
+                            Position {
+                                reference: tree_ref(&value[16..])?,
+                                kind: TreeKind::Catalog,
+                                parent_generation: root.generation,
+                                level: None,
+                            },
+                            &mut job_visits,
+                            &mut |_, page, level, records| {
+                                ownership.page(page, root.blocks)?;
+
+                                if level != 0 {
+                                    return Ok(());
+                                }
+                                for (key, record) in records {
+                                    if u64_be(&key[..8])? != owner
+                                        || !(value[8]..=value[9]).contains(&key[8])
+                                    {
+                                        return Err(Error::Corrupt(
+                                            "detached tree owner or kind mismatch",
+                                        )
+                                        .at_block(page));
+                                    }
+                                    if key[8] == 3 {
+                                        let logical = u64_be(&key[9..])?;
+                                        let count = u64::from(u32::from_le_bytes(
+                                            record[8..12]
+                                                .try_into()
+                                                .map_err(|_| Error::Corrupt("extent count"))?,
+                                        ));
+                                        if logical < last_end {
+                                            return Err(Error::Corrupt("detached extents overlap")
+                                                .at_block(page));
+                                        }
+                                        last_end = logical + count;
+                                        ownership.data(
+                                            u64_le(&record[..8])?,
+                                            count,
+                                            root.blocks,
+                                            page,
+                                        )?;
+                                    }
+                                    if key[8] == 2 {
+                                        crate::name::validate_disk_name(&record[12..], &key[9..])
+                                            .map_err(|error| error.at_block(page))?;
+                                    }
+                                }
+                                Ok(())
+                            },
+                        )?;
+                    }
+                    3 => {
+                        let owner = u64_be(&key[1..])?;
+                        if owner == 1
+                            || owner >= root.next_object
+                            || reader.inode(owner)?[1] & 1 == 0
+                        {
+                            return Err(Error::Corrupt("invalid orphan marker").at_block(block));
+                        }
+                    }
+                    _ => return Err(Error::Corrupt("unknown cleanup kind").at_block(block)),
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn ownership_compact(
+    device: &mut impl BlockDevice,
+    root: &Root,
+) -> Result<Option<CheckSummary>> {
+    let workspace = crate::workspace::read(device, root)?;
+    let mut reader = Reader::new(device, root);
+    let mut ownership = Ownership {
+        start: 0,
+        end: root.blocks,
+        bits: Vec::new(),
+        ranges: Some(Vec::new()),
+        ranges_full: false,
+        count: 0,
+        pages: 0,
+        data: 0,
+    };
+    if let Err(error) = walk_ownership(&mut reader, root, &workspace, &mut ownership) {
+        if ownership.ranges_full {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let mut ranges = ownership
+        .ranges
+        .take()
+        .expect("compact ownership records ranges");
+    ranges.sort_unstable_by_key(|range| range.0);
+    for pair in ranges.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            return Err(Error::Corrupt("block has multiple owners").at_block(pair[1].2));
+        }
+    }
+    let mut ranges = ranges.into_iter().peekable();
+    let mut matched = 0u64;
+    reader.walk(
+        reader.position(root.allocation, TreeKind::Allocation),
+        &mut 0,
+        &mut |_, page, level, records| {
+            if level != 0 {
+                return Ok(());
+            }
+            for (key, bitmap) in records {
+                let group_start = u64_be(key)?
+                    .checked_mul(GROUP)
+                    .ok_or(Error::Corrupt("allocation group overflow"))?;
+                for block in
+                    group_start.max(512)..group_start.saturating_add(GROUP).min(root.blocks - 512)
+                {
+                    while ranges.peek().is_some_and(|range| range.1 <= block) {
+                        ranges.next();
+                    }
+                    let owned = ranges.peek().is_some_and(|range| range.0 <= block);
+                    let set = bitmap[(block - group_start) as usize / 8] & (1 << (block % 8)) != 0;
+                    if set != owned {
+                        return Err(Error::Corrupt("allocation bitmap disagrees with ownership")
+                            .at_block(page));
+                    }
+                    matched += u64::from(owned);
+                }
+            }
+            Ok(())
+        },
+    )?;
+    if matched != ownership.count {
+        return Err(Error::Corrupt(
+            "owned block is free in an implicit allocation group",
+        ));
+    }
+    let free_blocks = root
+        .blocks
+        .checked_sub(1024)
+        .and_then(|blocks| blocks.checked_sub(ownership.count))
+        .and_then(|blocks| blocks.checked_add(workspace.len() as u64))
+        .ok_or(Error::Corrupt("ownership exceeds volume"))?;
+    if free_blocks != root.free_blocks {
+        return Err(Error::Corrupt("root free count disagrees with ownership"));
+    }
+    Ok(Some(CheckSummary {
+        metadata_pages: ownership.pages,
+        data_blocks: ownership.data,
+        objects: 0,
+        free_blocks,
+        inspected_files: 0,
+        verified_units: 0,
+        unreadable_ranges: 0,
+    }))
 }
 
 #[cfg(test)]

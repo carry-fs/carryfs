@@ -91,7 +91,7 @@ CarryFS is in **public beta**. Keep independent backups and never store the
 only copy of important data on CarryFS. Unsynchronized changes can be lost
 when a device is unplugged or power fails.
 
-Disk format revision 1 is not frozen. A future format change may require
+The current disk format is revision 2. A future format change may require
 copying files elsewhere and reformatting the partition.
 
 Report problems with your operating system, CarryFS version, storage device,

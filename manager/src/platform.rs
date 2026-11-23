@@ -304,7 +304,7 @@ pub fn details(device: &Device) -> Result<Device> {
 pub fn device_file(device: &Device) -> Result<fs::File> {
     #[cfg(target_os = "macos")]
     {
-        crate::privileged::open_device(&device.id, false)
+        crate::privileged::open_device(&device.id)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -394,7 +394,13 @@ impl Versions {
         };
         match self.installed.as_deref() {
             None => true,
-            Some(installed) => version(installed).is_some_and(|installed| latest > installed),
+            Some(installed) => {
+                let (core, stable) = installed
+                    .split_once('-')
+                    .map_or((installed, true), |(core, _)| (core, false));
+                version(core)
+                    .is_some_and(|installed| latest > installed || (latest == installed && !stable))
+            }
         }
     }
 }
@@ -572,6 +578,24 @@ mod tests {
             !Versions {
                 installed: Some("Unknown".into()),
                 latest: Some("1.0.0".into())
+            }
+            .update_available()
+        );
+    }
+
+    #[test]
+    fn an_installed_prerelease_can_update_to_its_stable_release() {
+        assert!(
+            Versions {
+                installed: Some("0.2.0-rc.1".into()),
+                latest: Some("0.2.0".into()),
+            }
+            .update_available()
+        );
+        assert!(
+            !Versions {
+                installed: Some("0.2.0-rc.1".into()),
+                latest: Some("0.1.9".into()),
             }
             .update_available()
         );

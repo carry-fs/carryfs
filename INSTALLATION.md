@@ -434,5 +434,5 @@ Linux show the stored names.
 
 Boot volumes and server workloads are outside CarryFS's scope. Encryption,
 compression, snapshots, deduplication, and RAID are not supported.
-Disk format revision 1 is not frozen; a future format change may require
+The current disk format is revision 2. A future format change may require
 copying files elsewhere and reformatting the partition.

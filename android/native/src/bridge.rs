@@ -1,15 +1,16 @@
 //! JNI entry points for `com.carryfs.android.Native`. Errors are thrown as
 //! `FileNotFoundException` for a missing object and `IOException` otherwise.
 
+use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::ptr::null_mut;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use carryfs_core::Error;
+use carryfs_core::{Error, Name};
 use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass, JString};
+use jni::objects::{JByteArray, JClass, JString, JThrowable, JValue};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jlongArray, jstring};
 
 use crate::disk::ImageFile;
@@ -67,6 +68,25 @@ fn call<'local, T>(
         Err(failure) => {
             // A JNI failure usually has its Java exception pending already.
             if !env.exception_check().unwrap_or(true) {
+                if let Failure::Core(error @ (Error::NoSpace | Error::ReadOnly)) = &failure {
+                    let errno = if matches!(error, Error::NoSpace) {
+                        libc::ENOSPC
+                    } else {
+                        libc::EROFS
+                    };
+                    let thrown = (|| -> jni::errors::Result<()> {
+                        let message = env.new_string(error.to_string())?;
+                        let exception = env.new_object(
+                            "com/carryfs/android/NativeIoException",
+                            "(Ljava/lang/String;I)V",
+                            &[JValue::Object(message.as_ref()), JValue::Int(errno)],
+                        )?;
+                        env.throw(JThrowable::from(exception))
+                    })();
+                    if thrown.is_ok() || env.exception_check().unwrap_or(true) {
+                        return fallback;
+                    }
+                }
                 let (class, message) = match failure {
                     Failure::Core(Error::NotFound) => (
                         "java/io/FileNotFoundException",
@@ -257,15 +277,25 @@ pub extern "system" fn Java_com_carryfs_android_Native_upgrade<'local>(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_carryfs_android_Native_list<'local>(
+pub extern "system" fn Java_com_carryfs_android_Native_listPage<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     volume: jlong,
     directory: jlong,
+    after: JString<'local>,
 ) -> jbyteArray {
     call(&mut env, null_mut(), |env| {
-        let entries = session().list(volume, directory)?;
-        Ok(env.byte_array_from_slice(&encode(&entries))?.into_raw())
+        let after: String = env.get_string(&after)?.into();
+        let after = (!after.is_empty())
+            .then(|| Name::parse(&after))
+            .transpose()?;
+        let (entries, next) = session().list_page(volume, directory, after)?;
+        let name = next.as_ref().map_or(&[][..], Name::stored);
+        let mut page = Vec::new();
+        page.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        page.extend_from_slice(name);
+        page.extend_from_slice(&encode(&entries));
+        Ok(env.byte_array_from_slice(&page)?.into_raw())
     })
 }
 
@@ -349,6 +379,11 @@ pub extern "system" fn Java_com_carryfs_android_Native_open<'local>(
     })
 }
 
+const PROXY_CHUNK: usize = 128 * 1024;
+thread_local! {
+    static PROXY_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_carryfs_android_Native_read<'local>(
     mut env: JNIEnv<'local>,
@@ -361,11 +396,32 @@ pub extern "system" fn Java_com_carryfs_android_Native_read<'local>(
 ) -> jint {
     call(&mut env, -1, |env| {
         let offset = u64::try_from(offset).map_err(|_| Error::InvalidInput("negative offset"))?;
-        let mut bytes = vec![0; small::<usize>(size, "negative size")?];
-        let read = session().read(volume, file, offset, &mut bytes)?;
-        let signed: Vec<i8> = bytes[..read].iter().map(|&byte| byte as i8).collect();
-        env.set_byte_array_region(&buffer, 0, &signed)?;
-        Ok(read as jint)
+        let size = small::<usize>(size, "negative size")?;
+        if size > env.get_array_length(&buffer)? as usize {
+            return Err(Error::InvalidInput("size is larger than the buffer").into());
+        }
+        PROXY_BUFFER.with(|scratch| {
+            let mut bytes = scratch.borrow_mut();
+            bytes.resize(size.min(PROXY_CHUNK), 0);
+            let mut session = session();
+            let mut done = 0;
+            while done < size {
+                let count = (size - done).min(bytes.len());
+                let at = offset
+                    .checked_add(done as u64)
+                    .ok_or(Error::InvalidInput("offset overflow"))?;
+                let read = session.read(volume, file, at, &mut bytes[..count])?;
+                // SAFETY: signed and unsigned bytes have the same layout and every bit pattern is valid.
+                let signed =
+                    unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<i8>(), read) };
+                env.set_byte_array_region(&buffer, done as jint, signed)?;
+                done += read;
+                if read < count {
+                    break;
+                }
+            }
+            Ok(done as jint)
+        })
     })
 }
 
@@ -382,11 +438,30 @@ pub extern "system" fn Java_com_carryfs_android_Native_write<'local>(
     call(&mut env, (), |env| {
         let offset = u64::try_from(offset).map_err(|_| Error::InvalidInput("negative offset"))?;
         let size = small::<usize>(size, "negative size")?;
-        let bytes = env.convert_byte_array(&buffer)?;
-        let data = bytes
-            .get(..size)
-            .ok_or(Error::InvalidInput("size is larger than the buffer"))?;
-        Ok(session().write(volume, file, offset, data)?)
+        if size > env.get_array_length(&buffer)? as usize {
+            return Err(Error::InvalidInput("size is larger than the buffer").into());
+        }
+        PROXY_BUFFER.with(|scratch| {
+            let mut bytes = scratch.borrow_mut();
+            bytes.resize(size.min(PROXY_CHUNK), 0);
+            let mut session = session();
+            let mut done = 0;
+            while done < size {
+                let count = (size - done).min(bytes.len());
+                let data = &mut bytes[..count];
+                // SAFETY: the cast borrows the same initialized bytes exclusively for JNI.
+                let signed = unsafe {
+                    std::slice::from_raw_parts_mut(data.as_mut_ptr().cast::<i8>(), count)
+                };
+                env.get_byte_array_region(&buffer, done as jint, signed)?;
+                let at = offset
+                    .checked_add(done as u64)
+                    .ok_or(Error::InvalidInput("offset overflow"))?;
+                session.write(volume, file, at, data)?;
+                done += count;
+            }
+            Ok(())
+        })
     });
 }
 

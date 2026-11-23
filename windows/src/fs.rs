@@ -451,9 +451,16 @@ impl<D: BlockDevice> CarryFs<D> {
     /// Attributes for `GetSecurityByName`; also the existence check before create.
     pub fn attributes_by_name(&self, path: &[u16]) -> Reply<u32> {
         self.with(|s| {
-            let (object, _, _) = s.locate(path)?;
+            let (object, _, _, parent) = s.locate(path)?;
             let attributes = s.known.attributes(&mut s.volume, object)?;
-            Ok(file_info(&mut s.volume, object, &attributes, last_component(path)).file_attributes)
+            Ok(file_info(
+                &mut s.volume,
+                object,
+                &attributes,
+                last_component(path),
+                parent,
+            )
+            .file_attributes)
         })
     }
 
@@ -543,7 +550,7 @@ impl<D: BlockDevice> CarryFs<D> {
         write_through: bool,
     ) -> Reply<(u64, FileInfo, Vec<u16>)> {
         self.with(|s| {
-            let (object, kind, normalized) = s.locate(path)?;
+            let (object, kind, normalized, _) = s.locate(path)?;
             // WinFsp has already checked the granted access and sharing.
             let access = if kind == ObjectKind::File && write && !self.read_only {
                 Access::ReadWrite
@@ -967,7 +974,13 @@ impl<D: BlockDevice> CarryFs<D> {
                         if text.is_none()
                             && !add(
                                 &utf16("."),
-                                &file_info(&mut s.volume, object, &attributes, &[]),
+                                &file_info(
+                                    &mut s.volume,
+                                    object,
+                                    &attributes,
+                                    &[],
+                                    attributes.parent,
+                                ),
                             )
                         {
                             return Ok(false);
@@ -975,7 +988,13 @@ impl<D: BlockDevice> CarryFs<D> {
                         let parent = s.known.attributes(&mut s.volume, attributes.parent)?;
                         if !add(
                             &utf16(".."),
-                            &file_info(&mut s.volume, attributes.parent, &parent, &[]),
+                            &file_info(
+                                &mut s.volume,
+                                attributes.parent,
+                                &parent,
+                                &[],
+                                parent.parent,
+                            ),
                         ) {
                             return Ok(false);
                         }
@@ -1009,7 +1028,7 @@ impl<D: BlockDevice> CarryFs<D> {
                 push_alias(&mut name, &entry.name)?;
                 if !add(
                     &name,
-                    &file_info(&mut s.volume, entry.object, &child, &name),
+                    &file_info(&mut s.volume, entry.object, &child, &name, object),
                 ) {
                     break false;
                 }
@@ -1047,7 +1066,7 @@ impl<D: BlockDevice> CarryFs<D> {
     /// ask about is a directory or a link.
     pub fn reparse_by_name(&self, path: &[u16]) -> Reply<Vec<u8>> {
         self.with(|s| {
-            let (object, _, _) = s.locate(path)?;
+            let (object, _, _, _) = s.locate(path)?;
             reparse_data(&mut s.volume, object)
         })
     }
@@ -1135,6 +1154,22 @@ impl<D: BlockDevice> State<D> {
     fn info(&mut self, context: u64) -> Reply<FileInfo> {
         let object = self.object(context)?;
         let attributes = self.known.attributes(&mut self.volume, object)?;
+        let parent = if attributes.kind == ObjectKind::Symlink
+            && attributes.directory_link.is_none()
+            && attributes.links > 1
+        {
+            let prefix = self
+                .open
+                .get(&context)
+                .and_then(|open| open.path.as_deref())
+                .and_then(split)
+                .map(|(prefix, _)| prefix.to_vec());
+            prefix
+                .and_then(|prefix| self.directory(&prefix).ok())
+                .map_or(attributes.parent, |(parent, _)| parent)
+        } else {
+            attributes.parent
+        };
         // After cleanup the context has no path; the name rule then waits for
         // the next lookup by name.
         let path = self
@@ -1147,14 +1182,15 @@ impl<D: BlockDevice> State<D> {
             object,
             &attributes,
             last_component(path),
+            parent,
         ))
     }
 
     /// Resolve a path as `resolve_entry` does, but through `directory`, so
     /// the entries of one directory share the walk to it.
-    fn locate(&mut self, path: &[u16]) -> Reply<(ObjectId, ObjectKind, Vec<u16>)> {
+    fn locate(&mut self, path: &[u16]) -> Reply<(ObjectId, ObjectKind, Vec<u16>, ObjectId)> {
         let Some((prefix, last)) = split(path) else {
-            return Ok((ROOT, ObjectKind::Directory, Vec::new()));
+            return Ok((ROOT, ObjectKind::Directory, Vec::new(), ROOT));
         };
         let name = component(last)?;
         let (parent, mut normalized) = self.directory(prefix)?;
@@ -1164,7 +1200,7 @@ impl<D: BlockDevice> State<D> {
             Err(e) => return Err(status(&e)),
         };
         push_component(&mut normalized, &entry.name)?;
-        Ok((entry.object, entry.kind, normalized))
+        Ok((entry.object, entry.kind, normalized, parent))
     }
 
     /// The directory at `prefix` and its stored spelling, remembered for the
@@ -1757,6 +1793,7 @@ fn file_info<D: BlockDevice>(
     object: ObjectId,
     attributes: &Attributes,
     name: &[u16],
+    parent: ObjectId,
 ) -> FileInfo {
     let (mut file_attributes, reparse_tag) = match attributes.kind {
         ObjectKind::File => (0, 0),
@@ -1764,7 +1801,7 @@ fn file_info<D: BlockDevice>(
         ObjectKind::Symlink
             if attributes
                 .directory_link
-                .unwrap_or_else(|| targets_directory(volume, object, attributes.parent)) =>
+                .unwrap_or_else(|| targets_directory(volume, object, parent)) =>
         {
             (
                 FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY,
@@ -1802,8 +1839,7 @@ fn file_info<D: BlockDevice>(
 /// Windows keeps file and directory links apart; a link Windows made records
 /// which in `directory_link`, whatever its target, and for the rest the target
 /// decides, as in WinFsp's FUSE layer. A target that leaves the volume, passes through
-/// another link, or does not exist is a file link. A symlink with several
-/// names resolves from its parent hint, the directory of its newest name.
+/// another link, or does not exist is a file link.
 fn targets_directory<D: BlockDevice>(
     volume: &mut Volume<D>,
     link: ObjectId,
@@ -2443,6 +2479,49 @@ mod tests {
             ("\\gone", FILE_ATTRIBUTE_REPARSE_POINT),
         ] {
             assert_eq!(fs.attributes_by_name(&w(link)), Ok(attributes), "{link}");
+        }
+    }
+
+    #[test]
+    fn hard_linked_relative_symlinks_resolve_from_each_name() {
+        let (_image, fs) = mount("relative-link-aliases");
+        make(&fs, "\\a", true);
+        make(&fs, "\\b", true);
+        make(&fs, "\\a\\target", true);
+        make(&fs, "\\b\\target", false);
+        fs.with(|s| {
+            let a = s.volume.lookup(ROOT, &Name::parse("a").unwrap()).unwrap();
+            let b = s.volume.lookup(ROOT, &Name::parse("b").unwrap()).unwrap();
+            let link = s
+                .volume
+                .create_symlink(a, Name::parse("link").unwrap(), b"target")
+                .unwrap();
+            s.volume
+                .link(link, b, Name::parse("link").unwrap())
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        for (directory, expected) in [("a", FILE_ATTRIBUTE_DIRECTORY), ("b", 0)] {
+            let expected = expected | FILE_ATTRIBUTE_REPARSE_POINT;
+            let dir = w(&format!("\\{directory}"));
+            let path = w(&format!("\\{directory}\\link"));
+            assert_eq!(fs.attributes_by_name(&path), Ok(expected));
+            let (link, info, _) = fs.open(&path, false, false).unwrap();
+            assert_eq!(info.file_attributes, expected);
+            fs.close(link);
+            let (handle, _, _) = fs.open(&dir, false, false).unwrap();
+            let mut listed = None;
+            fs.read_directory(handle, None, |name, info| {
+                if name == w("link") {
+                    listed = Some(info.file_attributes);
+                }
+                true
+            })
+            .unwrap();
+            fs.close(handle);
+            assert_eq!(listed, Some(expected));
         }
     }
 

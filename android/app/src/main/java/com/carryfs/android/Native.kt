@@ -1,7 +1,10 @@
 package com.carryfs.android
 
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+
+class NativeIoException(message: String, val errno: Int) : IOException(message)
 
 /** A file or folder on a mounted volume. */
 class Entry(
@@ -44,7 +47,7 @@ object Native {
     /** Make a CarryFS 0.1.0 volume writable. CarryFS 0.1.0 can't mount it afterwards. */
     @JvmStatic external fun upgrade(volume: Long)
 
-    @JvmStatic private external fun list(volume: Long, directory: Long): ByteArray
+    @JvmStatic private external fun listPage(volume: Long, directory: Long, after: String): ByteArray
     @JvmStatic private external fun stat(volume: Long, id: Long): ByteArray
     @JvmStatic external fun create(volume: Long, parent: Long, name: String, directory: Boolean): Long
     @JvmStatic external fun rename(volume: Long, id: Long, name: String)
@@ -60,23 +63,32 @@ object Native {
     /** Close a file, publishing it if it was written. */
     @JvmStatic external fun close(volume: Long, file: Long)
 
-    fun children(volume: Long, directory: Long): List<Entry> = decode(list(volume, directory))
+    fun children(volume: Long, directory: Long): List<Entry> = buildList {
+        visitChildren(volume, directory) { add(it) }
+    }
 
-    fun entry(volume: Long, id: Long): Entry = decode(stat(volume, id)).single()
+    fun visitChildren(volume: Long, directory: Long, visit: (Entry) -> Unit) {
+        var after = ""
+        do {
+            val page = ByteBuffer.wrap(listPage(volume, directory, after)).order(ByteOrder.LITTLE_ENDIAN)
+            after = readName(page)
+            while (page.hasRemaining()) visit(readEntry(page))
+        } while (after.isNotEmpty())
+    }
+
+    fun entry(volume: Long, id: Long): Entry =
+        readEntry(ByteBuffer.wrap(stat(volume, id)).order(ByteOrder.LITTLE_ENDIAN))
 
     /** The layout `encode` in android/native/src/bridge.rs writes. */
-    private fun decode(bytes: ByteArray): List<Entry> {
-        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val entries = ArrayList<Entry>()
-        while (buffer.hasRemaining()) {
-            val id = buffer.long
-            val parent = buffer.long
-            val directory = buffer.get() != 0.toByte()
-            val size = buffer.long
-            val modified = buffer.long
-            val name = ByteArray(buffer.int).also { buffer.get(it) }
-            entries += Entry(id, parent, String(name, Charsets.UTF_8), directory, size, modified)
-        }
-        return entries
+    private fun readEntry(buffer: ByteBuffer): Entry {
+        val id = buffer.long
+        val parent = buffer.long
+        val directory = buffer.get() != 0.toByte()
+        val size = buffer.long
+        val modified = buffer.long
+        return Entry(id, parent, readName(buffer), directory, size, modified)
     }
+
+    private fun readName(buffer: ByteBuffer): String =
+        ByteArray(buffer.int).also { buffer.get(it) }.toString(Charsets.UTF_8)
 }

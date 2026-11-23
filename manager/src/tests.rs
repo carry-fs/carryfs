@@ -245,13 +245,26 @@ fn exports_stream_large_files_and_refuse_existing_destinations() {
     let file = volume
         .create_file(ROOT, Name::parse("large.bin").unwrap())
         .unwrap();
+    volume
+        .set_attributes(
+            &file,
+            carryfs_core::AttributeChange {
+                mode: Some(carryfs_core::Mode::from_host(0o600)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let mut offset = 0;
     while offset < data.len() {
         offset += volume.write(&file, offset as u64, &data[offset..]).unwrap();
     }
+    let sparse_size = 64 * 1024 * 1024;
+    volume.truncate(&file, sparse_size).unwrap();
     volume.close_handle(file).unwrap();
     volume.eject().unwrap();
     drop(volume);
+    let mut data = data;
+    data.resize(sparse_size as usize, 0);
     let browser = Browser::open(fixture.image()).unwrap();
     let object = browser
         .entries
@@ -262,6 +275,15 @@ fn exports_stream_large_files_and_refuse_existing_destinations() {
         .object;
     let output = fixture.0.join("large.bin");
     browser.export(object, &output).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert!(fs::metadata(&output).unwrap().blocks() * 512 < sparse_size);
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     assert_eq!(fs::read(&output).unwrap(), data);
     assert!(browser.export(object, &output).is_err());
     assert_eq!(fs::read(&output).unwrap(), data);
@@ -642,15 +664,16 @@ fn long_directories_scroll_to_files_below_the_viewport() {
     });
     rt.frame(0.01);
     let ([x, y, width, height], _) = rt.presented("file-list").unwrap();
-    let before = rt.presented(&last).unwrap().0[1];
+    assert!(rt.presented(&last).is_none(), "An offscreen row was built");
     rt.wheel(x + width / 2.0, y + height / 2.0, -10000.0);
     for _ in 0..60 {
         rt.frame(1.0 / 60.0);
     }
     let after = rt.presented(&last).unwrap().0[1];
     assert!(
-        after < before - 100.0 && after < y + height,
-        "Last file is unreachable: {before} -> {after}"
+        after >= y && after < y + height,
+        "Last file is unreachable: row {after}, viewport {y}..{}",
+        y + height
     );
 }
 

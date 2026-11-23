@@ -10,12 +10,12 @@ use crate::platform::{Result, valid_id};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::net::{UnixListener, UnixStream},
     },
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
     sync::Mutex,
     time::{Duration, Instant},
@@ -48,25 +48,27 @@ pub fn unlock() -> Result<()> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
-    let directory =
-        std::env::temp_dir().join(format!("carryfs-manager-{}-{stamp}", std::process::id()));
+    let directory = std::env::temp_dir().join(format!("cfs-{}-{stamp:x}", std::process::id()));
     {
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
     }
     let socket = directory.join("helper.sock");
-    let result = start(&socket);
+    let result = UnixListener::bind(&socket)
+        .map_err(Into::into)
+        .and_then(|listener| start(&listener, &socket));
     let _ = fs::remove_file(&socket);
     let _ = fs::remove_dir(&directory);
     *helper = Some(result?);
     Ok(())
 }
 
-fn start(socket: &Path) -> Result<UnixStream> {
+fn start(listener: &UnixListener, socket: &Path) -> Result<UnixStream> {
     let exe = std::env::current_exe()?.canonicalize()?;
     let uid = unsafe { libc::getuid() };
+    let pid = std::process::id();
     let command = format!(
-        "{} {FLAG} {} {uid} >/dev/null 2>&1 &",
+        "{} {FLAG} {} {uid} {pid} >/dev/null 2>&1 &",
         shell_quote(&exe),
         shell_quote(socket)
     );
@@ -85,21 +87,26 @@ fn start(socket: &Path) -> Result<UnixStream> {
             format!("Could not unlock: {}", error.trim()).into()
         });
     }
+    listener.set_nonblocking(true)?;
     let deadline = Instant::now() + Duration::from_secs(15);
-    let stream = loop {
-        match UnixStream::connect(socket) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Err(error) => {
-                return Err(format!("The administrator helper did not start: {error}").into());
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if peer_uid(&stream)? == 0 {
+                    stream.set_nonblocking(false)?;
+                    return Ok(stream);
+                }
             }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
         }
-    };
-    // Only root can have started the helper we approved; refuse anything else.
-    if peer_uid(&stream)? != 0 {
-        return Err("The administrator helper is not running as root.".into());
+        if Instant::now() >= deadline {
+            return Err("The administrator helper did not connect.".into());
+        }
     }
-    Ok(stream)
 }
 
 fn shell_quote(path: &Path) -> String {
@@ -112,6 +119,27 @@ fn peer_uid(stream: &UnixStream) -> Result<u32> {
         return Err(std::io::Error::last_os_error().into());
     }
     Ok(uid)
+}
+
+fn peer_pid(stream: &UnixStream) -> Result<libc::pid_t> {
+    let mut pid: libc::pid_t = 0;
+    let mut size = size_of::<libc::pid_t>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut size,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    if size as usize != size_of::<libc::pid_t>() || pid <= 0 {
+        return Err("The administrator connection has no peer process ID.".into());
+    }
+    Ok(pid)
 }
 
 /// Send one request; return the reply and any descriptor sent with it.
@@ -136,9 +164,9 @@ fn request(message: Value) -> Result<(Value, Option<OwnedFd>)> {
 }
 
 /// Open `/dev/rDISK` as root and hand the descriptor to this process.
-pub fn open_device(id: &str, write: bool) -> Result<File> {
+pub fn open_device(id: &str) -> Result<File> {
     unlock()?;
-    let (_, fd) = request(json!({"op": "open", "device": id, "write": write}))?;
+    let (_, fd) = request(json!({"op": "open", "device": id}))?;
     Ok(File::from(
         fd.ok_or("The administrator helper sent no device")?,
     ))
@@ -169,35 +197,19 @@ fn output(reply: Value) -> Result<String> {
     }
 }
 
-/// Run as root: `carryfs-manager --privileged-helper SOCKET UID`.
+/// Run as root: `carryfs-manager --privileged-helper SOCKET UID PID`.
 pub fn serve(args: &[String]) -> Result<()> {
-    let [socket, uid] = args else {
-        return Err("usage: --privileged-helper SOCKET UID".into());
+    let [socket, uid, pid] = args else {
+        return Err("usage: --privileged-helper SOCKET UID PID".into());
     };
     let uid: u32 = uid.parse()?;
+    let pid: libc::pid_t = pid.parse()?;
     if unsafe { libc::geteuid() } != 0 {
         return Err("The helper must run as root".into());
     }
-    let listener = UnixListener::bind(socket)?;
-    let path = std::ffi::CString::new(socket.as_bytes())?;
-    if unsafe { libc::chown(path.as_ptr(), uid, u32::MAX) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    // One connection, from the user who approved this helper, then no more.
-    listener.set_nonblocking(true)?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let stream = loop {
-        match listener.accept() {
-            Ok((stream, _)) => break stream,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => return Err(error.into()),
-        }
-    };
-    drop(listener);
-    let _ = fs::remove_file(socket);
-    stream.set_nonblocking(false)?;
-    if peer_uid(&stream)? != uid {
-        return Err("Refusing a connection from another user".into());
+    let stream = UnixStream::connect(socket)?;
+    if peer_uid(&stream)? != uid || peer_pid(&stream)? != pid {
+        return Err("Refusing a connection to another process".into());
     }
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut stream = stream;
@@ -227,10 +239,7 @@ fn handle(line: &str) -> Result<(Value, Option<File>)> {
     };
     match request["op"].as_str() {
         Some("open") => {
-            let file = fs::OpenOptions::new()
-                .read(true)
-                .write(request["write"].as_bool() == Some(true))
-                .open(PathBuf::from(format!("/dev/r{}", device()?)))?;
+            let file = File::open(format!("/dev/r{}", device()?))?;
             Ok((json!({"ok": true}), Some(file)))
         }
         Some("upgrade") => {
@@ -377,5 +386,19 @@ mod tests {
             200_000
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "Requires permission to bind a local socket"]
+    fn connected_peers_expose_user_and_process_ids() {
+        let socket = std::env::temp_dir().join(format!("cfs-peer-{}.sock", std::process::id()));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let stream = UnixStream::connect(&socket).unwrap();
+        fs::remove_file(&socket).unwrap();
+
+        assert_eq!(peer_uid(&stream).unwrap(), unsafe { libc::geteuid() });
+        assert_eq!(peer_pid(&stream).unwrap(), unsafe { libc::getpid() });
+        let (accepted, _) = listener.accept().unwrap();
+        assert_eq!(peer_uid(&accepted).unwrap(), unsafe { libc::geteuid() });
     }
 }

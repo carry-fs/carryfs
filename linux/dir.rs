@@ -105,6 +105,7 @@ impl Ahead {
             self.scanned = group;
             self.entries += count;
             if low <= high {
+                // Readahead is a hint; the lookup reads any page it failed to start.
                 let _ =
                     tree.prefetch_range(&low.to_be_bytes(), &high.saturating_add(1).to_be_bytes());
             }

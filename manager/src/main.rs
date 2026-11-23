@@ -60,27 +60,38 @@ type VolumeKey = ([u8; 16], u64);
 struct ScanResult {
     summary: String,
     passed: bool,
+    findings: bool,
+    can_repair: bool,
     at: SystemTime,
 }
 impl ScanResult {
     fn new(result: platform::Result<String>) -> Self {
-        let (passed, summary) = match result {
-            Ok(text) => (true, text),
-            Err(error) => (false, error.to_string()),
+        let (passed, findings, summary) = match result {
+            Ok(text) => (true, false, text),
+            Err(error) => (
+                false,
+                error.is::<operation::ScanFinding>(),
+                error.to_string(),
+            ),
         };
+        let can_repair = findings
+            && summary.lines().next().is_some_and(|line| {
+                line.starts_with("Repair plan:")
+                    && line.ends_with("; clean: false; possible data loss: false; blocked: false")
+            });
         Self {
             summary: summary.chars().take(8 * 1024).collect(),
             passed,
+            findings,
+            can_repair,
             at: SystemTime::now(),
         }
     }
-    /// A diagnosed plan the tool would apply in place: damaged, but neither
-    /// blocked nor losing data. The tool itself refuses any other plan.
     fn repairable(&self) -> bool {
-        !self.passed
-            && self.summary.starts_with("Repair plan:")
-            && self.summary.contains("possible data loss: false")
-            && !self.summary.contains("In-place repair blocked")
+        self.can_repair
+    }
+    fn incomplete(&self) -> bool {
+        !self.passed && !self.findings
     }
 }
 #[derive(Default)]
@@ -274,11 +285,14 @@ impl State {
                     self.apply(Ok(*update));
                 }
                 self.error = !plan.passed || scrub.as_ref().is_some_and(|s| !s.passed);
-                self.status = if self.error {
-                    "First Aid found problems.".into()
-                } else {
-                    "First Aid found no problems.".into()
-                };
+                self.status =
+                    if plan.incomplete() || scrub.as_ref().is_some_and(ScanResult::incomplete) {
+                        "First Aid did not complete.".into()
+                    } else if self.error {
+                        "First Aid found problems.".into()
+                    } else {
+                        "First Aid found no problems.".into()
+                    };
                 match key {
                     Some(key) => {
                         let state = self.integrity.entry(key).or_default();
@@ -611,7 +625,7 @@ impl State {
         let Some(source) = self.source() else {
             return;
         };
-        self.run_sheet("Repair", true, tx, move |cancel| {
+        self.run_sheet("Repair", false, tx, move |cancel| {
             let path = source.path.clone();
             let report = operation::fsck(source, Fsck::Repair, cancel)?;
             Ok(Update::Reopened(Box::new(Browser::open(path)?), report))

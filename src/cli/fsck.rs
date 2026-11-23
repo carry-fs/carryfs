@@ -139,14 +139,18 @@ fn run(options: Options) -> Result<u8> {
     let mut repair = Repair::diagnose(device)?;
     let plan = repair.plan();
     let mut text = format!(
-        "Source: {:?}\nRepair plan: {} objects; clean: {}; possible data loss: {}\n",
-        options.source, plan.objects, plan.clean, plan.data_loss
+        "Source: {:?}\nRepair plan: {} objects; clean: {}; possible data loss: {}; blocked: {}\n",
+        options.source,
+        plan.objects,
+        plan.clean,
+        plan.data_loss,
+        plan.blocked.is_some()
     );
-    for action in &plan.actions {
-        text.push_str(&format!("- {action}\n"));
-    }
     if let Some(reason) = &plan.blocked {
         text.push_str(&format!("In-place repair blocked: {reason}\n"));
+    }
+    for action in &plan.actions {
+        text.push_str(&format!("- {action}\n"));
     }
     text.push_str("File data checksums have not been scrubbed.\n");
     io::stdout().write_all(text.as_bytes())?;

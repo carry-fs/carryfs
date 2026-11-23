@@ -994,6 +994,8 @@ fn health_tile(
                     "{} · {:02}:{:02} UTC",
                     if r.passed {
                         "No problems found"
+                    } else if r.incomplete() {
+                        "Check incomplete"
                     } else {
                         "Problems found"
                     },
@@ -2140,7 +2142,12 @@ fn done(s: &State, sheet: &Sheet, name: &str, k: &Kit) -> (String, String, El) {
                     .iter()
                     .flat_map(|r| r.summary.lines().map(str::to_owned)),
             );
-            if !ok {
+            let findings = plan.as_ref().is_some_and(|r| r.findings)
+                || scrub.as_ref().is_some_and(|r| r.findings);
+            let incomplete = plan.as_ref().is_some_and(ScanResult::incomplete)
+                || scrub.as_ref().is_some_and(ScanResult::incomplete)
+                || plan.is_none();
+            if findings {
                 actions.push(
                     Button::new("Recover Files…")
                         .on_press(|s: &mut State| s.ask(SheetKind::Recover))
@@ -2159,12 +2166,18 @@ fn done(s: &State, sheet: &Sheet, name: &str, k: &Kit) -> (String, String, El) {
                 }
             }
             (
-                if ok {
+                if incomplete {
+                    format!("First Aid did not complete on “{name}”.")
+                } else if ok {
                     format!("First Aid found no problems on “{name}”.")
                 } else {
                     format!("First Aid found problems on “{name}”.")
                 },
-                details.join("\n"),
+                if details.is_empty() {
+                    message.clone()
+                } else {
+                    details.join("\n")
+                },
             )
         }
         kind => {

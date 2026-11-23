@@ -10,10 +10,12 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.File
+import java.io.FileNotFoundException
 
 /**
  * Drives the documents provider the way other apps do, on a copy of
@@ -61,6 +63,16 @@ class ProviderTest {
             .use { generateSequence { if (it.moveToNext()) it.getString(0) to it.getString(1) else null }.first { it.second == hello }.first }
         val uri = DocumentsContract.buildDocumentUri(CarryProvider.AUTHORITY, id)
         assertEquals("hello from a desktop\n", resolver.openInputStream(uri)!!.use { it.readBytes().decodeToString() })
+    }
+
+    @Test
+    fun grantsFromAnotherNamespaceCannotOpenCurrentDocuments() {
+        val file = DocumentsContract.createDocument(resolver, root(), "text/plain", "note")!!
+        val id = DocumentsContract.getDocumentId(file)
+        for (expired in listOf(id.substringAfter(':'), "old:${id.substringAfter(':')}")) {
+            val uri = DocumentsContract.buildDocumentUri(CarryProvider.AUTHORITY, expired)
+            assertThrows(FileNotFoundException::class.java) { resolver.openInputStream(uri)?.close() }
+        }
     }
 
     @Test

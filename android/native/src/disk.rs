@@ -320,7 +320,8 @@ fn gpt_copy(disk: &mut dyn Sectors, block: u64, at: u64, alternate: u64) -> io::
         || le32(&header, 8) != 0x0001_0000
         || !(92..=header.len()).contains(&header_len)
         || le64(&header, 24) != at
-        || le64(&header, 32) != alternate
+        // An image copied to a larger drive keeps its old backup location.
+        || (at != 1 && le64(&header, 32) != alternate)
     {
         return Err(invalid_map("GPT header fields are invalid"));
     }
@@ -556,6 +557,20 @@ pub(crate) mod tests {
         write_gpt(&disk, &[(MIB, 300 * MIB)]);
         format(&disk, MIB, 300 * MIB);
         disk.lock().unwrap().write_at(512, &[0; 512]).unwrap();
+        let found = volumes(&disk).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].mode(), MountMode::ReadOnly);
+    }
+
+    #[test]
+    fn an_image_on_a_larger_drive_opens_read_only() {
+        let image = usb_disk(350 * MIB);
+        write_gpt(&image, &[(MIB, 300 * MIB)]);
+        format(&image, MIB, 300 * MIB);
+        let disk = usb_disk(400 * MIB);
+        let mut bytes = vec![0; (350 * MIB) as usize];
+        image.lock().unwrap().read_at(0, &mut bytes).unwrap();
+        disk.lock().unwrap().write_at(0, &bytes).unwrap();
         let found = volumes(&disk).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].mode(), MountMode::ReadOnly);

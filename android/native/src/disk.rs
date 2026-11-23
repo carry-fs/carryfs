@@ -258,13 +258,13 @@ fn partitions(disk: &SharedDisk) -> io::Result<(Ranges, bool)> {
     if sector[510..512] != [0x55, 0xaa] {
         return Ok((vec![(0, disk_len)], false));
     }
-    let entries = || sector[446..510].chunks_exact(16);
-    if entries().any(|entry| entry[4] == 0xee) {
+    let (entries, _) = sector[446..510].as_chunks::<16>();
+    if entries.iter().any(|entry| entry[4] == 0xee) {
         return gpt(&mut *disk, block);
     }
     let mut ranges = Vec::new();
     let mut primary = Vec::new();
-    for entry in entries().filter(|entry| entry[4] != 0) {
+    for entry in entries.iter().filter(|entry| entry[4] != 0) {
         let first = u64::from(le32(entry, 8));
         let count = u64::from(le32(entry, 12));
         if first == 0 || count == 0 || first + count > disk_len / block {

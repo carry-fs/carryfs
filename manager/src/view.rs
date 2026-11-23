@@ -1479,75 +1479,54 @@ fn files(s: &State, k: &Kit) -> El {
                 .key(format!("crumb-{index}")),
         );
     }
-    let mut rows = col().w_full().gap(1.0);
-    for (index, entry) in browser.entries.iter().enumerate() {
-        let name = String::from_utf8_lossy(entry.item.name.stored()).into_owned();
-        let size = if entry.item.kind == ObjectKind::Directory {
-            "—".into()
-        } else {
-            bytes(entry.attrs.size)
-        };
-        let ink = if entry.attrs.hidden {
-            k.c.text_weak
-        } else {
-            k.c.text_base
-        };
-        rows = rows.child(
-            row()
-                .key(format!("entry-{}", entry.item.object.get()))
-                .w_full()
-                .h(32.0)
-                .px(10.0)
-                .gap(10.0)
-                .items_center()
-                .role("button")
-                .label(format!("{}: {name}", kind(entry.item.kind)))
-                .focusable(!busy)
-                .disabled(busy)
-                .fill(if s.selected == Some(index) {
-                    k.c.surface_hover
-                } else {
-                    k.c.bg_base
-                })
-                .radius(5.0)
-                .hover(k.c.hover)
-                .on_press(move |s: &mut State| {
-                    if s.pending.is_none() {
-                        s.selected = Some(index);
-                    }
-                })
-                .on_double_press_tx(move |s: &mut State, tx| {
-                    if s.pending.is_none() {
-                        s.enter(index, tx);
-                    }
-                })
-                .child(
-                    icon(
-                        match entry.item.kind {
-                            ObjectKind::Directory => &FOLDER,
-                            ObjectKind::File => &FILE,
-                            ObjectKind::Symlink => &LINK,
-                        },
-                        16.0,
-                    )
-                    .color(k.c.icon_muted),
-                )
-                .child(
-                    text(name)
-                        .font(k.ty.body)
-                        .color(ink)
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .truncate(),
-                )
-                .child(muted(kind(entry.item.kind), k).w(100.0))
-                .child(muted(permissions(entry.attrs.mode), k).w(90.0))
-                .child(muted(size, k).w(80.0)),
-        );
-    }
-    if browser.entries.is_empty() {
-        rows = rows.child(muted("This folder is empty.", k).padding(24.0));
-    }
+    let rows = if browser.entries.is_empty() {
+        col().child(muted("This folder is empty.", k).padding(24.0))
+    } else {
+        let kit = k.clone();
+        col()
+            .key("file-rows")
+            .w_full()
+            .gap(1.0)
+            .growth(rune::GrowthSpec::default())
+            .virtual_rows(
+                browser.entries.len(),
+                32.0,
+                |state: &State, index| {
+                    let Some(entry) = state
+                        .browser
+                        .as_ref()
+                        .and_then(|browser| browser.entries.get(index))
+                    else {
+                        return format!("entry-unavailable-{index}").into();
+                    };
+                    let object = entry.item.object.get();
+                    let key = if entry.attrs.links > 1 {
+                        format!(
+                            "entry-{object}-{}",
+                            String::from_utf8_lossy(entry.item.name.stored())
+                        )
+                    } else {
+                        format!("entry-{object}")
+                    };
+                    key.into()
+                },
+                move |state: &State, index| {
+                    let Some(entry) = state
+                        .browser
+                        .as_ref()
+                        .and_then(|browser| browser.entries.get(index))
+                    else {
+                        return el();
+                    };
+                    file_row(state, index, entry, &kit)
+                },
+            )
+            .virtual_rows_version((
+                browser.info.uuid,
+                browser.info.generation,
+                browser.trail.last().map(|row| row.0.get()),
+            ))
+    };
     let mut body = col()
         .w_full()
         .grow(1.0)
@@ -1684,6 +1663,70 @@ fn files(s: &State, k: &Kit) -> El {
         );
     }
     body
+}
+
+pub(crate) fn file_row(s: &State, index: usize, entry: &crate::model::Entry, k: &Kit) -> El {
+    let busy = s.pending.is_some();
+    let name = String::from_utf8_lossy(entry.item.name.stored()).into_owned();
+    let size = if entry.item.kind == ObjectKind::Directory {
+        "—".into()
+    } else {
+        bytes(entry.attrs.size)
+    };
+    let ink = if entry.attrs.hidden {
+        k.c.text_weak
+    } else {
+        k.c.text_base
+    };
+    row()
+        .w_full()
+        .h(32.0)
+        .px(10.0)
+        .gap(10.0)
+        .items_center()
+        .role("button")
+        .label(format!("{}: {name}", kind(entry.item.kind)))
+        .focusable(!busy)
+        .disabled(busy)
+        .fill(if s.selected == Some(index) {
+            k.c.surface_hover
+        } else {
+            k.c.bg_base
+        })
+        .radius(5.0)
+        .hover(k.c.hover)
+        .on_press(move |s: &mut State| {
+            if s.pending.is_none() {
+                s.selected = Some(index);
+            }
+        })
+        .on_double_press_tx(move |s: &mut State, tx| {
+            if s.pending.is_none() {
+                s.enter(index, tx);
+            }
+        })
+        .child(
+            icon(
+                match entry.item.kind {
+                    ObjectKind::Directory => &FOLDER,
+                    ObjectKind::File => &FILE,
+                    ObjectKind::Symlink => &LINK,
+                },
+                16.0,
+            )
+            .color(k.c.icon_muted),
+        )
+        .child(
+            text(name)
+                .font(k.ty.body)
+                .color(ink)
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
+        )
+        .child(muted(kind(entry.item.kind), k).w(100.0))
+        .child(muted(permissions(entry.attrs.mode), k).w(90.0))
+        .child(muted(size, k).w(80.0))
 }
 
 /// Counts and sizes of the listed folder's direct entries.

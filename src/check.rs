@@ -947,12 +947,27 @@ pub(crate) fn validate_ownership(
     device: &mut impl BlockDevice,
     root: &Root,
 ) -> Result<CheckSummary> {
-    if root.blocks > WINDOW_BLOCKS
-        && let Some(summary) = ownership_compact(device, root)?
+    // Tests use small volumes; check the compact path agrees on every call.
+    #[cfg(test)]
     {
-        return Ok(summary);
+        let compact = ownership_compact(device, root);
+        let windowed = ownership_in_windows(device, root, WINDOW_BLOCKS);
+        match (&compact, &windowed) {
+            (Ok(Some(compact)), Ok(windowed)) => assert_eq!(compact, windowed),
+            (Ok(None), _) | (Err(_), Err(_)) => {}
+            _ => panic!("ownership paths disagree: {compact:?} vs {windowed:?}"),
+        }
+        windowed
     }
-    ownership_in_windows(device, root, WINDOW_BLOCKS)
+    #[cfg(not(test))]
+    {
+        if root.blocks > WINDOW_BLOCKS
+            && let Some(summary) = ownership_compact(device, root)?
+        {
+            return Ok(summary);
+        }
+        ownership_in_windows(device, root, WINDOW_BLOCKS)
+    }
 }
 
 /// `validate_ownership` with `window` blocks per forest pass. Tests pass

@@ -3,8 +3,8 @@
     {
       "name": "linux",
       "system": "Linux, FUSE",
-      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
-      "note": "CarryFS format revision 1, code at commit 7dfae3d. Data: benchmarks/linux.tsv.",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of ten fresh-format rounds, CPU governor performance.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. Data: benchmarks/linux.tsv.",
       "results": "benchmarks/linux.tsv",
       "columns": {
         "CarryFS": "carryfs",
@@ -14,10 +14,23 @@
       }
     },
     {
+      "name": "linux-native",
+      "system": "Linux, kernel driver",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of ten fresh-format rounds, CPU governor performance.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. Data: benchmarks/linux-native.tsv.",
+      "results": "benchmarks/linux-native.tsv",
+      "columns": {
+        "CarryFS": "carryfs-kernel",
+        "exFAT": "exfat",
+        "ext4": "ext4",
+        "Btrfs": "btrfs"
+      }
+    },
+    {
       "name": "windows",
       "system": "Windows, WinFsp",
-      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
-      "note": "CarryFS format revision 1, code at commit 7dfae3d. Data: benchmarks/windows.tsv.",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of ten fresh-format rounds, High performance power plan.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. Data: benchmarks/windows.tsv.",
       "results": "benchmarks/windows.tsv",
       "columns": {
         "CarryFS": "carryfs",
@@ -28,13 +41,61 @@
     {
       "name": "macos",
       "system": "macOS, macFUSE",
-      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of three fresh-format rounds.",
-      "note": "CarryFS format revision 1, code at commit 7dfae3d. Data: benchmarks/macos.tsv.",
+      "subtitle": "OCZ Vertex 4 SSD over USB. Medians of ten fresh-format rounds.",
+      "note": "CarryFS format revision 2, code at commit 98ff076. Data: benchmarks/macos.tsv.",
       "results": "benchmarks/macos.tsv",
       "columns": {
         "CarryFS": "carryfs",
         "exFAT": "exfat",
         "APFS": "apfs"
+      }
+    },
+    {
+      "name": "freebsd-14.5",
+      "system": "FreeBSD 14.5, fusefs",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds, CPU governor schedutil.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. exFAT is the FUSE port. Data: benchmarks/freebsd-14.5.tsv.",
+      "results": "benchmarks/freebsd-14.5.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "UFS": "ufs",
+        "exFAT": "exfat"
+      }
+    },
+    {
+      "name": "freebsd-15.1",
+      "system": "FreeBSD 15.1, fusefs",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of ten fresh-format rounds, CPU governor performance.",
+      "note": "CarryFS format revision 2, code at commit 425fafc. exFAT is the FUSE port. Data: benchmarks/freebsd-15.1.tsv.",
+      "results": "benchmarks/freebsd-15.1.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "UFS": "ufs",
+        "exFAT": "exfat"
+      }
+    },
+    {
+      "name": "netbsd-10.2",
+      "system": "NetBSD 10.2, PUFFS",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of three fresh-format rounds, CPU governor schedutil.",
+      "note": "CarryFS format revision 2, code at commit b874a1c. exFAT is the FUSE port. Data: benchmarks/netbsd-10.2.tsv.",
+      "results": "benchmarks/netbsd-10.2.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "FFS": "ffs",
+        "exFAT": "exfat"
+      }
+    },
+    {
+      "name": "netbsd-11.1",
+      "system": "NetBSD 11.1, PUFFS",
+      "subtitle": "OCZ Vertex 4 SSD over USB, passed raw to a KVM guest. Medians of ten fresh-format rounds, CPU governor performance.",
+      "note": "CarryFS format revision 2, code at commit b874a1c. exFAT is the FUSE port. Data: benchmarks/netbsd-11.1.tsv.",
+      "results": "benchmarks/netbsd-11.1.tsv",
+      "columns": {
+        "CarryFS": "carryfs",
+        "FFS": "ffs",
+        "exFAT": "exfat"
       }
     }
   ],
@@ -44,10 +105,11 @@
     "charts": [
       "macos",
       "windows",
-      "linux"
+      "linux",
+      "linux-native"
     ],
     "title": "CarryFS against exFAT",
-    "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of three fresh-format rounds.",
-    "note": "CarryFS format revision 1, code at commit 7dfae3d. OCZ Vertex 4 SSD over USB on all three hosts. Data: benchmarks/macos.tsv, windows.tsv, linux.tsv."
+    "subtitle": "Speed relative to exFAT per workload: right of 1× CarryFS is faster. Log scale, medians of fresh-format rounds.",
+    "note": "CarryFS format revision 2, ten rounds. OCZ Vertex 4 SSD over USB. Data: benchmarks/*.tsv."
   }
 }

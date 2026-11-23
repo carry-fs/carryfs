@@ -61,13 +61,17 @@ cargo test -p carryfs-android
 ```
 
 The instrumented tests run the documents provider on an emulator or device.
-They need a desktop-made image at the app's `files/test.img` that holds
-`/hello.txt` with the text `hello from a desktop`:
+They use a desktop-made image at the app's `files/test.img` with a regular file
+and a directory containing two hard links to the same file:
 
 ```sh
 printf 'hello from a desktop\n' > hello.txt
 carryfs mkfs test.img 268435456
 carryfs put test.img hello.txt /hello.txt
+mkdir links
+cp hello.txt links/original.txt
+ln links/original.txt links/alias.txt
+carryfs put test.img links /links
 ./gradlew installDebug installDebugAndroidTest
 adb push test.img /data/local/tmp/test.img
 adb shell run-as com.carryfs.android sh -c "'mkdir -p files && cp /data/local/tmp/test.img files/'"

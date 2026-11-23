@@ -176,12 +176,11 @@ class CarryProvider : DocumentsProvider() {
         val doc = parse(documentId)
         val entry = call { Native.entry(doc.volume, doc.id) }
         val size = max(sizeHint.x, sizeHint.y).coerceIn(96, 1024)
-        val preview = try {
-            Thumbnails.file(context!!.cacheDir, doc.volume, entry, size)
+        return try {
+            Thumbnails.open(context!!.cacheDir, doc.volume, entry, size, signal)
         } catch (e: IOException) {
             throw FileNotFoundException("No preview for ${entry.name}: ${e.message}")
         }
-        return AssetFileDescriptor(ParcelFileDescriptor.open(preview, ParcelFileDescriptor.MODE_READ_ONLY), 0, preview.length())
     }
 
     override fun openDocument(documentId: String, mode: String, signal: CancellationSignal?): ParcelFileDescriptor {

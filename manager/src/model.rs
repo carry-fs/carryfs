@@ -1,10 +1,9 @@
 use carryfs_core::{
-    Access, Attributes, DirectoryEntry, Error, ImageDevice, Mode, MountMode, ObjectId, ObjectKind,
-    ROOT, Space, Volume, VolumeInfo,
+    Attributes, DirectoryEntry, Error, ExtractionSink, ImageDevice, Mode, MountMode, Name,
+    ObjectId, ObjectKind, ROOT, Space, Volume, VolumeInfo,
 };
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
 };
 
@@ -131,26 +130,39 @@ impl Browser {
 
     pub fn export(&self, object: ObjectId, destination: &Path) -> Result<String> {
         let mut volume = self.volume()?;
-        if volume.attributes(object)?.kind != ObjectKind::File {
+        let attributes = volume.attributes(object)?;
+        if attributes.kind != ObjectKind::File {
             return Err("Select a regular file to export.".into());
         }
-        let handle = volume.open_object(object, Access::Read)?;
         let result = (|| -> Result<()> {
             // create_new prevents overwriting the source image, links, or an existing export.
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(destination)?;
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let output = options.open(destination)?;
             let copied = (|| -> Result<()> {
-                let mut buffer = vec![0; 1024 * 1024];
-                let mut offset = 0;
-                loop {
-                    let n = volume.read(&handle, offset, &mut buffer)?;
-                    if n == 0 {
-                        break;
-                    }
-                    output.write_all(&buffer[..n])?;
-                    offset += n as u64;
+                let mut failure = None;
+                let summary =
+                    volume.extract_to(object, &mut ExportFile(&output), &mut |finding| {
+                        if failure.is_none() {
+                            failure = Some(finding.error.to_string());
+                        }
+                    })?;
+                if !summary.complete || summary.unreadable_ranges != 0 {
+                    return Err(failure
+                        .unwrap_or_else(|| "File export did not complete".into())
+                        .into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    output.set_permissions(fs::Permissions::from_mode(u32::from(
+                        attributes.mode.bits(),
+                    )))?;
                 }
                 output.sync_all()?;
                 Ok(())
@@ -163,10 +175,36 @@ impl Browser {
             }
             Ok(())
         })();
-        let closed = volume.close_handle(handle);
         result?;
-        closed?;
         Ok(format!("Exported to {}", destination.display()))
+    }
+}
+
+struct ExportFile<'a>(&'a File);
+
+impl ExtractionSink for ExportFile<'_> {
+    fn create_file(&mut self, path: &[Name], _: &Attributes) -> carryfs_core::Result<File> {
+        if !path.is_empty() {
+            return Err(Error::InvalidInput(
+                "single-file export received a child entry",
+            ));
+        }
+        self.0.try_clone().map_err(|source| Error::Io {
+            operation: "open export descriptor",
+            source,
+        })
+    }
+
+    fn create_directory(&mut self, _: &[Name], _: &Attributes) -> carryfs_core::Result<()> {
+        Err(Error::WrongType)
+    }
+
+    fn create_symlink(&mut self, _: &[Name], _: &[u8], _: &Attributes) -> carryfs_core::Result<()> {
+        Err(Error::WrongType)
+    }
+
+    fn create_link(&mut self, _: &[Name], _: &[Name]) -> carryfs_core::Result<()> {
+        Err(Error::WrongType)
     }
 }
 

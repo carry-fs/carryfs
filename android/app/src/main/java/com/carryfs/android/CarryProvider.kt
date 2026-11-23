@@ -20,12 +20,13 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import java.io.FileNotFoundException
 import java.io.IOException
+import java.util.UUID
 import kotlin.math.max
 
 /**
  * Shows each mounted CarryFS volume as a root in the system file picker and
- * Files app. Document IDs are "volume/object"; object IDs survive renames
- * and moves, so granted URIs keep working.
+ * Files app. A document URI survives renames and moves during the mount.
+ * Every process uses a new namespace so an old grant cannot reach a new mount.
  */
 class CarryProvider : DocumentsProvider() {
     companion object {
@@ -41,9 +42,13 @@ class CarryProvider : DocumentsProvider() {
             Document.COLUMN_SIZE, Document.COLUMN_LAST_MODIFIED, Document.COLUMN_FLAGS,
         )
 
-        fun documentId(volume: Long, id: Long) = "$volume/$id"
+        private val namespace = UUID.randomUUID().toString()
 
-        fun rootUri(volume: Long) = DocumentsContract.buildRootUri(AUTHORITY, volume.toString())
+        internal fun volumeKey(volume: Long) = "$namespace:$volume"
+
+        fun documentId(volume: Long, id: Long) = "${volumeKey(volume)}/$id"
+
+        fun rootUri(volume: Long) = DocumentsContract.buildRootUri(AUTHORITY, volumeKey(volume))
     }
 
     private class Doc(val volume: Long, val id: Long)
@@ -62,7 +67,7 @@ class CarryProvider : DocumentsProvider() {
             var flags = Root.FLAG_LOCAL_ONLY or Root.FLAG_SUPPORTS_IS_CHILD
             if (writable) flags = flags or Root.FLAG_SUPPORTS_CREATE
             cursor.newRow()
-                .add(Root.COLUMN_ROOT_ID, volume.toString())
+                .add(Root.COLUMN_ROOT_ID, volumeKey(volume))
                 .add(Root.COLUMN_FLAGS, flags)
                 .add(Root.COLUMN_TITLE, runCatching { Native.label(volume) }.getOrDefault("CarryFS"))
                 .add(Root.COLUMN_SUMMARY, context!!.getString(R.string.root_summary))
@@ -90,8 +95,15 @@ class CarryProvider : DocumentsProvider() {
         val parent = parse(parentDocumentId)
         val cursor = MatrixCursor(projection ?: DOCUMENT_COLUMNS)
         val writable = writable(parent.volume)
-        for (entry in call { Native.children(parent.volume, parent.id) }) {
-            addRow(cursor, parent.volume, entry, writable)
+        try {
+            call {
+                Native.visitChildren(parent.volume, parent.id) { entry ->
+                    addRow(cursor, parent.volume, entry, writable)
+                }
+            }
+        } catch (error: Exception) {
+            cursor.close()
+            throw error
         }
         cursor.setNotificationUri(context!!.contentResolver, childrenUri(parentDocumentId))
         return cursor
@@ -220,7 +232,9 @@ class CarryProvider : DocumentsProvider() {
     private fun addRow(cursor: MatrixCursor, volume: Long, entry: Entry, writable: Boolean) {
         var flags = 0
         if (writable) {
-            flags = Document.FLAG_SUPPORTS_DELETE or Document.FLAG_SUPPORTS_RENAME or Document.FLAG_SUPPORTS_MOVE
+            if (entry.id != Native.ROOT) {
+                flags = Document.FLAG_SUPPORTS_DELETE or Document.FLAG_SUPPORTS_RENAME or Document.FLAG_SUPPORTS_MOVE
+            }
             flags = flags or if (entry.directory) Document.FLAG_DIR_SUPPORTS_CREATE else Document.FLAG_SUPPORTS_WRITE
         }
         if (!entry.directory && mimeOf(entry.name).startsWith("image/")) flags = flags or Document.FLAG_SUPPORTS_THUMBNAIL
@@ -240,11 +254,15 @@ class CarryProvider : DocumentsProvider() {
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "application/octet-stream"
     }
 
-    private fun parse(documentId: String): Doc {
-        val parts = documentId.split('/')
-        val volume = parts.getOrNull(0)?.toLongOrNull()
+    private fun parse(encoded: String): Doc {
+        val prefix = "$namespace:"
+        if (!encoded.startsWith(prefix)) throw FileNotFoundException("This document grant has expired")
+        val parts = encoded.removePrefix(prefix).split('/', limit = 2)
+        val volume = parts[0].toLongOrNull()
         val id = parts.getOrNull(1)?.toLongOrNull()
-        if (parts.size != 2 || volume == null || id == null) throw FileNotFoundException("Unknown document $documentId")
+        if (volume == null || id == null || encoded != documentId(volume, id)) {
+            throw FileNotFoundException("Unknown CarryFS document")
+        }
         return Doc(volume, id)
     }
 

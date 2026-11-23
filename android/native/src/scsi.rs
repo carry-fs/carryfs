@@ -136,18 +136,39 @@ impl<T: Transport> Disk<T> {
         Ok(())
     }
 
-    /// SYNCHRONIZE CACHE: the device's durability barrier. Drives without a
-    /// write cache may reject the command; Linux sd accepts that too.
+    /// SYNCHRONIZE CACHE: the device's durability barrier. A drive may omit
+    /// it if the current caching mode page explicitly reports write-through.
     pub fn flush(&mut self) -> io::Result<()> {
         match self.run(&[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0], Data::None) {
-            Ok(_)
-            | Err(Failure::Sense {
+            Ok(_) => Ok(()),
+            Err(Failure::Sense {
                 key: ILLEGAL_REQUEST,
                 asc: 0x20 | 0x24,
-                ..
-            }) => Ok(()),
+                ascq: 0,
+            }) if self.write_cache_disabled() => Ok(()),
             Err(failure) => Err(failure.into()),
         }
+    }
+
+    fn write_cache_disabled(&mut self) -> bool {
+        let mut data = [0; 64];
+        // MODE SENSE(6), current values, caching page, disable block descriptors.
+        let Ok(got) = self.run(&[0x1a, 0x08, 0x08, 0, 64, 0], Data::In(&mut data)) else {
+            return false;
+        };
+        if got < 4 {
+            return false;
+        }
+        let reported = usize::from(data[0]) + 1;
+        let start = 4 + usize::from(data[3]);
+        let Some(page) = data[..got.min(reported)].get(start..) else {
+            return false;
+        };
+        matches!(page, [code, length, flags, ..]
+            if code & 0x7f == 0x08
+                && *length >= 0x0a
+                && usize::from(*length) + 2 <= page.len()
+                && flags & 0x04 == 0)
     }
 
     fn check(&self, offset: u64, len: usize) -> io::Result<()> {
@@ -381,7 +402,9 @@ pub(crate) mod fake {
         /// READ commands received.
         pub reads: usize,
         /// Reject SYNCHRONIZE CACHE as an unknown command, as some flash drives do.
-        pub no_cache: bool,
+        pub rejects_flush: bool,
+        /// The current WCE flag, if the device reports the caching mode page.
+        pub write_cache_enabled: Option<bool>,
         pub fail_flush: bool,
         /// Commands left to fail with UNIT ATTENTION.
         pub attentions: usize,
@@ -403,7 +426,8 @@ pub(crate) mod fake {
                     flushes: 0,
                     writes: 0,
                     reads: 0,
-                    no_cache: false,
+                    rejects_flush: false,
+                    write_cache_enabled: None,
                     fail_flush: false,
                     attentions: 1,
                 })),
@@ -462,6 +486,17 @@ pub(crate) mod fake {
                 0x00 => Phase::Status(Self::csw(tag, 0, 0)),
                 0x03 => data_in(self.sense.to_vec()),
                 0x12 => data_in(vec![0; 36]),
+                0x1a if cdb[2] == 0x08 => {
+                    let mut reply = vec![3, 0, 0, 0];
+                    if let Some(enabled) = media.write_cache_enabled {
+                        reply.resize(24, 0);
+                        reply[0] = 23;
+                        reply[4] = 0x08;
+                        reply[5] = 0x12;
+                        reply[6] = u8::from(enabled) << 2;
+                    }
+                    data_in(reply)
+                }
                 0x1a => data_in(vec![3, 0, 0, 0]),
                 0x25 => {
                     let mut cap = ((self.blocks - 1) as u32).to_be_bytes().to_vec();
@@ -493,7 +528,7 @@ pub(crate) mod fake {
                     self.sense[12] = 0x44; // Internal target failure.
                     Phase::Status(Self::csw(tag, 0, 1))
                 }
-                0x35 if media.no_cache => {
+                0x35 if media.rejects_flush => {
                     self.sense = [0; 18];
                     self.sense[2] = ILLEGAL_REQUEST;
                     self.sense[12] = 0x20;
@@ -606,9 +641,25 @@ mod tests {
     #[test]
     fn a_drive_without_a_cache_may_reject_flush() {
         let usb = FakeUsb::new(512, 1 << 20);
-        usb.media.lock().unwrap().no_cache = true;
+        {
+            let mut media = usb.media.lock().unwrap();
+            media.rejects_flush = true;
+            media.write_cache_enabled = Some(false);
+        }
         let mut disk = Disk::open(usb).unwrap();
         disk.flush().unwrap();
+    }
+
+    #[test]
+    fn rejected_flush_fails_with_enabled_or_unknown_write_cache() {
+        let usb = FakeUsb::new(512, 1 << 20);
+        let media = usb.media.clone();
+        media.lock().unwrap().rejects_flush = true;
+        let mut disk = Disk::open(usb).unwrap();
+        for write_cache_enabled in [None, Some(true)] {
+            media.lock().unwrap().write_cache_enabled = write_cache_enabled;
+            assert!(disk.flush().is_err());
+        }
     }
 
     #[test]

@@ -29,6 +29,8 @@ are required.
 - Drives that support only UAS, and card readers with the card on a LUN
   other than 0, are not supported.
 - The app doesn't format, check, or repair volumes yet. Use a desktop.
+- Document grants last for the current mount. After reconnecting a drive or
+  restarting the app process, select the file again in the system picker.
 
 ## Build
 

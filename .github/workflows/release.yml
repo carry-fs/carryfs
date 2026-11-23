@@ -181,6 +181,18 @@ jobs:
         with:
           name: dist
           path: dist
+      - name: Sign the release checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.CARRYFS_RELEASE_SIGNING_KEY_PEM }}
+        run: |
+          set -eu
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then
+            key=$(mktemp)
+            trap 'rm -f "$key"' EXIT
+            umask 077
+            printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+            openssl dgst -sha256 -sign "$key" -out dist/SHA256SUMS.sig dist/SHA256SUMS
+          fi
       # A hyphen in the tag marks a SemVer prerelease such as v0.1.0-rc.1.
       - name: Publish
         env:

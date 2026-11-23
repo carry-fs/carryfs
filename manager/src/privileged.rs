@@ -178,10 +178,40 @@ pub fn upgrade(id: &str) -> Result<String> {
     output(request(json!({"op": "upgrade", "device": id}))?.0)
 }
 
-/// Install a CarryFS release with the published installer.
+/// Authenticate the selected release before requesting installation privileges.
 pub fn install(version: &str) -> Result<String> {
+    let verified = release_installer(version, true)?.output()?;
+    output(reply(verified))?;
     unlock()?;
     output(request(json!({"op": "install", "version": version}))?.0)
+}
+
+fn release_installer(version: &str, verify_only: bool) -> Result<Command> {
+    if version.split('.').count() != 3
+        || !version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err("Invalid release version".into());
+    }
+    let key = option_env!("CARRYFS_RELEASE_PUBLIC_KEY_PEM")
+        .filter(|key| !key.trim().is_empty())
+        .ok_or("This Manager build has no pinned release signing key.")?;
+    let mut command = Command::new("/bin/sh");
+    command
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("CARRYFS_RELEASE_PUBLIC_KEY_PEM", key)
+        .env("CARRYFS_VERIFY_ONLY", if verify_only { "1" } else { "0" })
+        .args([
+            "-c",
+            include_str!("../../install.sh"),
+            "carryfs-install",
+            "--version",
+            version,
+            "--yes",
+        ]);
+    Ok(command)
 }
 
 fn output(reply: Value) -> Result<String> {
@@ -254,16 +284,7 @@ fn handle(line: &str) -> Result<(Value, Option<File>)> {
         }
         Some("install") => {
             let version = request["version"].as_str().ok_or("Missing version")?;
-            if !version
-                .split('.')
-                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-                || version.split('.').count() != 3
-            {
-                return Err("Invalid release version".into());
-            }
-            let output = Command::new("/bin/bash")
-                .args(["-c", "set -eu; installer=$(mktemp -t carryfs-install); trap 'rm -f \"$installer\"' EXIT; /usr/bin/curl --fail --silent --show-error --location https://carryfs.com/install.sh -o \"$installer\"; /bin/bash \"$installer\" --version \"$1\" --yes", "install", version])
-                .output()?;
+            let output = release_installer(version, false)?.output()?;
             Ok((reply(output), None))
         }
         _ => Err("Unknown request".into()),

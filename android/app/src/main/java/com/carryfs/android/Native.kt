@@ -1,7 +1,10 @@
 package com.carryfs.android
 
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+
+class NativeIoException(message: String, val errno: Int) : IOException(message)
 
 /** A file or folder on a mounted volume. */
 class Entry(

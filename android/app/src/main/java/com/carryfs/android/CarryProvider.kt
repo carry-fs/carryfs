@@ -221,6 +221,8 @@ class CarryProvider : DocumentsProvider() {
 
         private inline fun <T> errno(operation: String, block: () -> T): T = try {
             block()
+        } catch (e: NativeIoException) {
+            throw ErrnoException(operation, e.errno, e)
         } catch (e: FileNotFoundException) {
             throw ErrnoException(operation, OsConstants.ENOENT)
         } catch (e: IOException) {

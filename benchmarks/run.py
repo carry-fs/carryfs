@@ -123,6 +123,8 @@ def main():
         runner.add_argument("--native-ro", action="store_true", help="use native read-only mounts for RO phases; Linux root, Windows images only")
         runner.add_argument("--metric", help="run only this metric and its setup/checks; see the metrics command")
         runner.add_argument("--phase", help="selected metric phase, such as ro-cold or rw-warm")
+        runner.add_argument("--governor", default="performance",
+                            help="Linux CPU governor for the run, restored afterwards; 'keep' leaves the host's setting")
         runner.set_defaults(action=action)
     comparison = commands.add_parser("compare", help="compare two completed runs; prints Markdown")
     comparison.add_argument("base", type=Path)

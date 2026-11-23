@@ -75,14 +75,14 @@ before using it for backups.
 
 ## Performance
 
-The chart shows CarryFS speed relative to exFAT, using medians of three rounds
+The chart shows CarryFS speed relative to exFAT, using medians of ten rounds
 on an OCZ Vertex 4 SSD connected over USB. Results depend on hardware and
 workload; see the [benchmark notes](benchmarks/README.md#published-results)
 for methods, raw results, and comparisons with native filesystems.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/charts/vs-exfat-dark.svg">
-  <img alt="CarryFS speed relative to exFAT on macOS, Windows and Linux" src="benchmarks/charts/vs-exfat-light.svg">
+  <img alt="CarryFS speed relative to exFAT on macOS, Windows, and Linux (FUSE and kernel driver)" src="benchmarks/charts/vs-exfat-light.svg">
 </picture>
 
 ## Current status

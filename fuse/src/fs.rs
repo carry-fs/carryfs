@@ -94,12 +94,19 @@ const CACHED_TTL: Duration = Duration::from_secs(3600);
 const FILE_OPEN: FopenFlags = FopenFlags::FOPEN_KEEP_CACHE;
 #[cfg(not(target_os = "linux"))]
 const FILE_OPEN: FopenFlags = FopenFlags::empty();
-// NetBSD's relay uses packet sockets bounded by the default kernel sbmax.
+// NetBSD's relay uses packet sockets bounded by the default kernel sbmax,
+// and the kernel hands PUFFS at most 64 KiB per write. libperfuse takes the
+// 40-byte fuse_write_in out of max_write and rounds down to a page: a plain
+// 64 KiB split every write into 60 KiB and 4 KiB requests.
 const MAX_WRITE: u32 = if cfg!(target_os = "netbsd") {
-    64 << 10
+    (64 << 10) + 40
 } else {
     1 << 20
 };
+/// libperfuse reads `max_readahead` less the 16-byte fuse_out_header, so this
+/// keeps its reads at whole 64 KiB.
+#[cfg(target_os = "netbsd")]
+const MAX_READAHEAD: u32 = (64 << 10) + 16;
 /// The block size each object reports. macFUSE sends reads and writes of
 /// this size, rounded up to the 16 KiB page: 4 KiB made 16 KiB writes, which
 /// ran at 31 MiB/s on a USB SSD against 165 MiB/s at 1 MiB. Neither the
@@ -1168,7 +1175,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
             .map_err(|_| io::Error::other("kernel rejected the write size"))?;
         #[cfg(target_os = "netbsd")]
         config
-            .set_max_readahead(MAX_WRITE)
+            .set_max_readahead(MAX_READAHEAD)
             .map_err(|_| io::Error::other("relay rejected the read size"))?;
         // Full plus replies favor list-all-then-stat callers such as file
         // managers and rsync. Strict mounts and older kernels, whose plus

@@ -31,6 +31,9 @@ def access_checks(config):
 
 
 def cache_policy():
+    if full.HOST in ("freebsd", "netbsd"):
+        from benchmarks import bsd
+        return bsd.CACHE
     if sys.platform == "linux":
         return full.CACHE
     if sys.platform == "win32":
@@ -40,6 +43,9 @@ def cache_policy():
 
 
 def flush_policy():
+    if full.HOST in ("freebsd", "netbsd"):
+        from benchmarks import bsd
+        return bsd.FLUSH
     return {"linux": "fsync(file) and fsync(directory)",
             "darwin": "F_FULLFSYNC(file) and fsync(directory)",
             "win32": "FlushFileBuffers(file); directory barriers flush the entire volume"}[sys.platform]

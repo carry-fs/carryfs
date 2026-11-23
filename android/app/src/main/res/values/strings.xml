@@ -6,4 +6,5 @@
     <string name="notification_text">Eject before unplugging to keep recent changes.</string>
     <string name="eject_all">Eject</string>
     <string name="root_summary">CarryFS</string>
+    <string name="eject_failed">Could not eject all drives. Close open files and check the drives before unplugging.</string>
 </resources>

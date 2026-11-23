@@ -52,11 +52,18 @@ class DriveService : Service() {
         startForeground()
         if (intent?.action == EJECT) {
             thread {
+                var failed = false
                 for (drive in Drives.all()) {
                     try {
                         Drives.eject(this, drive.key)
                     } catch (e: Exception) {
+                        failed = true
                         Log.e("CarryFS", "Ejecting ${drive.name} failed", e)
+                    }
+                }
+                if (failed) {
+                    android.os.Handler(mainLooper).post {
+                        if (Drives.all().any { it.usb }) startForeground(getString(R.string.eject_failed))
                     }
                 }
             }
@@ -66,7 +73,7 @@ class DriveService : Service() {
 
     override fun onBind(intent: Intent?) = null
 
-    private fun startForeground() {
+    private fun startForeground(message: String = getString(R.string.notification_text)) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW),
@@ -80,7 +87,7 @@ class DriveService : Service() {
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_cube)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
+            .setContentText(message)
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, getString(R.string.eject_all), eject).build())

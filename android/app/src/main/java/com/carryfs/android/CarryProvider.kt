@@ -5,8 +5,6 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.graphics.Point
 import android.os.CancellationSignal
-import android.os.Handler
-import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
 import android.os.ProxyFileDescriptorCallback
 import android.os.storage.StorageManager
@@ -52,9 +50,6 @@ class CarryProvider : DocumentsProvider() {
     }
 
     private class Doc(val volume: Long, val id: Long)
-
-    // Every open file's I/O callbacks run here; the native side serializes them anyway.
-    private val io by lazy { Handler(HandlerThread("carryfs-io").apply { start() }.looper) }
 
     override fun onCreate() = true
 
@@ -188,10 +183,11 @@ class CarryProvider : DocumentsProvider() {
         val write = 'w' in mode || 'a' in mode
         // "w" truncates, as ParcelFileDescriptor.parseMode reads it.
         val truncate = 't' in mode || mode == "w"
+        val callbacks = Drives.owner(doc.volume)?.callbacks ?: throw FileNotFoundException("Drive disconnected")
         val file = call { Native.open(doc.volume, doc.id, write, truncate) }
         val storage = context!!.getSystemService(StorageManager::class.java)
         try {
-            return storage.openProxyFileDescriptor(ParcelFileDescriptor.parseMode(mode), OpenFile(doc.volume, file), io)
+            return storage.openProxyFileDescriptor(ParcelFileDescriptor.parseMode(mode), OpenFile(doc.volume, file), callbacks)
         } catch (e: Exception) {
             Native.close(doc.volume, file)
             throw e

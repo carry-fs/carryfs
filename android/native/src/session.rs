@@ -2,6 +2,7 @@
 //! layer can pass them to Kotlin.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use carryfs_core::{
     Access, BlockDevice, DirectoryEntry, Error, Handle, MountMode, Name, ObjectId, ObjectKind,
@@ -42,6 +43,35 @@ struct LinkName {
     name: Name,
 }
 
+impl Mounted {
+    fn open(drive: i64, partition: Partition) -> Result<Self> {
+        let write_protected = partition.mode() == MountMode::ReadOnly;
+        let (legacy, mut volume) = match Volume::open(partition.clone()) {
+            Err(Error::NeedsUpgrade) => (
+                Some(partition.clone()),
+                Volume::open(partition.read_only())?,
+            ),
+            volume => (None, volume?),
+        };
+        let read_only = write_protected || legacy.is_some();
+        if read_only {
+            volume.enable_readonly_metadata_cache()?;
+        } else {
+            volume.set_deferred_checkpoints(true)?;
+        }
+        Ok(Self {
+            drive,
+            read_only,
+            volume,
+            files: HashMap::new(),
+            links: HashMap::new(),
+            link_ids: BTreeMap::new(),
+            next_link: 0,
+            legacy,
+        })
+    }
+}
+
 struct Open {
     handle: Handle,
     written: bool,
@@ -53,7 +83,19 @@ struct Open {
 #[derive(Default)]
 pub struct Session {
     volumes: BTreeMap<i64, Mounted>,
-    next: i64,
+    mount_warnings: BTreeMap<i64, String>,
+}
+
+fn next_handle() -> Result<i64> {
+    static NEXT: AtomicI64 = AtomicI64::new(1);
+    let mut current = NEXT.load(Ordering::Relaxed);
+    loop {
+        let following = current.checked_add(1).ok_or(Error::LimitExceeded)?;
+        match NEXT.compare_exchange_weak(current, following, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(id) => return Ok(id),
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 impl Session {
@@ -68,41 +110,38 @@ impl Session {
             source,
         })?;
         let mut opened = Vec::new();
-        for partition in partitions {
-            let write_protected = partition.mode() == MountMode::ReadOnly;
-            // A volume CarryFS 0.1.0 formatted takes writes only after an upgrade.
-            let (legacy, mut volume) = match Volume::open(partition.clone()) {
-                Err(Error::NeedsUpgrade) => (
-                    Some(partition.clone()),
-                    Volume::open(partition.read_only())?,
-                ),
-                volume => (None, volume?),
-            };
-            let read_only = write_protected || legacy.is_some();
-            if read_only {
-                volume.enable_readonly_metadata_cache()?;
-            } else {
-                volume.set_deferred_checkpoints(true)?;
+        let mut warnings = Vec::new();
+        if partitions.iter().any(|partition| partition.degraded_gpt) {
+            warnings.push("One GPT copy is damaged. Volumes are mounted read-only.".to_owned());
+        }
+        for (index, partition) in partitions.into_iter().enumerate() {
+            match Mounted::open(drive, partition) {
+                Ok(mounted) => opened.push(mounted),
+                Err(error) => warnings.push(format!(
+                    "CarryFS volume {} could not be opened: {error}",
+                    index + 1
+                )),
             }
-            opened.push(Mounted {
-                drive,
-                read_only,
-                volume,
-                files: HashMap::new(),
-                links: HashMap::new(),
-                link_ids: BTreeMap::new(),
-                next_link: 0,
-                legacy,
+        }
+        if opened.is_empty() && !warnings.is_empty() {
+            return Err(Error::Io {
+                operation: "mount CarryFS volumes",
+                source: std::io::Error::other(warnings.join(" ")),
             });
         }
-        Ok(opened
-            .into_iter()
-            .map(|mounted| {
-                self.next += 1;
-                self.volumes.insert(self.next, mounted);
-                self.next
-            })
-            .collect())
+        if !warnings.is_empty() {
+            self.mount_warnings.insert(drive, warnings.join(" "));
+        }
+        let ids: Vec<_> = opened
+            .iter()
+            .map(|_| next_handle())
+            .collect::<Result<_>>()?;
+        self.volumes.extend(ids.iter().copied().zip(opened));
+        Ok(ids)
+    }
+
+    pub fn take_mount_warning(&mut self, drive: i64) -> String {
+        self.mount_warnings.remove(&drive).unwrap_or_default()
     }
 
     /// Keep all volumes and handles registered until the drive is safe to remove.
@@ -315,8 +354,7 @@ impl Session {
             mounted.volume.close_handle(handle)?;
             return Err(error);
         }
-        self.next += 1;
-        let file = self.next;
+        let file = next_handle()?;
         self.mounted_mut(volume)?.files.insert(
             file,
             Open {
@@ -678,6 +716,34 @@ mod tests {
             data.len()
         );
         assert_eq!(&back[..data.len()], &data[..]);
+    }
+
+    #[test]
+    fn a_damaged_partition_does_not_hide_a_healthy_volume() {
+        let disk = usb_disk(650 * MIB);
+        let size = 300 * MIB;
+        let damaged = 301 * MIB;
+        write_gpt(&disk, &[(MIB, size), (damaged, size)]);
+        format(&disk, MIB, size);
+        format(&disk, damaged, size);
+        {
+            let mut disk = disk.lock().unwrap();
+            for offset in [damaged + MIB, damaged + size - 257 * 4096] {
+                let mut page = [0; 4096];
+                disk.read_at(offset, &mut page).unwrap();
+                page[24] ^= 1; // Retain the volume magic, invalidate the root checksum.
+                disk.write_at(offset, &page).unwrap();
+            }
+        }
+        let mut session = Session::default();
+        let volumes = session.mount(7, disk).unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert!(
+            session
+                .take_mount_warning(7)
+                .contains("volume 2 could not be opened")
+        );
+        assert!(session.label(volumes[0]).is_ok());
     }
 
     #[test]

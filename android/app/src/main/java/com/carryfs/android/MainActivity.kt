@@ -113,6 +113,12 @@ class MainActivity : Activity() {
         super.onResume()
         Drives.onChange = ::render
         render()
+        for (drive in Drives.all()) {
+            thread {
+                drive.refresh()
+                runOnUiThread { if (!isDestroyed) render() }
+            }
+        }
     }
 
     override fun onPause() {
@@ -178,13 +184,14 @@ class MainActivity : Activity() {
             volume(drive, volume, if (single) null else index + 1)
         }
         if (!single) list.addView(row(eject(drive)), margins(top = 24))
+        if (drive.mountWarning.isNotEmpty()) {
+            list.addView(statusLine(Status(drive.mountWarning, R.color.error)), margins(top = 16))
+        }
     }
 
     private fun volume(drive: Drives.Drive, volume: Long, number: Int?) {
-        val name = runCatching { Native.label(volume) }.getOrDefault("CarryFS")
-        val space = runCatching { Native.space(volume) }.getOrNull()
-        val legacy = runCatching { Native.needsUpgrade(volume) }.getOrDefault(false)
-        val readOnly = runCatching { Native.readOnly(volume) }.getOrDefault(true)
+        val snapshot = drive.status[volume] ?: return
+        val (name, space, legacy, readOnly) = snapshot
 
         if (drive.usb && number == null) labels["${drive.key}/${drive.name}"] = name
         list.addView(heading(name, 40f), margins(top = 24))
@@ -193,7 +200,7 @@ class MainActivity : Activity() {
         list.addView(mono(meta.uppercase()), margins(top = 4))
         val (dot, state) = when {
             legacy -> R.color.read_only to "Read-only. CarryFS 0.1.0 formatted it"
-            readOnly -> R.color.read_only to "Read-only. The drive is write-protected"
+            readOnly -> R.color.read_only to "Read-only"
             else -> R.color.in_use to "In use. Eject before unplugging"
         }
         list.addView(statusLine(Status(state, dot)), margins(top = 16))

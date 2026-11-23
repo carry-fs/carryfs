@@ -54,7 +54,8 @@ An installed `mount.carryfs` continues to use FUSE. Select this experimental
 driver explicitly with `-i`, which skips the helper. The driver requires 4 KiB
 kernel pages and rejects `sync` and `dirsync` mounts because namespace changes
 do not yet publish synchronously. It accepts `uid=` and `gid=`, defaulting to the
-mounting user, as vfat and exfat do; files report mode 644, directories 755.
+mounting user, as vfat and exfat do. Files and directories report their stored
+permissions, defaulting to 0644 for files and 0755 for directories.
 `ro` mounts read-only and never writes, not even root mirroring. A volume
 CarryFS 0.1.0 formatted mounts only with `ro` until `carryfs-fuse upgrade`
 runs on it.

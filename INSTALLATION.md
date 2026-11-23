@@ -24,7 +24,7 @@ real hardware.
 
 Tier 2 has the core features and best-effort performance.
 
-\*Windows can't create new [hard links](#limits-and-data-safety).
+\*Windows can't create new [hard links](#hard-links).
 
 \*\*FreeBSD and NetBSD are tested only in virtual machines and can't set the
 [hidden flag](#limits-and-data-safety).
@@ -412,14 +412,6 @@ Linux `fallocate`, macOS `F_PREALLOCATE`, and a Windows allocation size given
 at create or set later reserve space. Preallocated space reads as zeros until
 written.
 
-Files and symlinks can have hard links: `ln` on Linux, macOS, FreeBSD, and NetBSD, up
-to 65,535 names each. Directories cannot be hard linked.
-Windows opens, renames, and deletes existing names. It can't create new ones
-because WinFsp rejects hard link creation. WinFsp also reports a link count of
-1 for every file, so Windows tools don't show a file's other names.
-`carryfs put` and `carryfs get` keep the hard links inside the copied tree;
-if the destination cannot link, `get` writes a separate copy.
-
 CarryFS does not store owners, setuid, setgid or sticky bits, ACLs, extended
 attributes, resource forks, or alternate data streams, and it is not a
 security boundary: anyone holding the drive can mount it as themselves.
@@ -436,3 +428,19 @@ Boot volumes and server workloads are outside CarryFS's scope. Encryption,
 compression, snapshots, deduplication, and RAID are not supported.
 The current disk format is revision 2. A future format change may require
 copying files elsewhere and reformatting the partition.
+
+### Hard links
+
+Files and symlinks can have hard links: `ln` on Linux, macOS, FreeBSD, and
+NetBSD, up to 65,535 names each. Directories cannot be hard linked.
+
+On the macFUSE kernel extension backend, Finder can show a different name
+for a hard link and trash or delete the wrong name. Use `mv` or `rm` with
+the exact path in Terminal when renaming or removing hard links on macOS.
+See [macFUSE issue #1239](https://github.com/macfuse/macfuse/issues/1239).
+
+Windows opens, renames, and deletes existing names. It can't create new ones
+because WinFsp rejects hard link creation. WinFsp also reports a link count of
+1 for every file, so Windows tools don't show a file's other names.
+`carryfs put` and `carryfs get` keep the hard links inside the copied tree;
+if the destination cannot link, `get` writes a separate copy.

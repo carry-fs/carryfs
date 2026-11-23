@@ -74,6 +74,7 @@ impl Mounted {
 struct Open {
     handle: Handle,
     written: bool,
+    writable: bool,
 }
 
 /// Every mounted volume. Checkpoints are deferred: changes publish when a
@@ -133,34 +134,30 @@ impl Session {
         self.mount_warnings.remove(&drive).unwrap_or_default()
     }
 
-    /// Close every file, publish, and release the drive's volumes. All are
-    /// released even if one fails; the first error is returned.
+    /// Keep all volumes and handles registered until the drive is safe to remove.
     pub fn eject(&mut self, drive: i64) -> Result<()> {
-        let mut result = Ok(());
-        for mut mounted in self.take(drive) {
-            for (_, open) in mounted.files.drain() {
-                result = result.and(mounted.volume.close_handle(open.handle));
-            }
-            result = result.and(mounted.volume.eject());
+        let volumes = || {
+            self.volumes
+                .values()
+                .filter(|mounted| mounted.drive == drive)
+        };
+        if volumes().any(|mounted| mounted.files.values().any(|file| file.writable)) {
+            return Err(Error::Busy);
         }
-        result
+        for mounted in self
+            .volumes
+            .values_mut()
+            .filter(|mounted| mounted.drive == drive)
+        {
+            mounted.volume.sync()?;
+        }
+        self.detach(drive);
+        Ok(())
     }
 
     /// Forget a drive that is already gone. Unpublished changes are lost.
     pub fn detach(&mut self, drive: i64) {
-        self.take(drive);
-    }
-
-    fn take(&mut self, drive: i64) -> Vec<Mounted> {
-        let ids: Vec<i64> = self
-            .volumes
-            .iter()
-            .filter(|(_, mounted)| mounted.drive == drive)
-            .map(|(id, _)| *id)
-            .collect();
-        ids.iter()
-            .filter_map(|id| self.volumes.remove(id))
-            .collect()
+        self.volumes.retain(|_, mounted| mounted.drive != drive);
     }
 
     pub fn label(&mut self, volume: i64) -> Result<String> {
@@ -354,6 +351,7 @@ impl Session {
             Open {
                 handle,
                 written: truncate,
+                writable: write,
             },
         );
         Ok(file)
@@ -737,6 +735,47 @@ mod tests {
                 .contains("volume 2 could not be opened")
         );
         assert!(session.label(volumes[0]).is_ok());
+    }
+
+    #[test]
+    fn refuses_eject_while_writers_are_open() {
+        let (mut session, volume, _) = mounted();
+        let doc = session.create(volume, 1, "busy", false).unwrap();
+        let handle = session.open(volume, doc, true, false).unwrap();
+        let drive = session.mounted_mut(volume).unwrap().drive;
+        assert!(matches!(session.eject(drive), Err(Error::Busy)));
+        session.write(volume, handle, 0, b"still open").unwrap();
+        session.close(volume, handle).unwrap();
+        session.eject(drive).unwrap();
+    }
+
+    #[test]
+    fn failed_eject_keeps_the_drive_and_its_volumes_mounted() {
+        use crate::scsi::{Disk, fake::FakeUsb};
+        use std::sync::{Arc, Mutex};
+
+        let transport = FakeUsb::new(512, 650 * MIB);
+        let media = transport.media.clone();
+        let disk: SharedDisk = Arc::new(Mutex::new(Disk::open(transport).unwrap()));
+        write_gpt(&disk, &[(MIB, 300 * MIB), (301 * MIB, 300 * MIB)]);
+        format(&disk, MIB, 300 * MIB);
+        format(&disk, 301 * MIB, 300 * MIB);
+        let mut session = Session::default();
+        let volumes = session.mount(7, disk.clone()).unwrap();
+        assert_eq!(volumes.len(), 2);
+        session
+            .create(volumes[0], ROOT.get() as i64, "pending", false)
+            .unwrap();
+
+        media.lock().unwrap().fail_flush = true;
+        assert!(matches!(session.eject(7), Err(Error::Io { .. })));
+        assert!(matches!(session.mount(7, disk.clone()), Err(Error::Busy)));
+        assert!(session.volume(volumes[0]).unwrap().is_faulted());
+        assert!(session.read_only(volumes[1]).is_ok());
+
+        session.detach(7);
+        media.lock().unwrap().fail_flush = false;
+        assert_eq!(session.mount(7, disk).unwrap().len(), 2);
     }
 
     #[test]

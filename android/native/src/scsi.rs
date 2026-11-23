@@ -405,6 +405,7 @@ pub(crate) mod fake {
         pub rejects_flush: bool,
         /// The current WCE flag, if the device reports the caching mode page.
         pub write_cache_enabled: Option<bool>,
+        pub fail_flush: bool,
         /// Commands left to fail with UNIT ATTENTION.
         pub attentions: usize,
     }
@@ -427,6 +428,7 @@ pub(crate) mod fake {
                     reads: 0,
                     rejects_flush: false,
                     write_cache_enabled: None,
+                    fail_flush: false,
                     attentions: 1,
                 })),
                 block_bytes,
@@ -519,6 +521,12 @@ pub(crate) mod fake {
                     let (lba, count) = range(cdb);
                     assert_eq!(count * bs, len);
                     Phase::DataOut(lba, len, Self::csw(tag, 0, 0))
+                }
+                0x35 if media.fail_flush => {
+                    self.sense = [0; 18];
+                    self.sense[2] = 0x04; // Hardware error.
+                    self.sense[12] = 0x44; // Internal target failure.
+                    Phase::Status(Self::csw(tag, 0, 1))
                 }
                 0x35 if media.rejects_flush => {
                     self.sense = [0; 18];

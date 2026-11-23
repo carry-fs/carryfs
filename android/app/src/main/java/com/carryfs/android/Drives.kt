@@ -88,15 +88,13 @@ object Drives {
         changed(context)
     }
 
-    /** Publish and release a drive. It is released even if publishing fails. */
+    /** Release the drive only after all its volumes publish successfully. */
     @Synchronized fun eject(context: Context, key: Long) {
-        val drive = drives.remove(key) ?: return
-        try {
-            Native.eject(key)
-        } finally {
-            drive.release()
-            changed(context)
-        }
+        val drive = drives[key] ?: return
+        Native.eject(key)
+        drives.remove(key)
+        drive.release()
+        changed(context)
     }
 
     /** Make a CarryFS 0.1.0 volume writable. */

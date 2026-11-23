@@ -23,9 +23,9 @@ carryfs-core = { path = ".." }
 libc = "0.2"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))'.dependencies]
-fuser = { version = "0.18", default-features = false }
+fuser = { version = "0.19", default-features = false }
 
 # fuser mounts through macFUSE's fuse_mount_compat25, which fails on macFUSE 5.
 # mount_macos runs mount_macfuse itself, so fuser neither mounts nor links libfuse.
 [target.'cfg(target_os = "macos")'.dependencies]
-fuser = { version = "0.18", default-features = false, features = ["macos-no-mount"] }
+fuser = { version = "0.19", default-features = false, features = ["macos-no-mount"] }

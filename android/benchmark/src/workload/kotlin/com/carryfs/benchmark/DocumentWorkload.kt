@@ -21,14 +21,14 @@ internal class DocumentWorkload(private val contentResolver: ContentResolver) {
         const val SMALL_BYTES = 4096
     }
 
-    fun run(parent: Uri, name: String, sample: (String, Double, String) -> Unit) {
+    fun run(parent: Uri, name: String, smallOnly: Boolean = false, sample: (String, Double, String) -> Unit) {
         val folder = create(parent, Document.MIME_TYPE_DIR, name)
         Closeable { delete(folder) }.use {
             fun checkedSample(metric: String, value: Double, unit: String) {
                 check(value.isFinite() && value > 0) { "Invalid $metric result: $value" }
                 sample(metric, value, unit)
             }
-            sequential(folder, ::checkedSample)
+            if (!smallOnly) sequential(folder, ::checkedSample)
             smallFiles(folder, ::checkedSample)
         }
     }

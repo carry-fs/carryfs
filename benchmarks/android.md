@@ -108,3 +108,32 @@ Creation improved by 6.1% at the median, with no overlap between the observed
 ranges. Removal took 17.7% less time at the median, with overlap. The
 sequential and listing measurements also overlapped. These runs isolate the
 provider and CarryFS core on internal storage.
+
+## Small-file deletion on Android
+
+The Android provider now gets the parent directory from the delete operation.
+This avoids a second document lookup and lets it notify the parent that
+actually contained the removed document.
+
+The baseline was `ceaf137`. Both builds used the release native library on
+the same phone and alternated in batches of five rounds, each starting with
+a fresh 1 GiB CarryFS image on internal storage. The instrumented workload
+ran with `-e smallOnly true` and checked that the listing contained all
+1,000 names and sizes and that every removal succeeded. The table shows the
+median and observed spread over ten rounds per build. The
+[raw samples](android-image.tsv) use the `delete-baseline` and
+`delete-single-lookup` labels.
+
+| Workload | Unit | Baseline | Single lookup |
+| --- | --- | ---: | ---: |
+| Create and write 1,000 files | files/s | 290.53 (−11.69/+8.80) | 287.57 (−7.16/+4.66) |
+| List 1,000 files | ms | 13.71 (−3.69/+3.69) | 13.91 (−3.93/+5.83) |
+| Remove 1,000 files | ms | 448.64 (−14.65/+15.97) | 428.03 (−9.21/+6.81) |
+
+Median removal time fell by 4.6%. Creation and listing varied within the
+observed spread. A separate USB diagnostic run spent 5.9 seconds in 2,940
+SCSI cache flushes during the 17-second creation phase. Reordering and
+buffering metadata did not cut the number of SCSI writes for creation in
+the simulated transport, so the adapter keeps its existing write and
+durability behavior. Both builds timed out during USB mount in the
+follow-up comparison, so the deletion result is for internal storage.

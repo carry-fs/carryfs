@@ -52,8 +52,8 @@ object Native {
     @JvmStatic external fun create(volume: Long, parent: Long, name: String, directory: Boolean): Long
     @JvmStatic external fun rename(volume: Long, id: Long, name: String)
     @JvmStatic external fun move(volume: Long, id: Long, from: Long, to: Long)
-    /** Delete a file, or a folder and everything in it. */
-    @JvmStatic external fun delete(volume: Long, id: Long)
+    /** Delete a file or directory tree and return its parent. */
+    @JvmStatic external fun delete(volume: Long, id: Long): Long
 
     @JvmStatic external fun open(volume: Long, id: Long, write: Boolean, truncate: Boolean): Long
     @JvmStatic external fun read(volume: Long, file: Long, offset: Long, size: Int, buffer: ByteArray): Int

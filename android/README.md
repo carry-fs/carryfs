@@ -99,6 +99,8 @@ adb shell am instrument -r -w -e image true -e rounds 10 \
 
 Both commands run the same workload as the separate APK and print each
 sample. Image runs measure the provider and core against internal storage.
+Add `-e smallOnly true` to either command to run only small-file creation,
+listing, and removal.
 
 Debug builds show a **Mount test image** button that mounts `files/test.img`
 without a USB drive.

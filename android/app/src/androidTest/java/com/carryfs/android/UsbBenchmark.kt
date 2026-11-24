@@ -21,6 +21,7 @@ class UsbBenchmark {
         val arguments = InstrumentationRegistry.getArguments()
         val usbRun = arguments.getString("usb") == "true"
         val imageRun = arguments.getString("image") == "true"
+        val smallOnly = arguments.getString("smallOnly") == "true"
         assumeTrue(usbRun || imageRun)
         require(!(usbRun && imageRun)) { "Choose USB or the benchmark image" }
         val rounds = arguments.getString("rounds", "1").toInt()
@@ -46,7 +47,7 @@ class UsbBenchmark {
             val runId = UUID.randomUUID()
             val workload = DocumentWorkload(context.contentResolver)
             for (round in 1..rounds) {
-                workload.run(root, "carryfs-bench-$runId-$round") { metric, value, unit ->
+                workload.run(root, "carryfs-bench-$runId-$round", smallOnly) { metric, value, unit ->
                     val line = "CarryFsBench: $round\t$metric\t$value\t$unit\n"
                     instrumentation.sendStatus(0, Bundle().apply { putString("stream", line) })
                 }

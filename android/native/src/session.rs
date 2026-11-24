@@ -328,12 +328,13 @@ impl Session {
         mounted.rename(id, &link, object(to)?, link.name.clone())
     }
 
-    /// Delete a file, or a directory and everything in it.
-    pub fn delete(&mut self, volume: i64, id: i64) -> Result<()> {
+    /// Delete a file or directory tree and return its parent for notification.
+    pub fn delete(&mut self, volume: i64, id: i64) -> Result<i64> {
         let mounted = self.mounted_mut(volume)?;
         let link = mounted.document_name(id)?;
         let kind = mounted.volume.attributes(link.object)?.kind;
-        mounted.remove_tree(link.parent, &link.name, link.object, kind)
+        mounted.remove_tree(link.parent, &link.name, link.object, kind)?;
+        Ok(link.parent.get() as i64)
     }
 
     pub fn open(&mut self, volume: i64, id: i64, write: bool, truncate: bool) -> Result<i64> {
@@ -821,7 +822,7 @@ mod tests {
         assert_eq!(names(&mut session, volume, root), ["a", "g.txt"]);
         assert_eq!(session.stat(volume, file).unwrap().name, "g.txt");
 
-        session.delete(volume, a).unwrap();
+        assert_eq!(session.delete(volume, a).unwrap(), root);
         assert_eq!(names(&mut session, volume, root), ["g.txt"]);
         assert!(matches!(session.stat(volume, b), Err(Error::NotFound)));
     }
@@ -893,8 +894,8 @@ mod tests {
         session.move_to(volume, sibling, a, b).unwrap();
         assert_eq!(session.stat(volume, sibling).unwrap().parent, b);
         assert_eq!(id_for(&mut session, b, "renamed"), sibling);
-        session.delete(volume, sibling).unwrap();
-        session.delete(volume, other).unwrap();
+        assert_eq!(session.delete(volume, sibling).unwrap(), b);
+        assert_eq!(session.delete(volume, other).unwrap(), b);
         assert_eq!(names(&mut session, volume, a), ["original"]);
         assert!(names(&mut session, volume, b).is_empty());
         assert_eq!(id_for(&mut session, a, "original"), original);

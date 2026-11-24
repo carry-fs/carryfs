@@ -470,10 +470,10 @@ pub extern "system" fn Java_com_carryfs_android_Native_delete<'local>(
     _: JClass<'local>,
     volume: jlong,
     id: jlong,
-) {
-    call(&mut env, (), |_| {
+) -> jlong {
+    call(&mut env, 0, |_| {
         Ok(with_volume(volume, |session| session.delete(volume, id))?)
-    });
+    })
 }
 
 #[unsafe(no_mangle)]

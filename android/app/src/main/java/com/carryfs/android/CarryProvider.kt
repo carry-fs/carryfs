@@ -137,8 +137,7 @@ class CarryProvider : DocumentsProvider() {
 
     override fun deleteDocument(documentId: String) {
         val doc = parse(documentId)
-        val parent = call { Native.entry(doc.volume, doc.id).parent }
-        call { Native.delete(doc.volume, doc.id) }
+        val parent = call { Native.delete(doc.volume, doc.id) }
         notifyChildren(documentId(doc.volume, parent))
     }
 

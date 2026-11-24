@@ -85,6 +85,9 @@ for methods, raw results, and comparisons with native filesystems.
   <img alt="CarryFS speed relative to exFAT on macOS, Windows, and Linux (FUSE and kernel driver)" src="benchmarks/charts/vs-exfat-light.svg">
 </picture>
 
+[Android USB benchmark results](benchmarks/android.md) compare CarryFS and
+exFAT through the system file picker.
+
 ## Current status
 
 CarryFS is in **public beta**. Keep independent backups and never store the

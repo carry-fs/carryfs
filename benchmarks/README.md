@@ -13,7 +13,11 @@ destination verification.
 FreeBSD has separate adapter benchmarks; see
 [FreeBSD adapter benchmarks](#freebsd-adapter-benchmarks).
 
-Every sample formats its target. Use disposable images or a disk whose
+See the [Android USB results](android.md) for the system file picker workloads
+and the [Android run instructions](../android/README.md#compare-usb-filesystems)
+to reproduce them.
+
+Every desktop sample formats its target. Use disposable images or a disk whose
 contents you can lose.
 
 ## Files

@@ -88,3 +88,69 @@ adb shell am instrument -r -w -e usb true -e class com.carryfs.android.UsbBenchm
 
 Debug builds show a **Mount test image** button that mounts the same image
 without a USB drive.
+
+## Compare USB filesystems
+
+The benchmark APK uses the system file picker to exercise CarryFS and Android's
+native USB storage provider from the same client. It needs Wireless debugging
+for ADB, an unlocked phone, and a local folder grant for each volume. CarryFS
+also needs the app's usual USB permission. Root access is unnecessary.
+
+Use the same SSD, USB adapter and cable for both runs. Existing writable
+volumes work if each has at least 1 GiB free. If you need to prepare a test
+partition, format it on a desktop after backing up the disk. Use exFAT as the
+baseline when the phone supports it, or FAT32 on devices that expose only
+FAT32. Keep the phone idle and record the format, partition size, existing data
+and free space. A USB 2.0 hub can help troubleshoot adapters that time out when
+switching from UAS to Bulk-Only Transport. Use the same hub for both sides if
+you do.
+
+From `android/`, install the CarryFS and benchmark APKs before mounting the drive.
+
+```sh
+./gradlew :app:installDebug :benchmark:installDebug
+```
+
+Run the native baseline while Android owns the drive. If CarryFS opens
+automatically, eject in CarryFS, remove its USB default in Android settings
+and reconnect the drive. Check `adb shell sm list-volumes public` for the
+mounted volume's UUID and verify its filesystem on the desktop or in the phone's
+mount diagnostics. Replace `1234-ABCD` with that UUID, choose a folder on that
+volume in the picker, and grant access.
+
+```sh
+adb shell am start -S -n com.carryfs.benchmark/.BenchmarkActivity \
+  --es filesystem exfat --es volume 1234-ABCD --ei rounds 5
+```
+
+Use `--es filesystem fat32` for a FAT32 partition.
+
+When the baseline completes, eject the volume through Android, mount the
+drive from CarryFS, and run the same number of rounds. Select the CarryFS
+volume in the picker.
+
+```sh
+adb shell am start -S -n com.carryfs.benchmark/.BenchmarkActivity \
+  --es filesystem carryfs --ei rounds 5
+```
+
+Each round writes and syncs a 512 MiB file, reads it back and verifies every
+byte, then creates, lists and removes 1,000 files of 4 KiB. The benchmark
+creates and removes only its own directories. If interrupted, it can leave a
+`carryfs-bench-*` directory behind. The read immediately follows the write and
+can hit cache. The small-file timings use ordinary document operations
+without explicit file or directory syncs.
+
+The app shows the result filename when all rounds pass. Retrieve it from the
+debug APK's private storage. Replace the filename with the one shown or use
+`adb logcat -d -s CarryFsBench` to find it.
+
+```sh
+adb exec-out run-as com.carryfs.benchmark cat files/results-exfat-RUN-ID.tsv > exfat.tsv
+```
+
+Keep the per-round TSVs with the phone model, Android build, disk, USB
+connection, CarryFS revision and run order. Report medians and ranges. The
+workloads measure Android's document provider paths, including both providers
+and their underlying drivers, so keep the results alongside the POSIX desktop
+suite.

@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "carryfs-android"
 include(":app")
+include(":benchmark")

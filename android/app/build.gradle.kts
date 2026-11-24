@@ -31,6 +31,7 @@ android {
     }
 
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("rust"))
+    sourceSets["androidTest"].java.srcDir("../benchmark/src/workload/kotlin")
 }
 
 kotlin {

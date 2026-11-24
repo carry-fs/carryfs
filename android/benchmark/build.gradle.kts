@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.carryfs.benchmark"
     compileSdk = 35
+    sourceSets["main"].java.srcDir("src/workload/kotlin")
 
     defaultConfig {
         applicationId = "com.carryfs.benchmark"

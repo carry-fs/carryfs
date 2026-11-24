@@ -78,15 +78,29 @@ adb shell run-as com.carryfs.android sh -c "'mkdir -p files && cp /data/local/tm
 adb shell am instrument -w com.carryfs.android.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-To measure copy speed on a real drive, plug it in, grant USB access in the
-app, eject it, and run the benchmark. It writes, reads, and deletes a 256 MiB
-file:
+To run the document workload for CarryFS alone, plug in the USB drive,
+grant access in the app, eject it, and run:
 
 ```sh
-adb shell am instrument -r -w -e usb true -e class com.carryfs.android.UsbBenchmark com.carryfs.android.test/androidx.test.runner.AndroidJUnitRunner
+adb shell am instrument -r -w -e usb true -e rounds 10 \
+  -e class com.carryfs.android.UsbBenchmark com.carryfs.android.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Debug builds show a **Mount test image** button that mounts the same image
+For a run on the phone's internal storage, create a 1 GiB CarryFS image
+and copy it to the debug app:
+
+```sh
+carryfs mkfs benchmark.img 1073741824
+adb push benchmark.img /data/local/tmp/benchmark.img
+adb shell run-as com.carryfs.android sh -c "'mkdir -p files && cp /data/local/tmp/benchmark.img files/benchmark.img'"
+adb shell am instrument -r -w -e image true -e rounds 10 \
+  -e class com.carryfs.android.UsbBenchmark com.carryfs.android.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Both commands run the same workload as the separate APK and print each
+sample. Image runs measure the provider and core against internal storage.
+
+Debug builds show a **Mount test image** button that mounts `files/test.img`
 without a USB drive.
 
 ## Compare USB filesystems
@@ -120,7 +134,7 @@ volume in the picker, and grant access.
 
 ```sh
 adb shell am start -S -n com.carryfs.benchmark/.BenchmarkActivity \
-  --es filesystem exfat --es volume 1234-ABCD --ei rounds 5
+  --es filesystem exfat --es volume 1234-ABCD --ei rounds 10
 ```
 
 Use `--es filesystem fat32` for a FAT32 partition.
@@ -131,15 +145,15 @@ volume in the picker.
 
 ```sh
 adb shell am start -S -n com.carryfs.benchmark/.BenchmarkActivity \
-  --es filesystem carryfs --ei rounds 5
+  --es filesystem carryfs --ei rounds 10
 ```
 
-Each round writes and syncs a 512 MiB file, reads it back and verifies every
-byte, then creates, lists and removes 1,000 files of 4 KiB. The benchmark
-creates and removes only its own directories. If interrupted, it can leave a
-`carryfs-bench-*` directory behind. The read immediately follows the write and
-can hit cache. The small-file timings use ordinary document operations
-without explicit file or directory syncs.
+Each round writes and syncs a 512 MiB file in 128 KiB requests, reads it back
+and verifies every byte, then creates, lists and removes 1,000 files of 4 KiB.
+The benchmark creates and removes only its own directories. If interrupted,
+it can leave a `carryfs-bench-*` directory behind. The read immediately
+follows the write and can hit cache. The small-file timings use ordinary
+document operations without explicit file or directory syncs.
 
 The app shows the result filename when all rounds pass. Retrieve it from the
 debug APK's private storage. Replace the filename with the one shown or use

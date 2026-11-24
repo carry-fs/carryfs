@@ -36,6 +36,7 @@ const USBDEVFS_CLEAR_HALT: u32 = ioc(2, 21, size_of::<libc::c_uint>());
 
 // ponytail: one timeout for every transfer; a slow SYNCHRONIZE CACHE needs the headroom.
 const TIMEOUT_MS: u32 = 20_000;
+const FALLBACK_READ_BYTES: usize = 16 << 10;
 
 /// A claimed mass-storage interface. The descriptor stays owned by the
 /// Kotlin `UsbDeviceConnection`, which must outlive this value.
@@ -44,6 +45,7 @@ pub struct Usbfs {
     interface: u16,
     endpoint_in: u8,
     endpoint_out: u8,
+    bulk_in_limit: usize,
 }
 
 impl Usbfs {
@@ -53,6 +55,7 @@ impl Usbfs {
             interface,
             endpoint_in,
             endpoint_out,
+            bulk_in_limit: usize::MAX,
         }
     }
 
@@ -92,7 +95,12 @@ impl Transport for Usbfs {
     }
 
     fn bulk_in(&mut self, data: &mut [u8]) -> io::Result<usize> {
-        self.bulk(self.endpoint_in, data.as_mut_ptr().cast(), data.len())
+        let mut limit = self.bulk_in_limit;
+        let result = read_bulk(data, &mut limit, |chunk| {
+            self.bulk(self.endpoint_in, chunk.as_mut_ptr().cast(), chunk.len())
+        });
+        self.bulk_in_limit = limit;
+        result
     }
 
     fn clear_halt(&mut self, endpoint: Endpoint) -> io::Result<()> {
@@ -115,5 +123,75 @@ impl Transport for Usbfs {
             data: ptr::null_mut(),
         };
         self.ioctl(USBDEVFS_CONTROL, &mut request)
+    }
+}
+
+fn read_bulk(
+    data: &mut [u8],
+    limit: &mut usize,
+    mut transfer: impl FnMut(&mut [u8]) -> io::Result<usize>,
+) -> io::Result<usize> {
+    let mut moved = 0;
+    loop {
+        let len = (data.len() - moved).min(*limit);
+        match transfer(&mut data[moved..moved + len]) {
+            Ok(read) => {
+                moved += read;
+                if read < len || moved == data.len() {
+                    return Ok(moved);
+                }
+            }
+            // usbfs reports ENOMEM before submission, so no packet was consumed.
+            Err(error)
+                if error.raw_os_error() == Some(libc::ENOMEM) && len > FALLBACK_READ_BYTES =>
+            {
+                *limit = FALLBACK_READ_BYTES;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_failure_retries_the_same_bytes_in_smaller_transfers() {
+        let mut data = [0; 4 * FALLBACK_READ_BYTES];
+        let mut limit = usize::MAX;
+        let mut calls = Vec::new();
+        let mut next = 1;
+        let read = read_bulk(&mut data, &mut limit, |chunk| {
+            calls.push(chunk.len());
+            if chunk.len() > FALLBACK_READ_BYTES {
+                return Err(io::Error::from_raw_os_error(libc::ENOMEM));
+            }
+            chunk.fill(next);
+            next += 1;
+            Ok(chunk.len())
+        })
+        .unwrap();
+        assert_eq!(limit, FALLBACK_READ_BYTES);
+        assert_eq!(read, data.len());
+        assert_eq!(calls, [data.len(), limit, limit, limit, limit]);
+        for (index, chunk) in data.chunks_exact(limit).enumerate() {
+            assert!(chunk.iter().all(|&byte| byte == index as u8 + 1));
+        }
+    }
+
+    #[test]
+    fn short_transfer_ends_the_data_phase() {
+        let mut data = [0; 3 * FALLBACK_READ_BYTES];
+        let mut limit = FALLBACK_READ_BYTES;
+        let mut calls = 0;
+        let read = read_bulk(&mut data, &mut limit, |chunk| {
+            calls += 1;
+            assert_eq!(chunk.len(), FALLBACK_READ_BYTES);
+            assert!(calls <= 2);
+            Ok(if calls == 1 { chunk.len() } else { 7 })
+        })
+        .unwrap();
+        assert_eq!(read, FALLBACK_READ_BYTES + 7);
     }
 }

@@ -7,9 +7,7 @@ keeps the source read-only.
 
 Unix installations provide `fsck.carryfs`. From a checkout, build the core with
 `cargo build --locked -p carryfs-core` and use `target/debug/fsck-carryfs`.
-`carryfs fsck` accepts the same options. On Windows, use `carryfs.exe fsck` for
-image diagnosis, repair, and recovery to a new image. Directory export requires
-Linux, macOS, FreeBSD, or NetBSD.
+`carryfs fsck` accepts the same options. On Windows, use `carryfs.exe fsck`.
 
 ## Diagnose without writing
 
@@ -47,6 +45,11 @@ disconnected directory is reconnected with its surviving children.
 The destination and report must be new. Existing files, including symlinks and
 source aliases, are refused. Without `--report`, export writes a report beside
 the destination with `.recovery.txt` appended to its name.
+
+On Windows, names Windows forbids are written with the reversible aliases the
+CarryFS adapter shows, a missing owner write bit becomes the read-only flag, and
+symlinks need administrator rights or Developer Mode. A symlink that cannot be
+created is reported, and export fails once everything else is written.
 
 ## Recover into a new image
 

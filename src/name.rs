@@ -4,6 +4,9 @@ use carryfs_ondisk::name::{self as profile, Scratch};
 
 use crate::Result;
 
+mod windows;
+pub use windows::windows_symlink_target;
+
 thread_local! {
     // About 33 KiB, so one per thread instead of one per name.
     static SCRATCH: RefCell<Box<Scratch>> = RefCell::new(Box::new(Scratch::new()));

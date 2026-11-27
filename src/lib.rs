@@ -44,7 +44,7 @@ pub fn version_line(program: &str) -> String {
 }
 pub use device::{BlockDevice, Geometry, ImageDevice, MountMode};
 pub use error::{Error, Result};
-pub use name::Name;
+pub use name::{Name, windows_symlink_target};
 pub use volume::{
     Access, AttributeChange, Attributes, DirectoryCursor, DirectoryEntry, DirectoryPage,
     ExtractionSink, ExtractionSummary, Finding, Handle, ImageRecovery, LeavesRead, Mode,

@@ -60,11 +60,10 @@ debug-assertions = true
 lto = "fat"
 codegen-units = 1
 
-# The fork is upstream fuser plus before_destroy, so publication finishes
-# before the unmount reply (cberner/fuser#757), and a spin budget for the
-# event loop (`Config::spin`). On NetBSD it also converts the nodev mount
-# flag, which nix lacks (cberner/fuser#782), and retries replies the relay
-# socket rejects with EMSGSIZE until it has room (cberner/fuser#783).
-# Return to upstream once these fixes are available.
+# The fork is upstream fuser master plus a spin budget for the event loop
+# (`Config::spin`) and `before_destroy`, which runs only on FUSE_DESTROY.
+# Upstream's `destroy` also runs when the session ends without one, after a
+# fuseblk mount may have released its device, so it cannot publish safely.
+# Return to upstream once it covers both.
 [patch.crates-io]
 fuser = { git = "https://github.com/carry-fs/fuser", branch = "master" }

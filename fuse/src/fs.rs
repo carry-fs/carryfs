@@ -1260,7 +1260,7 @@ impl<D: BlockDevice + Send + 'static> Filesystem for CarryFs<D> {
 
     /// Stop the timer even if the session aborted without DESTROY. Linux
     /// must not write here, because the kernel may have released its claim.
-    fn destroy(&mut self) {
+    fn destroy(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.ended = true;
             #[cfg(target_os = "macos")]

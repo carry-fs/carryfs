@@ -1,8 +1,8 @@
 # CarryFS 0.2.0
 
 CarryFS is an open-source filesystem for sharing data drives across macOS,
-Linux, Windows, FreeBSD, and NetBSD. This release adds Unix permissions, hard links,
-and preallocation, and moves the disk format to revision 2.
+Linux, Windows, FreeBSD, and NetBSD. This release adds Unix permissions, hard
+links, and preallocation, and moves the disk format to revision 2.
 
 CarryFS remains in public beta. Keep independent backups and do not store the
 only copy of important data on a CarryFS volume. Disk format revision 2 is not
@@ -12,8 +12,8 @@ reformatting the partition.
 ## New in 0.2.0
 
 - Volumes store each object's Unix permission bits and a hidden attribute.
-  Linux, macOS, FreeBSD, and NetBSD enforce the permission bits for the account that
-  mounted the volume. Windows shows a file without the owner write bit as
+  Linux, macOS, FreeBSD, and NetBSD enforce the permission bits for the account
+  that mounted the volume. Windows shows a file without the owner write bit as
   read-only.
 - Files and symlinks can have up to 65,535 names through `ln`. Windows opens,
   renames, and deletes them but cannot create new ones.
@@ -40,8 +40,7 @@ reformatting the partition.
   reads and writes.
 - The installers and CarryFS Manager offer a stable release as an update to its
   release candidates, so 0.2.0 replaces 0.2.0-rc.1.
-- The release has three new kinds of download. The installers don't install
-  them:
+- Three new kinds of download, which the installers don't install:
   - `carryfs-0.2.0-android-arm64.apk` is an Android app for Android 8 or later
     on arm64. It shows CarryFS volumes on a USB drive in the Files app and the
     file picker. A development key signs it, so uninstall it before you install

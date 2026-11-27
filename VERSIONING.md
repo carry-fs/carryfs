@@ -71,11 +71,11 @@ cannot read.
 
 ## The UI manager
 
-The UI ships in the same release with the same version. If it ever talks to a
-separately installed process that can be on another version, give that
-connection a protocol number and check it when connecting. One example is the
-Windows service after only one of the two has updated. Until then it needs
-none.
+The UI ships in the same release with the same version. It needs no protocol
+version as long as it only runs its companion `carryfs`. If it ever talks to a
+separately installed process, such as the Windows service, the two can be on
+different versions after one of them updates. Give that connection a protocol
+number then, and check it when connecting.
 
 If the UI starts shipping on its own schedule, give it a tag prefix of its own
 in this repository, such as `ui-v1.4.0`, and its own release index.
@@ -91,3 +91,9 @@ in this repository, such as `ui-v1.4.0`, and its own release index.
 3. Push a `vX.Y.Z` tag, or `vX.Y.Z-rc.N` for a prerelease.
    `.github/workflows/release.yml` builds and publishes the packages, then
    republishes `https://carryfs.com/releases.txt`.
+
+The publisher builds `releases.txt` from the published GitHub releases that
+have all three platform packages and `SHA256SUMS`. Never add a version to it
+by hand. A tagged run updates only the index and leaves the website's
+installer scripts alone. If the index update fails after the release
+succeeded, rerun the failed publisher job.

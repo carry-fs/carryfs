@@ -1,8 +1,8 @@
 # Offline recovery measurements
 
-The recovery benchmark times diagnosis, new-image reconstruction, embedded
-manifests and optional destination data verification. It uses the release
-profile, one thread and the standard library only.
+The recovery benchmark times diagnosis, recovery into a new image, the
+embedded manifest, and the optional verification of destination data. It
+uses the release profile, one thread, and only the standard library.
 
 ## Reproduce
 
@@ -14,9 +14,9 @@ cargo bench --locked --bench recovery --no-run
 cargo build --release --locked -p carryfs-core --bin fsck-carryfs
 ```
 
-Cargo prints the benchmark path. The baseline here is `7e466fa` with the same
-benchmark harness and `[[bench]] name = "recovery", harness = false` entry
-copied in. No production code changed in the baseline.
+Cargo prints the benchmark path. The baseline here is `7e466fa`, with this
+benchmark harness and its `[[bench]] name = "recovery", harness = false` entry
+copied in and no other change.
 
 Generate the shared CLI inputs with either benchmark binary. Each image
 filename must be new:
@@ -35,22 +35,22 @@ python3 benchmarks/recovery.py \
 taskset -c 2 CANDIDATE_BENCH --case bandwidth --rounds 10
 ```
 
-Drop `--cpu` where `sched_setaffinity` is missing and `taskset` where it is
-missing. The runner needs Python 3.11+, alternates baseline and candidate five
-times, warms each case and refuses an existing output directory. It writes the
-raw samples to `memory.tsv` and `cli.tsv` in that directory.
+Drop `--cpu` where `sched_setaffinity` is missing, and `taskset` where that
+is missing. The runner needs Python 3.11 or later. It warms each case,
+alternates baseline and candidate five times, and refuses an output directory
+that exists. It writes the raw samples to `memory.tsv` and `cli.tsv` there.
 
 The cases are 1,000 files of 4 KiB each (clean, disconnected by removed
 directory entries, or missing their checksum records), one dense 16 MiB file,
 and one sparse file with four backed bytes at the 1 TiB offset.
 
-The RAM numbers use a RAM device and exclude input setup. They cover diagnosis
-or recovery, including manifest publication and the final structural check.
-The CLI numbers include process startup, sparse image creation, sidecar
-reports, durability calls and `--verify-data`. For the CLI the runner also
-checks the exit code (1 for complete recovery, 4 for missing source data),
-compares the manifests of both sides except the destination UUID, and confirms
-the source SHA-256 did not change.
+The RAM numbers use a RAM device and leave out input setup. They cover
+diagnosis or recovery, including manifest publication and the final
+structural check. The CLI numbers add process startup, sparse image creation,
+the report files, durability calls, and `--verify-data`. For the CLI the
+runner also checks the exit code (1 for complete recovery, 4 for missing
+source data), compares both sides' manifests apart from the destination UUID,
+and confirms that the source's SHA-256 didn't change.
 
 ## What changed
 
@@ -69,10 +69,11 @@ checksum validation and workspace checkpoint encoding. The fixes:
 
 ## Results
 
-Linux x86-64 under KVM, four vCPUs on an AMD EPYC 7543, 7.7 GiB RAM, Rust
-1.99.1, fat LTO, one codegen unit, one worker pinned to CPU 2. Other builds and
-VMs ran during the comparison (load average about 5), so the ranges include
-that noise. These are warm-input numbers, not physical-device throughput.
+The host was Linux x86-64 under KVM, with four vCPUs on an AMD EPYC 7543 and
+7.7 GiB of RAM. The build used Rust 1.99.1, fat LTO, and one codegen unit,
+with one worker pinned to CPU 2. Other builds and VMs ran during the
+comparison (load average about 5), and the ranges include that noise. Inputs
+were warm, so these numbers say nothing about physical-device throughput.
 
 Verified recovery on the RAM device, excluding diagnosis. Median
 [min-max] milliseconds over five alternating samples per side:
@@ -98,22 +99,22 @@ CLI with `--verify-data`, same units:
 The 1,000-orphan case is about 30x faster in RAM and 72x faster through the
 CLI. Flush requests drop from 12,048 to 24 (18 without verification), and
 destination writes from 102,436,864 to 5,451,776 bytes. The sparse case shows
-no RAM change. Its CLI median is lower but the ranges overlap, so it is not an
-established win.
+no RAM change. Its CLI median is lower, but the ranges overlap, so it isn't a
+proven win.
 
 An untimed `strace -c` run of verified 1,000-orphan CLI recovery counted
 `pread64` calls dropping from 115,492 to 4,166, `pwrite64` from 25,009 to
-1,331 and `fsync` from 12,056 to 32. Peak RSS in one `/usr/bin/time` sample went from
-21,008 to 7,808 KiB. The metadata cache keeps its 4,096-node bound.
+1,331, and `fsync` from 12,056 to 32. Peak RSS in one `/usr/bin/time` sample
+went from 21,008 to 7,808 KiB. The metadata cache keeps its 4,096-node bound.
 
 Copying 64 MiB with `--case bandwidth` took a median of 20.57 ms (about
 3.26 GB/s). Verified dense recovery is about 5x that copy-only bound and
 verified 1,000-orphan recovery about 36x. The remaining profile is spread over
 tree scans and writes, memory copies, checksums and diagnosis.
 
-Clean-source recovery still re-reads physical metadata. Caching it for the
-whole copy might save about 0.8 s per 1,000 files, which is an inference and
-not a measurement. It was not done because it would stop detecting metadata
+Recovery from a clean source still rereads physical metadata. Caching it for
+the whole copy might save about 0.8 s per 1,000 files. That estimate is
+inferred, not measured. The cache was left out because it would hide metadata
 faults that appear after the first read.
 
 Nothing here covers macOS, Windows, FreeBSD, other CPUs, failing physical

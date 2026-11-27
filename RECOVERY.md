@@ -1,97 +1,99 @@
 # Recover and repair a CarryFS volume
 
-Unmount or eject the volume before diagnosis, export, or repair. Keep an image
-of the damaged device if you need to preserve evidence or try another recovery
-method later. In-place repair changes the original filesystem. New-image recovery
-keeps the source read-only.
+Unmount or eject the volume before you diagnose, export, or repair it. If you
+may want evidence later, or another try with a different method, keep an image
+of the damaged device first. In-place repair changes the original filesystem.
+Recovery into a new image and export to a folder leave the source read-only.
 
-Unix installations provide `fsck.carryfs`. From a checkout, build the core with
-`cargo build --locked -p carryfs-core` and use `target/debug/fsck-carryfs`.
-`carryfs fsck` accepts the same options. On Windows, use `carryfs.exe fsck` for
-image diagnosis, repair, and recovery to a new image. Directory export requires
-Linux, macOS, FreeBSD, or NetBSD.
+Unix installations include `fsck.carryfs`. From a checkout, build the core with
+`cargo build --locked -p carryfs-core` and run `target/debug/fsck-carryfs`.
+`carryfs fsck` takes the same options. On Windows, `carryfs.exe fsck`
+diagnoses and repairs images and recovers them into new images. Export to a
+folder needs Linux, macOS, FreeBSD, or NetBSD.
 
 ## Diagnose without writing
 
-Run the checker with no options, or request the repair plan explicitly:
+Run the checker with no options, or with `--plan`, which does the same:
 
 ```sh
 fsck.carryfs --plan volume.cfs
 ```
 
-Read the reported findings and proposed changes. Diagnosis does not modify the
-volume or create a report unless you supply `--report NEW_FILE`. A plan describes
-structural repairs. Run `carryfs scrub volume.cfs` separately to verify file data
-when the metadata is readable.
+It prints what it found and the changes a repair would make. It writes
+nothing, not even a report unless you pass `--report NEW_FILE`. The plan covers
+the structure only. If the metadata is readable, run `carryfs scrub volume.cfs`
+to verify the file data too.
 
 ## Export accessible files
 
-To recover files before modifying the source, choose a new destination on another
+To copy files out before you change the source, pick a new folder on another
 filesystem:
 
 ```sh
 fsck.carryfs --recover recovered --report recovery.txt volume.cfs
 ```
 
-Inspect `recovery.txt` even when some files look intact. The report lists missing
-metadata and incomplete mappings. It also records data ranges that failed checksum
-verification. Unreadable ranges remain unwritten in partial files. Those ranges
-are missing data, and must not be treated as verified zeros.
+Read `recovery.txt` even when the files look intact. It lists missing
+metadata, incomplete mappings, and data ranges that failed their checksum.
+Export leaves unreadable ranges unwritten in partial files. Treat them as
+missing data, not as zeros.
 
-Recovery continues through independently valid catalog branches. Files without
-usable directory entries appear under `lost+found`, named by their original
-object IDs. If the source already has a file named `lost+found`, recovery uses
-`lost+found.1` or the next available suffix. Directory cycles are broken and the
-disconnected directory is reconnected with its surviving children.
+Export skips damaged catalog branches and keeps going through the valid ones.
+Files that lost their directory entries go to `lost+found`, named by their
+object IDs. If the source already has a `lost+found`, export uses
+`lost+found.1` or the next free suffix. Export breaks directory cycles and
+reconnects the cut-off directory with its surviving children.
 
-The destination and report must be new. Existing files, including symlinks and
-source aliases, are refused. Without `--report`, export writes a report beside
-the destination with `.recovery.txt` appended to its name.
+The destination and the report must not exist yet. Export refuses existing
+paths, including symlinks and other names for the source. Without `--report`,
+it writes the report beside the destination, named after it with
+`.recovery.txt` appended.
 
 ## Recover into a new image
 
-To rebuild accessible files without modifying the damaged source, choose a new
-image filename:
+To rebuild the readable files into a new image without changing the damaged
+source, give a new image filename:
 
 ```sh
 fsck.carryfs --repair --output recovered.cfs volume.cfs
 ```
 
-The tool opens the source read-only and creates a sparse CarryFS image with the
-same byte length. It copies checksum-verified data through the normal filesystem
-writer, rebuilding allocation and metadata independently of the source's writable
-workspace. Existing output files, symlinks, and source aliases are refused.
-A clean source can also be rebuilt this way.
+The tool opens the source read-only and creates a sparse CarryFS image of the
+same length. It copies checksum-verified data through the normal filesystem
+writer, which builds new allocation and metadata without using the source's
+workspace. It refuses existing output paths, symlinks, and other names for the
+source. This works on a clean source too.
 
-Every new image contains `RECOVERY-REPORT.json` at its root. If that name or its
-working filename conflicts with a recovered entry, the tool chooses
-`RECOVERY-REPORT.1.json` or the next available suffix. Existing source files keep
-their names and contents. The exact same JSON is saved beside the image as
-`recovered.cfs.recovery.json`. Both sidecars must be new files.
+Every new image has `RECOVERY-REPORT.json` at its root. If a recovered entry
+already uses that name or its working filename, the tool picks
+`RECOVERY-REPORT.1.json` or the next free suffix, and the recovered file keeps
+its name and contents. The tool also saves the same JSON beside the image as
+`recovered.cfs.recovery.json`. Both reports must be new files.
 
 The manifest records the source UUID and generation, destination UUID, recovery
 plan, per-file paths and object IDs, copied bytes, missing source ranges, and
 output verification failures. A file is `partial` when a known range is missing,
 `unknown` when metadata completeness cannot be established, and `damaged` when
-destination verification detects bad output data. Damage findings can overlap.
-A clean scrub does not change a partial or unknown source status.
+destination verification finds bad output data. A file can have more than
+one of these. A clean scrub doesn't clear a `partial` or `unknown` status.
 
-Once file copying begins, the embedded report is durable with state
-`in_progress`. Complete reports replace it through an atomic rename. Interrupted
-updates retain the earlier report and can leave a `.working` file. A completed
-report has state `complete`, `partial`, or `verification_failed`. Generated
-manifest files are excluded from recovered object and file totals.
+Before copying starts, the tool makes the embedded report durable with state
+`in_progress`. It replaces the report through an atomic rename as it
+finishes. An interrupted update keeps the earlier report and can leave a
+`.working` file. A finished report has state `complete`, `partial`, or
+`verification_failed`. The totals of recovered objects and files leave out the
+report files.
 
-The new image retains the volume label, recovered paths, hard links, symlink
-targets, timestamps, permission bits, and hidden attributes. It receives a fresh UUID
-and assigns object IDs during reconstruction. Sparse file contents are retained.
-Unwritten preallocation is not copied.
+The new image keeps the volume label, recovered paths, hard links, symlink
+targets, timestamps, permission bits, hidden attributes, and holes in sparse
+files. It gets a new UUID and new object IDs. Reserved space that was never
+written is not copied.
 
-The text report defaults to `recovered.cfs.recovery.txt`; `--report NEW_FILE`
-overrides it. The tool syncs the report before it creates the image. It lists
-missing metadata and unreadable file ranges with their recovered paths. Read it
-even when the new image passes scrub, because missing data stays unwritten and
-reads as zeros in partial files.
+The text report goes to `recovered.cfs.recovery.txt` unless you pass
+`--report NEW_FILE`. The tool syncs it before it creates the image. It lists
+missing metadata and unreadable file ranges by recovered path. Read it even
+when the new image passes scrub. Missing data stays unwritten and reads as
+zeros in partial files, and scrub can't tell.
 
 To read back and verify destination data after copying and flushing, add
 `--verify-data`:
@@ -100,20 +102,20 @@ To read back and verify destination data after copying and flushing, add
 fsck.carryfs --repair --output recovered.cfs --verify-data volume.cfs
 ```
 
-This checks the backed ranges of recovered regular files and reads back the final
-manifest. It does not treat source gaps as verified original zeros. The manifest
-records verification as `not_requested`, `pending`, `passed`, or `failed`.
-Destination data failures produce `verification_failed`, retain both damage
-reports, and exit with status 8. Source damage still produces a partial result
-with status 4 even when all surviving output data verifies successfully.
+This reads back the written ranges of recovered regular files and the final
+manifest. Gaps from the source still count as missing, not as verified zeros.
+The manifest records verification as `not_requested`, `pending`, `passed`, or
+`failed`. If destination data fails, the result is `verification_failed`, both
+reports stay, and the tool exits with status 8. Source damage still gives a
+partial result with status 4, even when every surviving byte verifies.
 
-New-image recovery does not need `--accept-data-loss`, because the source stays
-untouched. Complete recovery exits with status 1. Partial recovery keeps the new
-image and report and exits with status 4. A write or flush failure exits with
-status 8 and may leave a partial image. A report without the image recovery
-completion entry marks an unfinished attempt. Retry with new output and report
-filenames. Before it reports completion, the tool reads the finished image back
-and checks its structure.
+Recovery into a new image never needs `--accept-data-loss`, because it leaves
+the source alone. Before it reports completion, the tool reads the finished
+image back and checks its structure. Complete recovery exits with status 1.
+Partial recovery keeps the new image and report and exits with status 4. A
+write or flush failure exits with status 8 and can leave a partial image. If
+the report has no completion entry for the image, the attempt didn't finish.
+Retry with new output and report filenames.
 
 ## Repair the original volume
 
@@ -123,25 +125,25 @@ After reviewing the plan and exporting what you need, run:
 fsck.carryfs --repair --report repair.txt volume.cfs
 ```
 
-Repair reconnects recoverable objects and rebuilds the catalog, allocation map,
-and cleanup tree. File bytes, object IDs, the volume UUID, timestamps, modes,
-symlink targets, and preallocated extents are retained where their metadata
-survives. Freed space includes obsolete metadata and pending cleanup allocations.
-Repair completes pending deletions that have matching orphan markers.
-The report is synchronized before repair starts. Without `--report`, image repair
-appends `.repair.txt` to the source name.
+Repair reconnects recoverable objects and rebuilds the catalog, the allocation
+map, and the cleanup tree. Where their metadata survives, it keeps file bytes,
+object IDs, the volume UUID, timestamps, modes, symlink targets, and reserved
+extents. It frees obsolete metadata and space waiting for cleanup, and
+finishes pending deletions that have matching orphan markers. It syncs the
+report before it starts. Without `--report`, image repair writes the report
+to the source name with `.repair.txt` appended.
 
-If the plan lists inaccessible catalog pages or incomplete file mappings, ordinary
-repair refuses to discard them. After saving the source and reviewing the listed
-losses, you can explicitly permit that loss:
+If the plan lists unreadable catalog pages or incomplete file mappings, repair
+refuses to discard them. After you save a copy of the source and review the
+listed losses, you can allow that loss:
 
 ```sh
 fsck.carryfs --repair --accept-data-loss --report accepted-loss.txt volume.cfs
 ```
 
-This option cannot reconstruct missing bytes or bypass an unsafe write plan.
+This option can't bring back missing bytes or override an unsafe write plan.
 Keep the report with the repaired volume. A structurally valid result can still
-contain partial files or lack objects whose inodes were unreadable.
+hold partial files or miss objects whose inodes were unreadable.
 
 After repair, verify the data and review any remaining errors:
 
@@ -150,50 +152,52 @@ carryfs check volume.cfs
 carryfs scrub volume.cfs
 ```
 
-If repair is interrupted or reports an I/O failure, close the tool and run a fresh
-diagnosis before another repair. Use a new report filename for the next attempt.
+If repair stops partway or reports an I/O failure, close the tool and diagnose
+the volume again before you retry. Use a new report filename for the retry.
 
 ## Work with an offline raw device
 
-Supply the device's exact length in bytes with `--bytes`. On Linux, for example:
+Pass the device's exact length in bytes with `--bytes`. On Linux, for example:
 
 ```sh
 fsck.carryfs --plan --bytes "$(blockdev --getsize64 /dev/sdb1)" /dev/sdb1
 fsck.carryfs --repair --report /safe-disk/repair.txt --bytes "$(blockdev --getsize64 /dev/sdb1)" /dev/sdb1
 ```
 
-In-place raw-device repair requires an explicit report path on another filesystem.
-With `--repair --output NEW_IMAGE`, the default report is beside the new image. Use the
-partition that contains CarryFS, rather than the whole disk. Device access must
-exclude mounts and other writers. The CLI uses exclusive device access on Linux,
-macOS, FreeBSD, NetBSD, and Windows, and refuses writable raw access on other platforms.
+Repairing a raw device in place needs `--report` with a path on another
+filesystem. With `--repair --output NEW_IMAGE`, the report goes beside the new
+image by default. Point the tool at the partition that holds CarryFS, not the
+whole disk. Nothing else may mount or write the device meanwhile. The CLI opens
+devices exclusively on Linux, macOS, FreeBSD, NetBSD, and Windows, and refuses
+writable raw access elsewhere.
 
 ## Recovery limits
 
 At least one supported, unambiguous root record must survive. Recovery follows
-references from the newest committed root and verifies page checksums, identities,
-generations, record schemas, and key ranges. It does not scan historical pages or
-silently roll back to an older root. If a catalog root or internal page is
-unreadable, its unreachable descendants cannot be recovered by this tool.
+references from the newest committed root and verifies page checksums,
+identities, generations, record schemas, and key ranges. It doesn't scan old
+pages or quietly fall back to an older root. If a catalog root or internal page
+is unreadable, this tool can't recover what lies only beneath it.
 
-Repair builds replacement metadata in the verified workspace and publishes it
-with CarryFS's durable metadata and root-mirror sequence. The old metadata and
-file bytes remain untouched until publication. Repair also checks the complete
-proposed forest before its first write and reads it back after publication.
+Repair builds new metadata in the verified workspace and publishes it with
+CarryFS's normal durable commit, which writes both root records. Until then the
+old metadata and file bytes stay untouched. Repair checks the whole proposed
+set of trees before its first write and reads it back after publishing.
 
-In-place repair requires enough verified workspace slots to hold the replacement
-trees and leave 4,096 slots for subsequent writes. A damaged workspace, conflicting
-ownership, insufficient space, or an invalid proposed forest blocks repair.
-Read-only export can use a validated in-memory reconstruction even when the real
-workspace cannot safely fund repair. Export metadata can exceed the physical
-workspace's capacity. Metadata and ownership bitmaps are held in
-memory, so recovery memory use grows with the amount of allocated metadata and data.
+In-place repair needs enough verified workspace slots for the new trees, plus
+4,096 left over for later writes. A damaged workspace, conflicting ownership,
+too little space, or an invalid proposed tree blocks repair. Export can still
+work in that case, because it rebuilds the metadata in memory and doesn't need
+the workspace. Recovery keeps metadata and ownership bitmaps in memory, so its
+memory use grows with the amount of allocated metadata and data.
 
-File data has no redundant copy for repair to use. Checksums detect damaged bytes;
-restore those bytes from an independent backup. A successful structural repair
-alone does not establish that the filesystem is ready for unrestricted use.
+File data has no second copy for repair to use. Checksums find damaged bytes,
+and only a backup can restore them. A successful structural repair alone
+doesn't prove the volume is fit for normal use.
 
-Exit status:
+## Exit status
+
+`fsck.carryfs` exits with:
 
 - 0: clean diagnosis or complete export.
 - 1: committed repair, or complete recovery into a new image.

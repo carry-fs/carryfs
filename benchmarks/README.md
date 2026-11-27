@@ -6,12 +6,9 @@ Windows, FreeBSD and NetBSD with the same workload and metric names, so you
 can compare CarryFS with exFAT, ext4, Btrfs, APFS, NTFS, UFS or FFS on your
 own drive.
 
-Offline repair and new-image recovery have a separate
-[benchmark and results](recovery.md), including embedded manifests and
-destination verification.
-
-FreeBSD has separate adapter benchmarks; see
-[FreeBSD adapter benchmarks](#freebsd-adapter-benchmarks).
+Offline repair and recovery into a new image have their own
+[benchmark and results](recovery.md). The FreeBSD adapter also has
+[benchmarks of its own](#freebsd-adapter-benchmarks).
 
 Every sample formats its target. Use disposable images or a disk whose
 contents you can lose.
@@ -115,7 +112,7 @@ anything. `plan` runs the same checks alone.
 The checks cover:
 
 - Host tools, formatters and checkers for the selected filesystems, and Git.
-  A missing tool is reported with its purpose and a package hint.
+  For a missing tool, it says what the tool is for and which package has it.
 - The built CarryFS executables and the host driver, when CarryFS is selected.
 - The profile, the workload size against the target's capacity, and each
   partition's identity.
@@ -131,9 +128,9 @@ The checks cover:
 Run `plan` with the same user and elevation as `run`. An ordinary user can
 read a root-mode plan, but its JSON reports the access checks as deferred.
 
-Preflight does not mount anything, so it cannot promise that mounting will
-succeed or that space will last. Those failures leave an incomplete run with
-its logs.
+Preflight doesn't mount anything, so it can't promise that mounting will
+succeed or that space will last. If either fails, the run stays incomplete and
+keeps its logs.
 
 ## Benchmark a real disk
 
@@ -142,8 +139,7 @@ partitions before every sample, so you do not format them yourself. It never
 creates or resizes partitions.
 
 Allow at least 1 GiB for each partition with the default workload.
-`--format-devices` is required for a physical run. It states that you accept
-the erase.
+A physical run needs `--format-devices`, which says you accept the erase.
 
 ### Linux
 
@@ -218,7 +214,7 @@ targets are `ufs` (UFS2 with soft updates) on FreeBSD, `ffs` (FFSv2 with the
 WAPBL log) on NetBSD, and `exfat` through the FUSE exFAT port on both.
 FreeBSD needs `fusefs` loaded and the `exfat-utils` and `fusefs-exfat`
 packages. NetBSD needs the `fuse-exfat` package. The BSD runner reads no
-per-disk I/O counters, so the `sample_*` rows are marked unavailable.
+per-disk I/O counters, so it marks the `sample_*` rows unavailable.
 
 ### Windows
 
@@ -324,7 +320,7 @@ Points to know when you read the numbers:
   hosts keep the rows with `n/a`. They cover the whole sample after
   formatting, including verification.
 - Linux CarryFS samples record the daemon's resident memory and its peak
-  before each unmount. Kernel page cache is not included.
+  before each unmount, without the kernel page cache.
 - `--latency` adds p50, p95, p99 and maximum batch-barrier times. Runs with
   and without it cannot be compared.
 
@@ -392,7 +388,7 @@ A run directory holds:
 | sample directories | Raw JSONL, `commands.log` and `daemon.log` for each sample. |
 
 A failed run keeps its logs and stays incomplete. `summary` and `compare`
-refuse it. Resuming a run is not supported.
+refuse it, and you can't resume it.
 
 ```sh
 python3 benchmarks/run.py summary build/full-images
@@ -435,20 +431,28 @@ A chart needs a full run. A run of one metric lacks the other workloads, and
 
 ## Published results
 
-`macos.tsv`, `windows.tsv`, `linux.tsv`, `linux-native.tsv`,
-`freebsd-14.5.tsv`, `freebsd-15.1.tsv`, `netbsd-10.2.tsv` and
-`netbsd-11.1.tsv` hold full runs on one OCZ Vertex 4 SSD connected over USB,
-with three rounds for each filesystem on FreeBSD 14.5 and NetBSD 10.2 and
-ten rounds on macOS, Linux, Windows, FreeBSD 15.1 and NetBSD 11.1. The Linux,
-FreeBSD 15.1 and NetBSD 11.1 runs held the host CPU at the `performance`
-governor, and the Windows run used the High performance power plan (minimum
-and maximum processor state 100%); the FreeBSD 14.5 and NetBSD 10.2 runs used
-`schedutil`, so compare their short listing rows with care. `linux.tsv` measures the FUSE adapter
-and `linux-native.tsv` the kernel driver; both share the exFAT, ext4 and
-Btrfs rows. The FreeBSD and NetBSD runs ran in a KVM guest on the Linux host,
-with the SSD partition passed through raw (virtio-blk, host cache off). `charts.json`
-draws them into `charts/`. The charts show nine of the 92 metrics each run
-records, and the `.tsv` files hold the rest:
+Every published file is a full run on the same OCZ Vertex 4 SSD, connected
+over USB:
+
+| File | Rounds | Host CPU policy |
+|---|---:|---|
+| `macos.tsv` | 10 | Not set |
+| `windows.tsv` | 10 | High performance plan, processor state 100% |
+| `linux.tsv` (FUSE adapter) | 10 | `performance` governor |
+| `linux-native.tsv` (kernel driver) | 10 | `performance` governor |
+| `freebsd-15.1.tsv` | 10 | `performance` governor |
+| `freebsd-14.5.tsv` | 3 | `schedutil` |
+| `netbsd-11.1.tsv` | 10 | `performance` governor |
+| `netbsd-10.2.tsv` | 3 | `schedutil` |
+
+The two Linux files share their exFAT, ext4, and Btrfs rows. The FreeBSD and
+NetBSD runs ran in a KVM guest on the Linux host, with the SSD partition
+passed through raw (virtio-blk, host cache off), so the governor is the host's.
+Under `schedutil` the short listing rows are noisy, so compare the FreeBSD
+14.5 and NetBSD 10.2 listings with care.
+
+The charts show nine of the 92 metrics each run records, and the `.tsv` files
+hold the rest. `charts.json` draws them into `charts/`:
 
 ```sh
 python3 benchmarks/chart.py benchmarks/charts.json benchmarks/charts
@@ -499,11 +503,11 @@ exFAT on macOS, Windows and both Linux adapters in one chart.
 
 ## FreeBSD adapter benchmarks
 
-`freebsd.py` compares release builds of the FreeBSD FUSE adapter; `freebsd_write.py`
-isolates vectored and contiguous GEOM writes. They are separate from `run.py`.
-Run them as root on FreeBSD with `fusefs` loaded. They create disposable
-file-backed `md` devices only. Give `freebsd.py` directories containing the
-`carryfs` and `carryfs-fuse` binaries from each build:
+`freebsd.py` compares release builds of the FreeBSD FUSE adapter, and
+`freebsd_write.py` measures vectored and contiguous GEOM writes on their own.
+Neither uses `run.py`. Run them as root on FreeBSD with `fusefs` loaded. They
+only touch disposable file-backed `md` devices. Give `freebsd.py` directories
+containing the `carryfs` and `carryfs-fuse` binaries from each build:
 
 ```sh
 sudo python3 benchmarks/freebsd.py build/perf/baseline build/perf/candidate \

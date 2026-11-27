@@ -45,11 +45,12 @@ use windows_sys::Win32::{
         Ioctl::{
             DISK_GEOMETRY_EX, DRIVE_LAYOUT_INFORMATION_EX, FSCTL_ALLOW_EXTENDED_DASD_IO,
             FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME, GUID_DEVINTERFACE_DISK,
-            IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
-            IOCTL_DISK_GET_LENGTH_INFO, IOCTL_STORAGE_GET_DEVICE_NUMBER,
-            IOCTL_STORAGE_QUERY_PROPERTY, PARTITION_INFORMATION_EX, PARTITION_STYLE_GPT,
-            PARTITION_STYLE_MBR, PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR,
-            STORAGE_DEVICE_NUMBER, STORAGE_PROPERTY_QUERY, StorageDeviceProperty,
+            GUID_DEVINTERFACE_VOLUME, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+            IOCTL_DISK_GET_DRIVE_LAYOUT_EX, IOCTL_DISK_GET_LENGTH_INFO,
+            IOCTL_STORAGE_GET_DEVICE_NUMBER, IOCTL_STORAGE_QUERY_PROPERTY,
+            PARTITION_INFORMATION_EX, PARTITION_STYLE_GPT, PARTITION_STYLE_MBR,
+            PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR, STORAGE_DEVICE_NUMBER,
+            STORAGE_PROPERTY_QUERY, StorageDeviceProperty,
         },
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
@@ -369,6 +370,8 @@ struct VolumeRecord {
 struct Mounts {
     mounted: HashMap<String, PathBuf>,
     mounting: HashSet<String>,
+    /// The label each mounted volume reports, by partition.
+    labels: HashMap<String, String>,
 }
 
 pub fn device_path(id: &str) -> PathBuf {
@@ -589,21 +592,7 @@ fn volume(name: &str) -> Option<VolumeRecord> {
     let disk = read::<u32>(&extents, 8)?;
     let offset = read::<i64>(&extents, 16)? as u64;
     let root = wide(name);
-    let (mut label, mut filesystem) = ([0u16; 261], [0u16; 261]);
-    // SAFETY: the root is NUL-terminated and both buffers are live for the
-    // lengths passed; the other outputs are optional.
-    let known = unsafe {
-        GetVolumeInformationW(
-            root.as_ptr(),
-            label.as_mut_ptr(),
-            label.len() as u32,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            filesystem.as_mut_ptr(),
-            filesystem.len() as u32,
-        )
-    } != 0;
+    let (label, filesystem) = information(name).unwrap_or_default();
     let mut paths = vec![0u16; 1024];
     let mut needed = 0;
     // SAFETY: the root is NUL-terminated and the buffer is live for its length.
@@ -619,16 +608,8 @@ fn volume(name: &str) -> Option<VolumeRecord> {
         name: name.to_owned(),
         disk,
         offset,
-        filesystem: if known {
-            from_wide(&filesystem)
-        } else {
-            String::new()
-        },
-        label: if known {
-            from_wide(&label)
-        } else {
-            String::new()
-        },
+        filesystem,
+        label,
         mounts: if listed {
             paths
                 .split(|&c| c == 0)
@@ -639,6 +620,28 @@ fn volume(name: &str) -> Option<VolumeRecord> {
             Vec::new()
         },
     })
+}
+
+/// The label and file system name of the volume at `root`, a path ending in
+/// a backslash.
+fn information(root: &str) -> Option<(String, String)> {
+    let root = wide(root);
+    let (mut label, mut filesystem) = ([0u16; 261], [0u16; 261]);
+    // SAFETY: the root is NUL-terminated and both buffers are live for the
+    // lengths passed; the other outputs are optional.
+    let known = unsafe {
+        GetVolumeInformationW(
+            root.as_ptr(),
+            label.as_mut_ptr(),
+            label.len() as u32,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            filesystem.as_mut_ptr(),
+            filesystem.len() as u32,
+        )
+    } != 0;
+    known.then(|| (from_wide(&label), from_wide(&filesystem)))
 }
 
 /// The partition's CarryFS name, when its roots carry the CarryFS magic:
@@ -731,11 +734,9 @@ fn devices(
             };
             let name = named
                 .flatten()
-                .or_else(|| {
-                    windows_fs
-                        .map(|v| v.label.clone())
-                        .filter(|l| !l.is_empty())
-                })
+                .or_else(|| mounts.labels.get(&key).cloned())
+                .or_else(|| windows_fs.map(|v| v.label.clone()))
+                .filter(|l| !l.is_empty())
                 .unwrap_or_else(|| id.clone());
             devices.push(Device {
                 id,
@@ -825,7 +826,18 @@ fn parse_mounts(lines: &[String]) -> Mounts {
 fn service_mounts() -> Mounts {
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     match service("list") {
-        Ok(lines) => parse_mounts(&lines),
+        Ok(lines) => {
+            let mut mounts = parse_mounts(&lines);
+            mounts.labels = mounts
+                .mounted
+                .iter()
+                .filter_map(|(volume, point)| {
+                    let (label, _) = information(&point.to_string_lossy())?;
+                    Some((volume.clone(), label))
+                })
+                .collect();
+            mounts
+        }
         Err(error) => {
             if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 eprintln!("CarryFS Manager: listing CarryFS mounts: {error}");
@@ -1156,29 +1168,32 @@ pub fn install(version: &str) -> Result<String> {
 
 type Changed = Mutex<Box<dyn Fn() + Send>>;
 
-/// Calls `changed` on a background thread whenever a disk arrives or leaves,
-/// or a drive letter appears or goes, as when the service mounts a volume.
+/// Calls `changed` on a background thread whenever a disk or a partition's
+/// volume arrives or leaves, or a drive letter appears or goes, as when the
+/// service mounts a volume.
 pub fn watch(changed: impl Fn() + Send + 'static) -> Result<()> {
     // Kept for the process lifetime: the notification may call it at any time.
     let changed: Box<dyn Fn() + Send> = Box::new(changed);
     let changed: &'static Changed = Box::leak(Box::new(Mutex::new(changed)));
-    // SAFETY: CM_NOTIFY_FILTER is plain old data; all-zero is valid.
-    let mut filter: CM_NOTIFY_FILTER = unsafe { std::mem::zeroed() };
-    filter.cbSize = size_of::<CM_NOTIFY_FILTER>() as u32;
-    filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
-    filter.u.DeviceInterface.ClassGuid = GUID_DEVINTERFACE_DISK;
-    let mut notification: HCMNOTIFICATION = std::ptr::null_mut();
-    // SAFETY: the filter is initialized and the context lives for the process.
-    let result = unsafe {
-        CM_Register_Notification(
-            &filter,
-            std::ptr::from_ref(changed).cast(),
-            Some(on_disk),
-            &mut notification,
-        )
-    };
-    if result != CR_SUCCESS {
-        return Err(format!("disk notifications unavailable (CONFIGRET {result})").into());
+    for class in [GUID_DEVINTERFACE_DISK, GUID_DEVINTERFACE_VOLUME] {
+        // SAFETY: CM_NOTIFY_FILTER is plain old data; all-zero is valid.
+        let mut filter: CM_NOTIFY_FILTER = unsafe { std::mem::zeroed() };
+        filter.cbSize = size_of::<CM_NOTIFY_FILTER>() as u32;
+        filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
+        filter.u.DeviceInterface.ClassGuid = class;
+        let mut notification: HCMNOTIFICATION = std::ptr::null_mut();
+        // SAFETY: the filter is initialized and the context lives for the process.
+        let result = unsafe {
+            CM_Register_Notification(
+                &filter,
+                std::ptr::from_ref(changed).cast(),
+                Some(on_disk),
+                &mut notification,
+            )
+        };
+        if result != CR_SUCCESS {
+            return Err(format!("disk notifications unavailable (CONFIGRET {result})").into());
+        }
     }
     std::thread::spawn(move || {
         // SAFETY: GetLogicalDrives takes no arguments.
@@ -1275,7 +1290,10 @@ mod tests {
             label: "Photos".into(),
             mounts: vec![PathBuf::from(r"F:\")],
         }];
-        let mounts = parse_mounts(&[r"mounted	\\.\Harddisk3Partition2	E:".to_owned()]);
+        let mut mounts = parse_mounts(&[r"mounted	\\.\Harddisk3Partition2	E:".to_owned()]);
+        mounts
+            .labels
+            .insert(r"\\.\Harddisk3Partition2".into(), "Travel".into());
         let probed = |path: &Path, _| {
             (path == Path::new(r"\\.\Harddisk3Partition4")).then(|| Some("Backup".to_owned()))
         };
@@ -1288,6 +1306,7 @@ mod tests {
         assert!(devices[1].protected() && !devices[1].visible_by_default());
         let served = &devices[2];
         assert!(served.carryfs());
+        assert_eq!(served.name, "Travel");
         assert_eq!(served.mount.as_deref(), Some(Path::new(r"E:\")));
         assert_eq!(served.path(), Path::new(r"\\.\Harddisk3Partition2"));
         let exfat = &devices[3];

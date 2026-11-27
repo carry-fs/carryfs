@@ -528,21 +528,9 @@ impl State {
             self.tab = Tab::Overview;
         }
         self.sheet = None;
-        // Once unlocked, an unmounted CarryFS volume opens read-only right away.
         let open = unlocked();
         self.start("Read disk information", false, tx, move |_| {
-            let fresh = platform::details(&device)?;
-            if open && openable(&fresh) {
-                opened(
-                    Browser::open_device(fresh.clone()),
-                    Source {
-                        path: fresh.path(),
-                        device: Some(fresh),
-                    },
-                )
-            } else {
-                Ok(Update::Device(Box::new(fresh)))
-            }
+            shown(platform::details(&device)?, open)
         });
         self.target = requested_target;
     }
@@ -727,12 +715,13 @@ impl State {
                 DeviceAction::Unmount => "Unmount",
                 DeviceAction::Eject => "Eject",
             };
+            let open = unlocked();
             let job = move |_| {
                 platform::act(&device, action)?;
                 if action == DeviceAction::Eject {
                     Ok(Update::Devices(platform::discover()?))
                 } else {
-                    Ok(Update::Device(Box::new(platform::details(&device)?)))
+                    shown(platform::details(&device)?, open)
                 }
             };
             if action == DeviceAction::Eject {
@@ -746,6 +735,21 @@ impl State {
 /// An unmounted CarryFS partition the manager can open read-only.
 fn openable(device: &Device) -> bool {
     device.carryfs() && !device.whole && device.mount.is_none()
+}
+/// The device as selected: once unlocked (`open`), an unmounted CarryFS
+/// volume opens read-only right away.
+fn shown(fresh: Device, open: bool) -> platform::Result<Update> {
+    if open && openable(&fresh) {
+        opened(
+            Browser::open_device(fresh.clone()),
+            Source {
+                path: fresh.path(),
+                device: Some(fresh),
+            },
+        )
+    } else {
+        Ok(Update::Device(Box::new(fresh)))
+    }
 }
 fn unlocked() -> bool {
     #[cfg(target_os = "macos")]

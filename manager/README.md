@@ -37,7 +37,7 @@ Discovery reads disk metadata only and needs no permission. Mounting, unmounting
 - **Files** browses folders read-only and exports single files to new paths. Entries show permissions, hidden entries are dimmed, and the selection shows allocated bytes and hard-link names. **Recover This Folder…** exports the current folder with `carryfs get`.
 - **History** keeps the latest 100 task results of this session.
 
-Once unlocked, selecting an unmounted CarryFS partition opens it read-only straight away. A mounted volume offers **Show in Finder**; unmount it for First Aid or recovery.
+Once unlocked, selecting an unmounted CarryFS partition, or unmounting one, opens it read-only straight away. A mounted volume offers **Show in Finder**; unmount it for First Aid or recovery.
 
 Long tasks run in child processes with bounded output capture; **Stop** ends their process group, and quitting stops them too. Stopping recovery can leave partial files at the destination. Apart from **Repair**, **Upgrade Format**, and **Erase**, the manager never writes to a source. Before using a cached listing it checks the volume UUID and generation, and it rechecks a disk's identifier, size, and UUID before acting on it, so a reconnected or replaced disk is never acted on by mistake.
 

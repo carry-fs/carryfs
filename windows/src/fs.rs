@@ -1112,6 +1112,11 @@ impl<D: BlockDevice> CarryFs<D> {
             ))
         })
     }
+
+    /// The volume's label, or its UUID-derived name when it has none.
+    pub fn volume_name(&self) -> Reply<String> {
+        self.with(|s| Ok(s.volume.info().map_err(|e| status(&e))?.name()))
+    }
 }
 
 impl<D: BlockDevice> State<D> {

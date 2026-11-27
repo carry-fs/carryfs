@@ -49,7 +49,8 @@ the destination with `.recovery.txt` appended to its name.
 On Windows, names Windows forbids are written with the reversible aliases the
 CarryFS adapter shows, a missing owner write bit becomes the read-only flag, and
 symlinks need administrator rights or Developer Mode. A symlink that cannot be
-created is reported, and export fails once everything else is written.
+created is reported, and export fails once everything else is written. The
+destination's parent folders cannot be symlinks, junctions, or mounted folders.
 
 ## Recover into a new image
 

@@ -79,6 +79,22 @@ fn assert_success(output: &Output) {
     );
 }
 
+/// Whether an extraction created its symlinks. Without the symlink privilege
+/// or Developer Mode it writes everything else, then fails naming the skipped
+/// links, which the caller checks are absent.
+fn extracted(output: &Output) -> bool {
+    if output.status.success() {
+        return true;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("symlinks were not created; everything else was extracted"),
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    false
+}
+
 fn name(text: &str) -> Name {
     Name::parse(text).unwrap()
 }
@@ -171,8 +187,7 @@ fn flags(path: &Path) -> u32 {
 fn get_extracts_trees_with_aliases_flags_holes_links_and_symlinks() {
     let temp = Temp::new();
     image(&temp);
-    // Symlinks need the privilege an elevated session holds.
-    assert_success(&temp.get(&["image", "/tree", "out"]));
+    let symlinks = extracted(&temp.get(&["image", "/tree", "out"]));
     let out = temp.0.join("out");
     assert_eq!(
         fs::read(out.join("nested").join("Notes.txt")).unwrap(),
@@ -212,17 +227,22 @@ fn get_extracts_trees_with_aliases_flags_holes_links_and_symlinks() {
         fs::read(out.join("nested").join("b")).unwrap(),
         b"shared once"
     );
-    assert_eq!(
-        fs::read_link(out.join("link")).unwrap(),
-        Path::new("data.bin")
-    );
-    assert_ne!(flags(&out.join("link")) & FILE_ATTRIBUTE_HIDDEN, 0);
-    assert_eq!(fs::read(out.join("link")).unwrap(), data);
-    assert_ne!(flags(&out.join("dir-link")) & FILE_ATTRIBUTE_DIRECTORY, 0);
-    assert_eq!(
-        fs::read(out.join("dir-link").join("Notes.txt")).unwrap(),
-        b"mixed tree\n"
-    );
+    if symlinks {
+        assert_eq!(
+            fs::read_link(out.join("link")).unwrap(),
+            Path::new("data.bin")
+        );
+        assert_ne!(flags(&out.join("link")) & FILE_ATTRIBUTE_HIDDEN, 0);
+        assert_eq!(fs::read(out.join("link")).unwrap(), data);
+        assert_ne!(flags(&out.join("dir-link")) & FILE_ATTRIBUTE_DIRECTORY, 0);
+        assert_eq!(
+            fs::read(out.join("dir-link").join("Notes.txt")).unwrap(),
+            b"mixed tree\n"
+        );
+    } else {
+        assert!(fs::symlink_metadata(out.join("link")).is_err());
+        assert!(fs::symlink_metadata(out.join("dir-link")).is_err());
+    }
 
     assert_success(&temp.get(&["image", "/tree/nested/notes.TXT", "single"]));
     assert_eq!(fs::read(temp.0.join("single")).unwrap(), b"mixed tree\n");
@@ -275,8 +295,7 @@ fn fsck_recovers_a_damaged_image_to_a_new_folder() {
     let before = fs::read(&image).unwrap();
     let plan = temp.fsck(&["--plan", "image"]);
     assert_eq!(plan.status.code(), Some(4));
-    let export = temp.fsck(&["--recover", "recovered", "image"]);
-    assert_success(&export);
+    let symlinks = extracted(&temp.fsck(&["--recover", "recovered", "image"]));
     let recovered = temp.0.join("recovered").join("tree");
     assert_eq!(
         fs::read(recovered.join("nested").join("Notes.txt")).unwrap(),
@@ -284,10 +303,14 @@ fn fsck_recovers_a_damaged_image_to_a_new_folder() {
     );
     assert_eq!(fs::read(recovered.join("what\u{F025}")).unwrap(), b"what?");
     assert_ne!(flags(&recovered.join("flagged")) & FILE_ATTRIBUTE_HIDDEN, 0);
-    assert_eq!(
-        fs::read_link(recovered.join("link")).unwrap(),
-        Path::new("data.bin")
-    );
+    if symlinks {
+        assert_eq!(
+            fs::read_link(recovered.join("link")).unwrap(),
+            Path::new("data.bin")
+        );
+    } else {
+        assert!(fs::symlink_metadata(recovered.join("link")).is_err());
+    }
     assert!(temp.0.join("recovered.recovery.txt").exists());
     assert_eq!(fs::read(&image).unwrap(), before);
     // A second export refuses the existing folder and keeps it.

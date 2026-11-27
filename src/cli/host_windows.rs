@@ -279,8 +279,10 @@ fn alias(name: &Name) -> Result<Vec<u16>> {
     Ok(name.windows_alias()?.encode_utf16().collect())
 }
 
-/// Open an existing directory below `parent`, refusing a symlink or junction.
-/// Other reparse points, such as cloud-synced folders, are plain directories.
+/// Open an existing directory below `parent`, refusing a symlink or junction,
+/// as Unix refuses a symlink. A mounted folder is a junction to a volume, so
+/// it is refused too. Other reparse points, such as cloud-synced folders,
+/// are plain directories.
 fn open_directory(parent: &File, name: &OsStr) -> Result<File> {
     let directory = open_at(
         parent,
@@ -314,7 +316,7 @@ fn open_directory(parent: &File, name: &OsStr) -> Result<File> {
         && tag.reparse_tag & NAME_SURROGATE != 0
     {
         return Err(Error::InvalidInput(
-            "destination parent cannot be a symlink or junction",
+            "destination parent cannot be a symlink, junction, or mounted folder",
         ));
     }
     Ok(directory)
@@ -432,6 +434,17 @@ struct Held {
 // objects are copied. Raise it, or hold fewer per object, if link farms need more.
 const MAX_HELD: usize = 128;
 
+/// Whether Windows programs can use `text` as a name. The NT API would create
+/// `CON`, `out.`, or `what?` literally, beyond their reach.
+fn windows_name(text: &str) -> bool {
+    !text.ends_with(['.', ' '])
+        && !text
+            .chars()
+            .any(|c| c.is_control() || "\"*:<>?|\\/".contains(c))
+        // A device name is short, so a name too long to parse isn't one.
+        && !Name::parse(text).is_ok_and(|name| name.is_windows_device_name())
+}
+
 fn path_key(path: &[Name]) -> Vec<Vec<u8>> {
     path.iter().map(|name| name.stored().to_vec()).collect()
 }
@@ -441,12 +454,10 @@ impl Sink {
         let name = path
             .file_name()
             .ok_or(Error::InvalidInput("destination needs a new name"))?;
-        // The NT API would create `CON` or `out.` literally, beyond the
-        // reach of most Windows programs, so require a name Windows accepts.
         let text = name
             .to_str()
             .ok_or(Error::InvalidInput("destination name is not Unicode"))?;
-        if Name::parse(text)?.windows_alias()? != text {
+        if !windows_name(text) {
             return Err(Error::InvalidInput(
                 "destination name is reserved or not valid on Windows",
             ));
@@ -654,8 +665,15 @@ impl ExtractionSink for Sink {
         .map_err(|e| io_error("create extraction symlink", e))?;
         if let Err(error) = control(&link, FSCTL_SET_REPARSE_POINT, &data) {
             // Remove the empty placeholder, deleted when the handle closes.
-            set_information(link.as_raw_handle(), &1u8, FILE_DISPOSITION_INFORMATION)
-                .map_err(|e| io_error("remove failed extraction symlink", e))?;
+            if let Err(cleanup) =
+                set_information(link.as_raw_handle(), &1u8, FILE_DISPOSITION_INFORMATION)
+            {
+                let error = io::Error::new(
+                    error.kind(),
+                    format!("{error}; removing its placeholder also failed: {cleanup}"),
+                );
+                return Err(io_error("create extraction symlink", error));
+            }
             if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
                 self.skip(
                     path,
@@ -824,6 +842,11 @@ mod tests {
         for reserved in ["CON", "nul.txt", "out.", "out ", "what?"] {
             assert!(Sink::new(&temp.0.join(reserved)).is_err(), "{reserved}");
         }
+        // Windows takes names CarryFS can't store: 300 UTF-8 bytes, or a
+        // decomposed spelling NFC would change.
+        for valid in ["日本語".repeat(33) + "語", "Cafe\u{301}".into()] {
+            assert!(Sink::new(&temp.0.join(&valid)).is_ok(), "{valid}");
+        }
         assert!(Sink::new(&temp.0.join("new")).is_ok());
         assert!(Sink::new(&directory.join("new")).is_ok());
         assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
@@ -985,7 +1008,6 @@ mod tests {
         assert!(bytes[..bytes.len() - 4].iter().all(|byte| *byte == 0));
     }
 
-    /// Needs the symlink privilege, as in an elevated session.
     #[test]
     fn extraction_creates_file_and_directory_symlinks_with_aliased_targets() {
         let temp = Temp::new();
@@ -1001,6 +1023,17 @@ mod tests {
         };
         sink.create_symlink(&name("file-link"), b"what?", &link(None, 2))
             .unwrap();
+        if sink.skipped == 1 {
+            // Without the symlink privilege or Developer Mode, each link is
+            // reported, no placeholder stays, and finishing fails.
+            assert!(std::fs::symlink_metadata(root.join("file-link")).is_err());
+            let error = sink.finish().unwrap_err();
+            assert!(
+                error.to_string().starts_with("1 symlinks were not created"),
+                "{error}"
+            );
+            return;
+        }
         sink.create_link(&name("again"), &name("file-link"))
             .unwrap();
         sink.create_symlink(&name("dir-link"), b"../CON/x", &link(Some(true), 1))

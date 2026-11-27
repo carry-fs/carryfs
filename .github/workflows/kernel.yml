@@ -28,12 +28,15 @@ on:
   schedule:
     - cron: '41 5 * * 1'
   workflow_dispatch:
+  # release.yml publishes only after the driver builds and passes its checks.
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: kernel-${{ github.ref }}
+  # A caller's name keeps release.yml's call apart from a direct run.
+  group: kernel-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:

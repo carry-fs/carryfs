@@ -1,9 +1,14 @@
+#[cfg(any(target_os = "macos", test))]
 use serde_json::Value;
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
+};
+#[cfg(target_os = "macos")]
+use std::{
+    io::{BufRead, BufReader, Write},
+    process::Stdio,
 };
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -12,6 +17,10 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 pub enum DeviceKind {
     Physical,
     Virtual,
+    #[cfg_attr(
+        not(any(target_os = "macos", test)),
+        expect(dead_code, reason = "only macOS discovery reports devices")
+    )]
     Unknown,
 }
 
@@ -81,6 +90,7 @@ impl Device {
     pub fn path(&self) -> PathBuf {
         PathBuf::from(format!("/dev/{}", self.id))
     }
+    #[cfg(any(target_os = "macos", test))]
     pub fn verify(&self, fresh: &Self) -> Result<()> {
         if self.id != fresh.id
             || self
@@ -135,12 +145,14 @@ fn diskutil(args: &[&str]) -> Result<Value> {
     }
     Ok(serde_json::from_slice(&output.stdout)?)
 }
+#[cfg(any(target_os = "macos", test))]
 fn string(v: &Value, key: &str) -> Option<String> {
     v.get(key)?
         .as_str()
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
+#[cfg(any(target_os = "macos", test))]
 pub fn valid_id(id: &str) -> bool {
     let Some(rest) = id.strip_prefix("disk") else {
         return false;
@@ -150,6 +162,7 @@ pub fn valid_id(id: &str) -> bool {
             .split('s')
             .all(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
 }
+#[cfg(any(target_os = "macos", test))]
 fn parse_device(v: &Value, parent: Option<String>, whole: bool) -> Result<Device> {
     let id = string(v, "DeviceIdentifier").ok_or("Disk information is missing an identifier")?;
     if !valid_id(&id) {
@@ -187,6 +200,7 @@ fn parse_device(v: &Value, parent: Option<String>, whole: bool) -> Result<Device
         },
     })
 }
+#[cfg(any(target_os = "macos", test))]
 fn parse_inventory(root: &Value) -> Result<Vec<Device>> {
     let disks = root
         .get("AllDisksAndPartitions")
@@ -259,6 +273,7 @@ pub fn watch(changed: impl Fn() + Send + 'static) -> Result<()> {
     });
     Ok(())
 }
+#[cfg(any(target_os = "macos", test))]
 fn disk_event(line: &str) -> bool {
     [
         "***DiskAppeared ('",

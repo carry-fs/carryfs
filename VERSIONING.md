@@ -11,9 +11,10 @@ combinations that never exist.
 The root `Cargo.toml` holds it in `[workspace.package] version`, and every
 crate inherits it with `version.workspace = true`. The macOS bundle repeats it
 in `CFBundleShortVersionString` in
-`fuse/packaging/carryfs.fs/Contents/Info.plist`. `packaging/stage-release.sh`
-refuses to stage a package when the two differ, and the release workflow
-refuses a tag that does not match `Cargo.toml`.
+`fuse/packaging/carryfs.fs/Contents/Info.plist`, and the manager, which is its
+own Cargo workspace, repeats it in `manager/Cargo.toml`.
+`packaging/stage-release.sh` refuses to stage a package when they differ, and
+the release workflow refuses a tag that does not match `Cargo.toml`.
 
 `carryfs`, `carryfs-fuse` and `carryfs-windows` print the version and the
 format revisions they write and read:
@@ -81,8 +82,9 @@ in this repository, such as `ui-v1.4.0`, and its own release index.
 
 ## Cutting a release
 
-1. Set the version in `Cargo.toml` and in the bundle's `Info.plist`, then run
-   `cargo build` so `Cargo.lock` follows.
+1. Set the version in `Cargo.toml`, `manager/Cargo.toml`, and the bundle's
+   `Info.plist`, then run `cargo build` in the root and in `manager/` so both
+   `Cargo.lock` files follow.
 2. Update `RELEASE_NOTES.md`. GitHub uses it as the release text. Its
    compatibility section names the format revision, which earlier releases
    can open new volumes, the upgrade steps, and command changes.

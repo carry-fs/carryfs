@@ -32,7 +32,7 @@ Linux and macOS:
 ```
 
 On Linux, `./install.sh --local --native` also builds and installs the
-experimental module for the running kernel. FUSE remains the default.
+native module for the running kernel. FUSE remains the default.
 `./install.sh --uninstall` removes both adapters, including recorded modules
 for older kernels. See [native installation](INSTALLATION.md#fuse-adapter-or-native-driver)
 for requirements and loading instructions.

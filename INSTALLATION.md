@@ -29,9 +29,9 @@ Tier 2 has the core features and best-effort performance.
 \*\*FreeBSD and NetBSD are tested only in virtual machines and can't set the
 [hidden flag](#limits-and-data-safety).
 
-\*\*\*Android has no release package yet; build the app from source. It shows
-files only through the Files app and the file picker, and can't format or
-repair volumes. See its [limits](android/README.md#limits).
+\*\*\*Install the app from a release's `carryfs-VERSION-android-arm64.apk`, or build
+it from source. The installers don't install it. It shows files only through the
+Files app and the file picker, and can't format or repair volumes. See its [limits](android/README.md#limits).
 
 ## Requirements
 
@@ -58,7 +58,7 @@ sudo pacman -S curl fuse3 udisks2 procps-ng coreutils
 #### FUSE adapter or native driver
 
 The install script sets up the FUSE adapter. From a Linux checkout, add the
-experimental native module with:
+native module with:
 
 ```sh
 ./install.sh --local --native
@@ -89,8 +89,8 @@ sudo mount -i -t carryfs DEVICE DIRECTORY
 This table describes module builds. The installer supports Ubuntu and Arch;
 on other distributions, build and load the module manually.
 
-The driver is a prototype. [linux/README.md](linux/README.md) explains how to
-build and load it. The native driver requires 4 KiB kernel pages and rejects
+[linux/README.md](linux/README.md) explains how to build and load the driver.
+The native driver requires 4 KiB kernel pages and rejects
 `sync` and `dirsync` mounts.
 
 The installer builds unsigned modules and refuses native installation when
@@ -243,14 +243,14 @@ Linux and macOS and a UAC prompt on Windows.
 
 ### Choose a version
 
-To select `0.1.0` explicitly, run:
+To select `0.2.0` explicitly, run:
 
 ```sh
-curl -fsSL https://carryfs.com/install.sh | bash -s -- --version 0.1.0
+curl -fsSL https://carryfs.com/install.sh | bash -s -- --version 0.2.0
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://carryfs.com/install.ps1))) -Version 0.1.0
+& ([scriptblock]::Create((irm https://carryfs.com/install.ps1))) -Version 0.2.0
 ```
 
 ## Use CarryFS

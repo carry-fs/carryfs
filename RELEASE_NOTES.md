@@ -20,13 +20,42 @@ reformatting the partition.
 - Linux `fallocate`, macOS `F_PREALLOCATE`, and Windows allocation sizes
   reserve space, and Linux can punch holes. Linux and FUSE support unnamed
   temporary files (`O_TMPFILE`).
-- FreeBSD 14 and 15 packages, using the base system's FUSE.
+- A rename can swap two existing entries: Linux `RENAME_EXCHANGE` and macOS
+  `RENAME_SWAP`, through FUSE and the native driver. macOS Archive Utility can
+  now unpack archives onto a CarryFS volume.
+- `carryfs put` commits the image once when it finishes instead of every
+  64 KiB, and skips holes in sparse source files on Linux, macOS, and FreeBSD.
+- Creating and removing small files, metadata lookups, name checks, and FUSE
+  reads do less work, and release builds use full link-time optimization. The
+  [benchmark notes](https://github.com/carry-fs/carryfs/blob/v0.2.0/benchmarks/README.md#published-results)
+  have new results at format revision 2 on all five platforms.
+- FreeBSD 14 and 15 Tier 2 packages, using the base system's FUSE. The
+  [installation guide](https://github.com/carry-fs/carryfs/blob/v0.2.0/INSTALLATION.md#platform-support)
+  explains the support tiers.
 - NetBSD 10.2 and 11.1 Tier 2 support on amd64, using perfused and PUFFS.
 - `fsck.carryfs` diagnoses damaged volumes, repairs them in place, or
   recovers their files to a new image (see RECOVERY.md).
 - `carryfs --version`, `carryfs-fuse --version`, and
   `carryfs-windows --version` print the release and the format revisions it
   reads and writes.
+- The installers and CarryFS Manager offer a stable release as an update to its
+  release candidates, so 0.2.0 replaces 0.2.0-rc.1.
+- The release has three new kinds of download. The installers don't install
+  them:
+  - `carryfs-0.2.0-android-arm64.apk` is an Android app for Android 8 or later
+    on arm64. It shows CarryFS volumes on a USB drive in the Files app and the
+    file picker. A development key signs it, so uninstall it before you install
+    the APK of a later release.
+  - `carryfs-manager-0.2.0-PLATFORM` archives hold CarryFS Manager for macOS,
+    Linux, and Windows. On macOS it checks, erases, recovers, mounts, and
+    upgrades disks and installs CarryFS updates. macOS blocks the unsigned app
+    on first launch; allow it in System Settings > Privacy & Security. On Linux
+    and Windows it works with disk image files only. Keep `carryfs-manager` and
+    `carryfs` in the same folder.
+  - `carryfs-0.2.0-linux-module-src.tar.gz` is the source of the native Linux
+    kernel driver, Tier 0 on Linux. A module loads only on the kernel it was
+    built for, so build it with `scripts/kernel-build.sh` from the archive, or
+    install it with `./install.sh --local --native` from a checkout.
 
 ## Compatibility
 
@@ -41,8 +70,24 @@ reformatting the partition.
   service does not mount a 0.1.0 volume until it is upgraded.
 - `carryfs mkfs` no longer accepts `--attributes`. Every new image stores
   permissions.
+- On Linux, `mkfs.carryfs` refuses a device that already holds data, such as
+  another file system. Add `-f` to erase it and format. CarryFS 0.1.0 erased
+  the device without asking, so scripts that format used devices need `-f`.
+  macOS `newfs_carryfs` still erases without asking, because Disk Utility's
+  Erase asks first.
 - The installers keep a 0.1 installation on 0.1 releases. Run the installer
   with `--upgrade`, or `-Upgrade` on Windows, to move to 0.2.
+
+## Fixes
+
+- `carryfs get` keeps hard links to files with mode 000 linked on macOS, and
+  reports any link it had to copy instead.
+- Windows gives a hard-linked relative symlink the type of its target as seen
+  from the folder you opened it through.
+- `fsck --repair --output` refuses an existing output or report path before it
+  writes anything, so you can retry a refused rebuild with the same name.
+- Checking a volume over 1 TiB usually reads its metadata once instead of
+  several times.
 
 ## Requirements
 
@@ -54,6 +99,9 @@ reformatting the partition.
 - FreeBSD: 15.1 or 14.5 on amd64 or arm64, with the base system's `fusefs`
   module loaded.
 - NetBSD: 10.2 or 11.1 on amd64, with the base system's `perfused` and PUFFS.
+- Android: 8 or later on arm64, with USB host (OTG) support.
+- Native Linux driver: a 7.0 or later kernel built with Rust support and 4 KiB
+  pages, and the exact `rustc` build that compiled that kernel.
 
 Install the framework for your platform first. Follow the
 [installation guide](https://github.com/carry-fs/carryfs/blob/v0.2.0/INSTALLATION.md)

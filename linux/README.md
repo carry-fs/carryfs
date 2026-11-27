@@ -5,7 +5,7 @@ volumes. It mounts volumes read-write without FUSE and is written in Rust
 for the kernel's Rust support, apart from a C shim for kernel interfaces the
 Rust bindings do not cover.
 
-The driver targets Linux 7.0. It is an out-of-tree prototype shaped for an
+The driver targets Linux 7.0. It is an out-of-tree driver shaped for an
 upstream RFC: it uses the in-tree `kernel` crate, allocates fallibly, and
 treats every on-disk value as untrusted. [Upstreaming](#upstreaming) lists
 what a submission still needs.
@@ -50,7 +50,7 @@ sudo insmod linux/carryfs.ko
 sudo mount -i -t carryfs -o uid=1000,gid=1000 /dev/sdX1 /mnt/usb
 ```
 
-An installed `mount.carryfs` continues to use FUSE. Select this experimental
+An installed `mount.carryfs` continues to use FUSE. Select the native
 driver explicitly with `-i`, which skips the helper. The driver requires 4 KiB
 kernel pages and rejects `sync` and `dirsync` mounts because namespace changes
 do not yet publish synchronously. It accepts `uid=` and `gid=`, defaulting to the
@@ -357,7 +357,7 @@ about 20,000.
   `slice::sort_unstable`, so the shared code encodes UTF-8 by hand and
   commit uses its own heapsort.
 - **Mount helpers.** `mount -t carryfs` runs `mount.carryfs` if installed
-  and uses FUSE. Both adapters share the type name, so experimental native
+  and uses FUSE. Both adapters share the type name, so native
   mounts use `mount -i -t carryfs` to bypass the helper.
 - **Direct I/O.** `O_DIRECT` opens are accepted and served by the page
   cache, and a direct write is written back before it returns. True direct

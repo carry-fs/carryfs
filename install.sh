@@ -430,7 +430,7 @@ main() {
             --native) native=1; shift ;;
             --yes) assume_yes=1; shift ;;
             --help|-h)
-                printf 'Usage: install.sh [--version X.Y.Z[-rc.N] | --upgrade | --local [--native] | --uninstall] [--yes]\nDefault: latest stable release within the installed major (same 0.MINOR before 1.0), or latest stable on first install.\n--version installs that exact release, prereleases included.\n--local builds the checkout holding this script and installs or reinstalls it.\n--native adds the experimental Linux module for the running kernel; requires --local.\n--uninstall also removes all native modules recorded by this installer.\n--yes installs without asking, for a caller that already confirmed it.\n'
+                printf 'Usage: install.sh [--version X.Y.Z[-rc.N] | --upgrade | --local [--native] | --uninstall] [--yes]\nDefault: latest stable release within the installed major (same 0.MINOR before 1.0), or latest stable on first install.\n--version installs that exact release, prereleases included.\n--local builds the checkout holding this script and installs or reinstalls it.\n--native adds the native Linux module for the running kernel; requires --local.\n--uninstall also removes all native modules recorded by this installer.\n--yes installs without asking, for a caller that already confirmed it.\n'
                 return ;;
             *) die "Unknown argument: $1" ;;
         esac

@@ -5,6 +5,8 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod cache;
 #[cfg(windows)]
+mod control;
+#[cfg(windows)]
 mod device;
 #[cfg(windows)]
 mod ffi;

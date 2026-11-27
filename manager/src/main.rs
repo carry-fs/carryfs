@@ -1,4 +1,6 @@
 //! Native CarryFS manager, following Rune's state/view/AppSpec pattern.
+// A release build opens no console window; debug builds keep it for logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod model;
 mod operation;
 mod platform;
@@ -160,6 +162,9 @@ struct State {
     elapsed_seconds: u64,
     integrity: BTreeMap<VolumeKey, Integrity>,
     images: Vec<PathBuf>,
+    /// A disk to select once disks are listed: `--select ID`, which an
+    /// unlocking Windows manager passes to its elevated successor.
+    startup_device: Option<String>,
     tab: Tab,
     selected: Option<usize>,
     pending: Option<Receiver<Result<Update, String>>>,
@@ -193,6 +198,7 @@ impl State {
             elapsed_seconds: 0,
             integrity: BTreeMap::new(),
             images: Vec::new(),
+            startup_device: None,
             tab: Tab::Overview,
             selected: None,
             pending: None,
@@ -669,6 +675,25 @@ impl State {
         });
     }
     fn toggle_lock(&mut self, tx: &mut Tx) {
+        // Windows elevates the whole app: Unlock restarts it as administrator,
+        // and only quitting gives that up.
+        #[cfg(windows)]
+        {
+            if unlocked() {
+                self.status = "CarryFS Manager runs as administrator until you quit it.".into();
+                return;
+            }
+            let select = self.device.as_ref().map(|d| d.id.clone());
+            self.start("Unlock", false, tx, move |_| {
+                platform::windows::relaunch_elevated(select.as_deref())?;
+                std::process::exit(0)
+            });
+        }
+        #[cfg(not(windows))]
+        self.unlock(tx);
+    }
+    #[cfg(not(windows))]
+    fn unlock(&mut self, tx: &mut Tx) {
         if unlocked() {
             #[cfg(target_os = "macos")]
             privileged::lock();
@@ -725,7 +750,9 @@ fn openable(device: &Device) -> bool {
 fn unlocked() -> bool {
     #[cfg(target_os = "macos")]
     return privileged::unlocked();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    return platform::windows::elevated();
+    #[cfg(not(any(target_os = "macos", windows)))]
     false
 }
 impl Drop for State {
@@ -742,6 +769,12 @@ impl Default for State {
         let mut state = Self::empty();
         state.initialized = false;
         state.startup_image = std::env::var_os("CARRYFS_IMAGE").map(PathBuf::from);
+        let args: Vec<String> = std::env::args().collect();
+        state.startup_device = args
+            .windows(2)
+            .find(|pair| pair[0] == "--select")
+            .map(|pair| pair[1].clone())
+            .filter(|id| platform::valid_id(id));
         state
     }
 }
@@ -777,6 +810,12 @@ fn poll_task(s: &mut State, tx: &mut Tx) -> bool {
             s.initialized = true;
             s.refresh = false;
             s.discover(tx);
+            return true;
+        }
+        if let Some(id) = s.startup_device.take()
+            && let Some(device) = s.devices.iter().find(|d| d.id == id).cloned()
+        {
+            s.select_device(device, tx);
             return true;
         }
     }
@@ -874,7 +913,7 @@ fn main() {
         poll: Some(poll),
         ..AppSpec::new("CarryFS Manager", (1180.0, 780.0), State::default, view)
     });
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let handle = app.handle();
         let watched = platform::watch(move || {

@@ -3,7 +3,8 @@
 use std::fs::File;
 use std::io::{self, ErrorKind};
 use std::os::unix::fs::FileExt;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 
 use carryfs_core::{BlockDevice, Error, Geometry, MountMode, Result, has_root_magic};
 
@@ -85,6 +86,61 @@ const COALESCE_BYTES: usize = 1 << 20;
 const RECENT_READS: usize = 8;
 const RECENT_READ_BYTES: usize = 64 << 10;
 
+/// Bytes fetched ahead of a sequential reader. AppFuse passes the provider
+/// 64 KiB at a time and waits for each reply, so without read-ahead the USB
+/// link idles while every request travels to the app and back.
+const READ_AHEAD_BYTES: usize = 256 << 10;
+/// Smaller reads are metadata, which the core reads in scattered pages.
+const READ_AHEAD_MIN: usize = 16 << 10;
+
+/// Read-ahead windows, shared with the threads that fetch them: the one the
+/// reader is in and the one after it.
+#[derive(Default)]
+struct Ahead {
+    slot: Mutex<Fetched>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct Fetched {
+    /// Bumped by every write; a window fetched before a write is stale.
+    generation: u64,
+    windows: Vec<Window>,
+}
+
+struct Window {
+    /// Partition offset.
+    at: u64,
+    len: usize,
+    generation: u64,
+    /// `None` while the fetch is in flight.
+    data: Option<Vec<u8>>,
+}
+
+impl Ahead {
+    /// The fetch threads never panic while holding the lock, but a reader must not hang if one did.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Fetched> {
+        self.slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn wait<'a>(
+        &self,
+        slot: std::sync::MutexGuard<'a, Fetched>,
+    ) -> std::sync::MutexGuard<'a, Fetched> {
+        self.ready
+            .wait(slot)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Window {
+    fn end(&self) -> u64 {
+        self.at + self.len as u64
+    }
+}
+
 /// A byte range of a disk that holds a CarryFS volume.
 #[derive(Clone)]
 pub struct Partition {
@@ -98,6 +154,9 @@ pub struct Partition {
     pending_at: u64,
     /// Recent reads by offset, oldest first. Any write clears them.
     recent: Vec<(u64, Vec<u8>)>,
+    /// End of the last read, to spot a sequential reader.
+    read_end: u64,
+    ahead: Arc<Ahead>,
 }
 
 impl Partition {
@@ -123,15 +182,15 @@ impl Partition {
             pending: Vec::new(),
             pending_at: 0,
             recent: Vec::new(),
+            read_end: u64::MAX,
+            ahead: Arc::default(),
         }
     }
 
     /// The same range, refusing writes.
-    pub fn read_only(self) -> Self {
-        Self {
-            mode: MountMode::ReadOnly,
-            ..self
-        }
+    pub fn read_only(mut self) -> Self {
+        self.mode = MountMode::ReadOnly;
+        self
     }
 
     fn disk(&self) -> Result<std::sync::MutexGuard<'_, dyn Sectors + 'static>> {
@@ -160,9 +219,99 @@ impl Partition {
         result
     }
 
+    /// Copy `out` from a read-ahead window, waiting for its fetch if needed.
+    fn take_ahead(&self, offset: u64, out: &mut [u8]) -> bool {
+        let end = offset + out.len() as u64;
+        let mut slot = self.ahead.lock();
+        loop {
+            let generation = slot.generation;
+            let Some(window) = slot
+                .windows
+                .iter()
+                .find(|w| w.generation == generation && offset >= w.at && end <= w.end())
+            else {
+                return false;
+            };
+            if let Some(data) = &window.data {
+                let from = (offset - window.at) as usize;
+                out.copy_from_slice(&data[from..from + out.len()]);
+                return true;
+            }
+            slot = self.ahead.wait(slot);
+        }
+    }
+
+    /// Keep a window fetched or in flight just past the one the reader is in.
+    fn read_ahead(&self, reader: u64) {
+        let mut slot = self.ahead.lock();
+        let generation = slot.generation;
+        // Windows behind the reader are done; one in flight finishes and is dropped then.
+        slot.windows
+            .retain(|w| w.data.is_none() || (w.generation == generation && w.end() > reader));
+        let from = slot.windows.last().map_or(reader, |w| w.end().max(reader));
+        let len = READ_AHEAD_BYTES.min(self.geometry.byte_len.saturating_sub(from) as usize);
+        if slot.windows.len() >= 2 || len == 0 || self.pending_overlaps(from, len) {
+            return;
+        }
+        let Ok(at) = self.range(from, len) else {
+            return;
+        };
+        slot.windows.push(Window {
+            at: from,
+            len,
+            generation,
+            data: None,
+        });
+        drop(slot);
+        let (ahead, disk) = (self.ahead.clone(), self.disk.clone());
+        let fetch =
+            thread::Builder::new()
+                .name("carryfs-read-ahead".into())
+                .spawn(move || {
+                    let mut data = vec![0; len];
+                    // A failed fetch is dropped; the reader then asks the disk itself and sees the error.
+                    let read = disk
+                        .lock()
+                        .is_ok_and(|mut disk| disk.read_at(at, &mut data).is_ok());
+                    let mut slot = ahead.lock();
+                    let current = slot.generation;
+                    if let Some(i) = slot.windows.iter().position(|w| {
+                        w.at == from && w.generation == generation && w.data.is_none()
+                    }) {
+                        if read && generation == current {
+                            slot.windows[i].data = Some(data);
+                        } else {
+                            slot.windows.remove(i);
+                        }
+                    }
+                    ahead.ready.notify_all();
+                });
+        if fetch.is_err() {
+            let mut slot = self.ahead.lock();
+            slot.windows.retain(|w| w.at != from || w.data.is_some());
+        }
+    }
+
+    /// Forget fetched bytes; a write may have changed them.
+    fn drop_ahead(&self) {
+        let mut slot = self.ahead.lock();
+        slot.generation += 1;
+        slot.windows.retain(|w| w.data.is_none());
+    }
+
     fn pending_overlaps(&self, offset: u64, len: usize) -> bool {
         let end = self.pending_at + self.pending.len() as u64;
         !self.pending.is_empty() && offset < end && offset + len as u64 > self.pending_at
+    }
+}
+
+impl Drop for Partition {
+    /// Wait for fetches in flight: the USB descriptor they read closes after eject.
+    fn drop(&mut self) {
+        let mut slot = self.ahead.lock();
+        while slot.windows.iter().any(|w| w.data.is_none()) {
+            slot = self.ahead.wait(slot);
+        }
     }
 }
 
@@ -189,12 +338,21 @@ impl BlockDevice for Partition {
             out.copy_from_slice(data);
             return Ok(());
         }
+        let sequential = offset == self.read_end && out.len() >= READ_AHEAD_MIN;
+        self.read_end = offset + out.len() as u64;
         if self.pending_overlaps(offset, out.len()) {
             self.send()?;
+        }
+        if self.take_ahead(offset, out) {
+            self.read_ahead(self.read_end);
+            return Ok(());
         }
         self.disk()?
             .read_at(at, out)
             .map_err(usb_error("read disk"))?;
+        if sequential {
+            self.read_ahead(self.read_end);
+        }
         if out.len() <= RECENT_READ_BYTES {
             if self.recent.len() == RECENT_READS {
                 self.recent.remove(0);
@@ -210,6 +368,7 @@ impl BlockDevice for Partition {
         }
         self.range(offset, data.len())?;
         self.recent.clear();
+        self.drop_ahead();
         let follows = offset == self.pending_at + self.pending.len() as u64;
         if !follows || self.pending.len() + data.len() > COALESCE_BYTES {
             self.send()?;
@@ -504,6 +663,46 @@ pub(crate) mod tests {
         assert_eq!(writes(), run + 1);
         partition.flush_durable().unwrap();
         assert_eq!((writes(), media.lock().unwrap().flushes), (run + 2, 1));
+    }
+
+    #[test]
+    fn sequential_reads_are_fetched_ahead() {
+        let usb = FakeUsb::new(512, 64 * MIB);
+        let media = usb.media.clone();
+        let disk: SharedDisk = Arc::new(Mutex::new(Disk::open(usb).unwrap()));
+        let mut partition = Partition::new(&disk, MIB, 32 * MIB);
+        let data: Vec<u8> = (0..4 * MIB as usize).map(|i| (i / 4096) as u8).collect();
+        partition.write_all_at(0, &data).unwrap();
+        partition.flush_durable().unwrap();
+        let reads = || media.lock().unwrap().reads;
+
+        let before = reads();
+        let mut back = vec![0; data.len()];
+        for (i, chunk) in back.chunks_mut(64 << 10).enumerate() {
+            partition.read_exact_at((i << 16) as u64, chunk).unwrap();
+        }
+        assert!(back == data);
+        let commands = reads() - before;
+        // Two reads go straight to the disk before the reader looks sequential, and
+        // up to two windows run past the end.
+        let minimum = data.len() / (64 << 10);
+        assert!(
+            commands <= minimum + 2 + 2 * READ_AHEAD_BYTES / (64 << 10),
+            "{commands} reads"
+        );
+
+        // A write over fetched bytes is visible to the next read.
+        partition.read_exact_at(0, &mut back[..64 << 10]).unwrap();
+        partition
+            .read_exact_at(64 << 10, &mut back[..64 << 10])
+            .unwrap();
+        partition
+            .write_all_at(128 << 10, &[0xee; 64 << 10])
+            .unwrap();
+        partition.flush_durable().unwrap();
+        let mut page = vec![0; 64 << 10];
+        partition.read_exact_at(128 << 10, &mut page).unwrap();
+        assert_eq!(page, vec![0xee; 64 << 10]);
     }
 
     #[test]

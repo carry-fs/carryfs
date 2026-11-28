@@ -143,25 +143,82 @@ follow-up comparison, so the deletion result is for internal storage.
 Measured on a Galaxy S25 Ultra (SM-S938B) running Android 17 build
 `S938BXXUDDZJB`. The OCZ Vertex 4 sat in its usual enclosure (USB ID
 `13fd:5917`) and linked at SuperSpeed. Both filesystems used the same 8 GiB
-partitions as before and ran through the benchmark app, exFAT first. The
-CarryFS build was `adfe776` with the document-lookup and USB-handoff changes
-described below. See the [per-round data](android-2026-11-28.tsv).
+partitions as before and ran ten rounds each through the benchmark app,
+exFAT first. The first CarryFS run used `adfe776` with the document-lookup
+and USB-handoff changes described below. The second also had read-ahead and
+ran about an hour later. See the [per-round data](android-2026-11-28.tsv).
 
-| Workload | Unit | CarryFS | exFAT |
+| Workload | Unit | CarryFS, first | CarryFS, read-ahead | exFAT, first | exFAT, second |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Write 512 MiB and sync | MiB/s | 70.1 (−1.3/+4.8) | 151.8 (−4.3/+1.4) | 211.0 (−13.7/+2.0) | 210.8 (−13.8/+2.4) |
+| Read 512 MiB, wall time | MiB/s | — | 215.4 (−117.5/+4.7) | — | 824.9 (−75.2/+101.7) |
+| Read 512 MiB, time in reads | MiB/s | 75.6 (−3.2/+11.8) | 440.5 (−315.7/+5.2) | 6,270.0 (−1,383.7/+1,199.1) | 7,280.2 (−446.2/+1,656.2) |
+| Create and write 1,000 files | files/s | 56.2 (−3.4/+5.1) | 91.2 (−2.2/+2.0) | 327.4 (−35.7/+23.8) | 341.9 (−33.2/+17.1) |
+| List 1,000 files | ms | 48.0 (−18.3/+38.8) | 26.6 (−9.3/+11.6) | 18.1 (−2.4/+2.3) | 17.7 (−2.1/+1.0) |
+| Remove 1,000 files | ms | 757.9 (−9.1/+23.1) | 691.7 (−6.3/+30.7) | 1,760.3 (−71.6/+345.1) | 1,789.7 (−60.5/+180.9) |
+
+The SSD's state moved CarryFS's results more than any code change did. In
+the read-ahead comparison below, the same build wrote at 139–152 MiB/s in
+its first batch and at 69–95 MiB/s fifteen rounds later, after about 8 GiB of
+writes. Small-file creation fell from 97 to 68–76 files/s over the same
+batches. The drive recovers after sitting idle. The first CarryFS run, and
+the November 28 runs of `d5802bd` at 69 MiB/s, caught it in the slow state.
+The write path is unchanged since November 24, when it reached 145.6 MiB/s.
+Compare builds only within alternating batches.
+
+The workload originally timed only `readFully`. With read-ahead the provider
+keeps reading while the client checks each chunk, so that figure can exceed
+the link. The wall time includes the checks and is the figure to compare.
+The checks also bound exFAT's wall time.
+
+### Where CarryFS loses time
+
+A profiling build timed every SCSI command and every AppFuse callback over
+the instrumented workload.
+
+**Small files.** Each created file is one publish. A publish sends three
+SYNCHRONIZE CACHE commands: after the data and tree pages, after root A and
+after root B. One round sent 3,022 for 1,000 files, at 2.0 ms each. That is
+6 ms per file, and about 8 WRITE commands add 1.3 ms. The drive alone caps
+creation near 135 files/s. Linux's exFAT driver waits for its directory
+writes but does not flush the drive's cache for them. Matching it
+needs a commit protocol with fewer barriers. That is a core change, not an
+adapter change.
+
+**Sequential writes.** Bulk-Only Transport runs one command at a time, and
+CarryFS sends each 256 KiB WRITE as 16 KiB synchronous transfers. In three
+rounds per size in the same drive state, 16 KiB pieces wrote at 71 MiB/s,
+64 KiB pieces at 90–93 and 256 KiB pieces at 93–95. The 16 KiB limit protects
+a Lexar stick that dropped off the bus with larger transfers. Raising it for
+this SSD needs a per-device rule tested on that stick, so the limit stays.
+The kernel's UAS driver, which exFAT uses, queues several commands.
+
+**Sequential reads.** exFAT's read after write comes from Android's page
+cache. On November 24 the kernel disk counters recorded under 2 MiB of USB
+reads, and 7,280 MiB/s is beyond USB 3.2 Gen 1. No USB driver can match that
+without caching the whole file in memory. CarryFS reads through AppFuse,
+which passes the provider 64 KiB per callback. Without read-ahead, each
+callback waited about 375 µs for its USB READ and spent about 350 µs more in
+AppFuse. CarryFS now fetches the next 256 KiB on a worker thread while the
+current callback returns.
+
+**Listing.** The second run listed in 26.6 ms against exFAT's 17.7 ms, and
+the first run's spread covers both. This was not profiled further.
+
+### Read-ahead
+
+Builds `8a073a5` and read-ahead ran the full instrumented workload in
+alternating five-round batches.
+
+| Workload | Unit | Without | Read-ahead |
 | --- | --- | ---: | ---: |
-| Write 512 MiB and sync | MiB/s | 70.1 (−1.3/+4.8) | 211.0 (−13.7/+2.0) |
-| Read 512 MiB after write | MiB/s | 75.6 (−3.2/+11.8) | 6,270.0 (−1,383.7/+1,199.1) |
-| Create and write 1,000 files | files/s | 56.2 (−3.4/+5.1) | 327.4 (−35.7/+23.8) |
-| List 1,000 files | ms | 48.0 (−18.3/+38.8) | 18.1 (−2.4/+2.3) |
-| Remove 1,000 files | ms | 757.9 (−9.1/+23.1) | 1,760.3 (−71.6/+345.1) |
+| Read 512 MiB, wall time | MiB/s | 78.3 (−38.6/+41.5) | 178.3 (−123.4/+34.1) |
+| Read 512 MiB, time in reads | MiB/s | 119.6 (−45.7/+46.5) | 386.0 (−274.4/+66.5) |
 
-exFAT matched its November 24 results. CarryFS sequential throughput was half
-of its November 24 figures, and the code does not explain the drop. In the
-instrumented workload on the same day, `d5802bd`, `adfe776` and this build
-each wrote at 69–70 MiB/s and read at 72–74 MiB/s. On November 24, `d5802bd`
-wrote at 145.6 MiB/s. The phone reported no thermal throttling or power
-saving. The cause is still open. Candidates are the SSD's state after many
-writes without TRIM, and the cable or adapter.
+Within each drive state, read-ahead read faster: 175–197 MiB/s in four of
+five rounds against 114–119 MiB/s while the drive was fast, and 54–212
+against 39–42 MiB/s once it slowed.
+Writes, creation and removal followed the drive's state, not the build.
 
 ### Document lookup
 

@@ -189,9 +189,10 @@ adapter change.
 CarryFS sends each 256 KiB WRITE as 16 KiB synchronous transfers. In three
 rounds per size in the same drive state, 16 KiB pieces wrote at 71 MiB/s,
 64 KiB pieces at 90–93 and 256 KiB pieces at 93–95. The 16 KiB limit protects
-a Lexar stick that dropped off the bus with larger transfers. Raising it for
-this SSD needs a per-device rule tested on that stick, so the limit stays.
-The kernel's UAS driver, which exFAT uses, queues several commands.
+a Lexar stick that dropped off the bus with larger transfers. Drives that also
+offer UAS, such as this enclosure, now use 256 KiB pieces and 256 KiB READs;
+see [Transfer size](#transfer-size). The remaining gap is Bulk-Only Transport
+itself: the kernel's UAS driver, which exFAT uses, queues several commands.
 
 **Sequential reads.** exFAT's read after write comes from Android's page
 cache. On November 24 the kernel disk counters recorded under 2 MiB of USB
@@ -203,7 +204,27 @@ AppFuse. CarryFS now fetches the next 256 KiB on a worker thread while the
 current callback returns.
 
 **Listing.** The second run listed in 26.6 ms against exFAT's 17.7 ms, and
-the first run's spread covers both. This was not profiled further.
+the first run's spread covers both. Timing inside the provider split each
+1,000-entry listing about evenly between the native page reads (15–31 ms)
+and building cursor rows (14–23 ms). Both halves rose and fell together
+from round to round, which points to CPU clock and scheduling on the
+provider's binder thread rather than one slow call. Looking up the MIME
+type once per row instead of twice made no measurable difference.
+
+### Transfer size
+
+Drives that offer UAS now take 256 KiB bulk OUT transfers and 256 KiB READ
+commands. Builds with and without that change, both with read-ahead, ran
+the full instrumented workload in alternating five-round batches.
+
+| Workload | Unit | 16 KiB pieces, 64 KiB reads | 256 KiB transfers |
+| --- | --- | ---: | ---: |
+| Write 512 MiB and sync | MiB/s | 70.0 (−1.8/+27.7) | 93.5 (−2.8/+33.5) |
+| Read 512 MiB, wall time | MiB/s | 189.1 (−136.3/+24.6) | 221.8 (−166.4/+4.2) |
+| Create and write 1,000 files | files/s | 73.0 (−5.6/+2.3) | 72.7 (−2.9/+4.9) |
+
+Each batch agreed: 16 KiB batches wrote at 68–74 MiB/s after their first
+round, and 256 KiB batches at 90–95.
 
 ### Read-ahead
 

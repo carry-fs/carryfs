@@ -27,7 +27,7 @@ const CSW_SIGNATURE: u32 = 0x5342_5355;
 // The most bytes one command moves; bigger commands cost fewer round trips. A
 // Lexar stick dropped off the bus under sustained 256 KiB READs, and under any
 // single bulk OUT transfer of 64 KiB or more, so a WRITE's data goes out in
-// pieces. ponytail: fixed; tune per drive if one proves faster.
+// pieces unless the drive opts into large transfers.
 const MAX_READ: usize = 64 << 10;
 pub(crate) const MAX_WRITE: usize = 256 << 10;
 const OUT_PIECE: usize = 16 << 10;
@@ -71,9 +71,17 @@ pub struct Disk<T> {
     block_bytes: u32,
     blocks: u64,
     write_protected: bool,
+    max_read: usize,
+    out_piece: usize,
 }
 
 impl<T: Transport> Disk<T> {
+    /// Read and send up to `MAX_WRITE` bytes per transfer. UAS bridges, built for
+    /// large queued transfers, take them; some flash sticks drop off the bus.
+    pub fn allow_large_transfers(&mut self) {
+        (self.max_read, self.out_piece) = (MAX_WRITE, MAX_WRITE);
+    }
+
     /// Identify the device, wait for its medium, and read its capacity.
     pub fn open(usb: T) -> io::Result<Self> {
         let mut disk = Self {
@@ -82,6 +90,8 @@ impl<T: Transport> Disk<T> {
             block_bytes: 0,
             blocks: 0,
             write_protected: false,
+            max_read: MAX_READ,
+            out_piece: OUT_PIECE,
         };
         let mut inquiry = [0; 36];
         disk.run(&[0x12, 0, 0, 0, 36, 0], Data::In(&mut inquiry))?;
@@ -112,8 +122,9 @@ impl<T: Transport> Disk<T> {
 
     pub fn read_at(&mut self, offset: u64, out: &mut [u8]) -> io::Result<()> {
         self.check(offset, out.len())?;
-        for (i, chunk) in out.chunks_mut(MAX_READ).enumerate() {
-            let (cdb, len) = self.rw_cdb(false, offset + (i * MAX_READ) as u64, chunk.len());
+        let max_read = self.max_read;
+        for (i, chunk) in out.chunks_mut(max_read).enumerate() {
+            let (cdb, len) = self.rw_cdb(false, offset + (i * max_read) as u64, chunk.len());
             let wanted = chunk.len();
             if self.run(&cdb[..len], Data::In(chunk))? != wanted {
                 return Err(io::Error::new(
@@ -358,7 +369,7 @@ impl<T: Transport> Disk<T> {
     /// One data-out phase sent as several bulk transfers. A short transfer ends it.
     fn send_pieces(&mut self, data: &[u8]) -> io::Result<usize> {
         let mut moved = 0;
-        for piece in data.chunks(OUT_PIECE) {
+        for piece in data.chunks(self.out_piece) {
             let sent = self.usb.bulk_out(piece)?;
             moved += sent;
             if sent < piece.len() {
@@ -625,6 +636,27 @@ mod tests {
         disk.read_at(1 << 20, &mut back).unwrap();
         assert_eq!(back, data);
         assert_eq!(media.lock().unwrap().flushes, 1);
+    }
+
+    #[test]
+    fn large_transfers_read_in_fewer_commands() {
+        let mut reads = Vec::new();
+        for large in [false, true] {
+            let usb = FakeUsb::new(512, 16 << 20);
+            let media = usb.media.clone();
+            let mut disk = Disk::open(usb).unwrap();
+            if large {
+                disk.allow_large_transfers();
+            }
+            let data: Vec<u8> = (0..1 << 20).map(|i| (i % 251) as u8).collect();
+            disk.write_at(0, &data).unwrap();
+            let before = media.lock().unwrap().reads;
+            let mut back = vec![0; data.len()];
+            disk.read_at(0, &mut back).unwrap();
+            assert!(back == data);
+            reads.push(media.lock().unwrap().reads - before);
+        }
+        assert_eq!(reads, [(1 << 20) / MAX_READ, (1 << 20) / MAX_WRITE]);
     }
 
     #[test]

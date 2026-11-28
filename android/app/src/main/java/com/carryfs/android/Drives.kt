@@ -83,6 +83,11 @@ object Drives {
                 it.interfaceSubclass == 6 && it.interfaceProtocol == 0x50
         }
 
+    /** Whether the drive also offers UAS. Such bridges take 256 KiB Bulk-Only transfers; some flash sticks don't. */
+    private fun uas(device: UsbDevice) = (0 until device.interfaceCount).map(device::getInterface).any {
+        it.interfaceClass == UsbConstants.USB_CLASS_MASS_STORAGE && it.interfaceSubclass == 6 && it.interfaceProtocol == 0x62
+    }
+
     /** Claim the drive from the kernel and mount its CarryFS volumes. Blocks on I/O. */
     fun mount(context: Context, device: UsbDevice) = synchronized(lock(device.deviceId.toLong())) {
         val key = device.deviceId.toLong()
@@ -105,7 +110,7 @@ object Drives {
             if (!connection.claimInterface(iface, true)) throw IOException("Cannot claim the USB drive after reset")
             // A UAS-capable drive may be left in its UAS setting; Bulk-Only Transport is setting 0.
             if (!connection.setInterface(iface)) throw IOException("Cannot select the drive's mass-storage mode")
-            val volumes = Native.mountUsb(key, connection.fileDescriptor, iface.id, input.address, output.address)
+            val volumes = Native.mountUsb(key, connection.fileDescriptor, iface.id, input.address, output.address, uas(device))
             if (volumes.isEmpty()) throw IOException("No CarryFS volume on ${drive.name}")
             drives[key] = Drive(key, drive.name, volumes.toList(), connection, iface, Native.takeMountWarning(key)).apply { refresh() }
         } catch (e: Exception) {

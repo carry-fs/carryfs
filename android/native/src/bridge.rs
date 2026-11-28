@@ -242,6 +242,7 @@ pub extern "system" fn Java_com_carryfs_android_Native_mountUsb<'local>(
     interface: jint,
     endpoint_in: jint,
     endpoint_out: jint,
+    large_transfers: jboolean,
 ) -> jlongArray {
     call(&mut env, null_mut(), |env| {
         let usb = Usbfs::new(
@@ -250,10 +251,13 @@ pub extern "system" fn Java_com_carryfs_android_Native_mountUsb<'local>(
             small(endpoint_in, "USB endpoint is out of range")?,
             small(endpoint_out, "USB endpoint is out of range")?,
         );
-        let disk = Disk::open(usb).map_err(|source| Error::Io {
+        let mut disk = Disk::open(usb).map_err(|source| Error::Io {
             operation: "open USB disk",
             source,
         })?;
+        if large_transfers != 0 {
+            disk.allow_large_transfers();
+        }
         let volumes = mount(drive, Arc::new(Mutex::new(disk)))?;
         long_array(env, &volumes)
     })

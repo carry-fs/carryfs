@@ -29,7 +29,9 @@ object Native {
     const val ROOT = 1L
 
     /** Mount the CarryFS volumes of a claimed USB mass-storage interface. */
-    @JvmStatic external fun mountUsb(drive: Long, fd: Int, iface: Int, endpointIn: Int, endpointOut: Int): LongArray
+    @JvmStatic external fun mountUsb(
+        drive: Long, fd: Int, iface: Int, endpointIn: Int, endpointOut: Int, largeTransfers: Boolean,
+    ): LongArray
     /** Reset a claimed USB device; the kernel re-probes it as if it were replugged. */
     @JvmStatic external fun resetUsb(fd: Int)
     /** Mount the CarryFS volumes of a disk image, standing in for a USB drive. */

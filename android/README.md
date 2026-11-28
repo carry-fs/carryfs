@@ -128,8 +128,8 @@ From `android/`, install the CarryFS and benchmark APKs before mounting the driv
 ```
 
 Run the native baseline while Android owns the drive. If CarryFS opens
-automatically, eject in CarryFS, remove its USB default in Android settings
-and reconnect the drive. Check `adb shell sm list-volumes public` for the
+automatically, eject in CarryFS. Android then mounts the drive's own volumes
+again within a few seconds. Check `adb shell sm list-volumes public` for the
 mounted volume's UUID and verify its filesystem on the desktop or in the phone's
 mount diagnostics. Replace `1234-ABCD` with that UUID, choose a folder on that
 volume in the picker, and grant access.

@@ -30,6 +30,8 @@ object Native {
 
     /** Mount the CarryFS volumes of a claimed USB mass-storage interface. */
     @JvmStatic external fun mountUsb(drive: Long, fd: Int, iface: Int, endpointIn: Int, endpointOut: Int): LongArray
+    /** Reset a claimed USB device; the kernel re-probes it as if it were replugged. */
+    @JvmStatic external fun resetUsb(fd: Int)
     /** Mount the CarryFS volumes of a disk image, standing in for a USB drive. */
     @JvmStatic external fun mountImage(drive: Long, path: String): LongArray
     @JvmStatic external fun takeMountWarning(drive: Long): String

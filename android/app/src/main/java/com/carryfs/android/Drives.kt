@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.provider.DocumentsContract
+import android.util.Log
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -48,8 +49,15 @@ object Drives {
 
         fun release() {
             if (worker.isInitialized()) worker.value.quitSafely()
-            connection?.releaseInterface(iface)
-            connection?.close()
+            connection ?: return
+            // Some UAS bridges hang when Android's driver resumes after Bulk-Only. A reset hands back a clean device.
+            try {
+                Native.resetUsb(connection.fileDescriptor)
+            } catch (e: IOException) {
+                Log.w("CarryFS", "Could not reset $name for Android", e)
+            }
+            connection.releaseInterface(iface)
+            connection.close()
         }
     }
 
@@ -89,8 +97,12 @@ object Drives {
         val connection = usb.openDevice(device) ?: throw IOException("Cannot open the USB drive")
         val drive = Drive(key, device.displayName(), emptyList(), connection, iface)
         try {
-            // Forcing detaches the kernel driver, unmounting any FAT volume Android mounted.
+            // Forcing detaches the kernel driver. A volume Android mounted from this drive vanishes without an unmount.
             if (!connection.claimInterface(iface, true)) throw IOException("Cannot claim the USB drive")
+            // Some UAS bridges fail Bulk-Only commands after Android's UAS driver used them, until a reset.
+            // The reset rebinds that driver, so claim the drive again before Android mounts anything.
+            Native.resetUsb(connection.fileDescriptor)
+            if (!connection.claimInterface(iface, true)) throw IOException("Cannot claim the USB drive after reset")
             // A UAS-capable drive may be left in its UAS setting; Bulk-Only Transport is setting 0.
             if (!connection.setInterface(iface)) throw IOException("Cannot select the drive's mass-storage mode")
             val volumes = Native.mountUsb(key, connection.fileDescriptor, iface.id, input.address, output.address)

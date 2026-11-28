@@ -33,6 +33,16 @@ const fn ioc(direction: u32, number: u32, size: usize) -> u32 {
 const USBDEVFS_CONTROL: u32 = ioc(3, 0, size_of::<ControlTransfer>());
 const USBDEVFS_BULK: u32 = ioc(3, 2, size_of::<BulkTransfer>());
 const USBDEVFS_CLEAR_HALT: u32 = ioc(2, 21, size_of::<libc::c_uint>());
+const USBDEVFS_RESET: u32 = ioc(0, 20, 0);
+
+/// Reset the whole device. The kernel then re-probes it as if it were replugged.
+pub fn reset_device(fd: RawFd) -> io::Result<()> {
+    // SAFETY: USBDEVFS_RESET takes no argument.
+    if unsafe { libc::ioctl(fd, USBDEVFS_RESET as _) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
 
 // ponytail: one timeout for every transfer; a slow SYNCHRONIZE CACHE needs the headroom.
 const TIMEOUT_MS: u32 = 20_000;

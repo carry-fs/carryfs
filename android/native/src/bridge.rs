@@ -17,7 +17,7 @@ use jni::sys::{jboolean, jbyteArray, jint, jlong, jlongArray, jstring};
 use crate::disk::{ImageFile, SharedDisk};
 use crate::scsi::Disk;
 use crate::session::{Entry, Session};
-use crate::usbfs::Usbfs;
+use crate::usbfs::{self, Usbfs};
 
 type Drive = Arc<Mutex<Session>>;
 
@@ -260,6 +260,20 @@ pub extern "system" fn Java_com_carryfs_android_Native_mountUsb<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_carryfs_android_Native_resetUsb<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    fd: jint,
+) {
+    call(&mut env, (), |_| {
+        Ok(usbfs::reset_device(fd).map_err(|source| Error::Io {
+            operation: "reset USB drive",
+            source,
+        })?)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_carryfs_android_Native_mountImage<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
@@ -416,6 +430,18 @@ pub extern "system" fn Java_com_carryfs_android_Native_stat<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_carryfs_android_Native_parent<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    volume: jlong,
+    id: jlong,
+) -> jlong {
+    call(&mut env, 0, |_| {
+        Ok(with_volume(volume, |session| session.parent(volume, id))?)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_carryfs_android_Native_create<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
@@ -429,18 +455,6 @@ pub extern "system" fn Java_com_carryfs_android_Native_create<'local>(
         Ok(with_volume(volume, |session| {
             session.create(volume, parent, &name, directory != 0)
         })?)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_carryfs_android_Native_parent<'local>(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    volume: jlong,
-    id: jlong,
-) -> jlong {
-    call(&mut env, 0, |_| {
-        Ok(with_volume(volume, |session| session.parent(volume, id))?)
     })
 }
 

@@ -58,6 +58,31 @@ jobs:
           name: payload-${{ matrix.platform }}
           path: payload
           if-no-files-found: error
+      # The manager ships beside the adapter; the installers do not install it.
+      # It runs its companion carryfs from its own directory.
+      - name: Linux manager libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-dev
+      - name: Build and stage manager
+        run: |
+          set -euo pipefail
+          mkdir manager-payload
+          release=manager/target/release
+          case ${{ matrix.platform }} in
+            macos-arm64)
+              cp -R "$(manager/scripts/bundle-macos.sh)" manager-payload/ ;;
+            windows-x86_64)
+              cargo build --release --locked --manifest-path manager/Cargo.toml --bins
+              cp "$release/carryfs-manager.exe" "$release/carryfs.exe" manager-payload/ ;;
+            *)
+              cargo build --release --locked --manifest-path manager/Cargo.toml --bins
+              cp "$release/carryfs-manager" "$release/carryfs" manager-payload/ ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        with:
+          name: manager-${{ matrix.platform }}
+          path: manager-payload
+          if-no-files-found: error
 
   freebsd:
     runs-on: ubuntu-24.04
@@ -142,12 +167,20 @@ jobs:
           path: payload
           if-no-files-found: error
 
+  # The APK is debug-signed (RELEASE_NOTES.md).
+  android:
+    uses: ./.github/workflows/android.yml
+
+  kernel:
+    uses: ./.github/workflows/kernel.yml
+
   # Archives are built on Linux so the Windows zip has forward-slash entries,
   # which install.ps1 requires.
   package:
-    needs: [build, freebsd, netbsd]
+    needs: [build, freebsd, netbsd, android]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: payloads
@@ -162,6 +195,15 @@ jobs:
           done
           [ "$(cat payloads/payload-windows-x86_64/VERSION)" = "$version" ]
           (cd payloads/payload-windows-x86_64 && zip -qrX "$GITHUB_WORKSPACE/dist/carryfs-$version-windows-x86_64.zip" .)
+          for platform in linux-x86_64 macos-arm64; do
+            tar --owner=0 --group=0 --numeric-owner -czf "dist/carryfs-manager-$version-$platform.tar.gz" -C "payloads/manager-$platform" .
+          done
+          (cd payloads/manager-windows-x86_64 && zip -qrX "$GITHUB_WORKSPACE/dist/carryfs-manager-$version-windows-x86_64.zip" .)
+          cp payloads/android-apk/app-debug.apk "dist/carryfs-$version-android-arm64.apk"
+          # The module builds per kernel, so it ships as source: linux/ includes ondisk/src,
+          # and scripts/kernel-build.sh finds the rustc that built the kernel.
+          git archive --prefix="carryfs-$version-linux-module/" -o "dist/carryfs-$version-linux-module-src.tar.gz" HEAD \
+            linux ondisk scripts/kernel-build.sh LICENSE LICENSE-APACHE LICENSE-GPL-2.0
           (cd dist && sha256sum carryfs-* > SHA256SUMS && cat SHA256SUMS)
       - uses: actions/upload-artifact@v7
         with:
@@ -171,7 +213,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: package
+    needs: [package, kernel]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

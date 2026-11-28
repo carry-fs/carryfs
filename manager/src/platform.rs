@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "macos", test))]
 use serde_json::Value;
 use std::{
     fs,
@@ -26,6 +27,10 @@ pub const FILE_BROWSER: &str = if cfg!(windows) {
 pub enum DeviceKind {
     Physical,
     Virtual,
+    #[cfg_attr(
+        not(any(target_os = "macos", windows, test)),
+        expect(dead_code, reason = "only macOS and Windows discovery report devices")
+    )]
     Unknown,
 }
 
@@ -101,6 +106,7 @@ impl Device {
         #[cfg(not(windows))]
         PathBuf::from(format!("/dev/{}", self.id))
     }
+    #[cfg(any(target_os = "macos", windows, test))]
     pub fn verify(&self, fresh: &Self) -> Result<()> {
         if self.id != fresh.id
             || self
@@ -155,7 +161,7 @@ fn diskutil(args: &[&str]) -> Result<Value> {
     }
     Ok(serde_json::from_slice(&output.stdout)?)
 }
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 fn string(v: &Value, key: &str) -> Option<String> {
     v.get(key)?
         .as_str()
@@ -171,7 +177,7 @@ pub fn valid_id(id: &str) -> bool {
             .split('s')
             .all(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
 }
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 fn parse_device(v: &Value, parent: Option<String>, whole: bool) -> Result<Device> {
     let id = string(v, "DeviceIdentifier").ok_or("Disk information is missing an identifier")?;
     if !valid_id(&id) {
@@ -209,7 +215,7 @@ fn parse_device(v: &Value, parent: Option<String>, whole: bool) -> Result<Device
         },
     })
 }
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 fn parse_inventory(root: &Value) -> Result<Vec<Device>> {
     let disks = root
         .get("AllDisksAndPartitions")
@@ -287,7 +293,7 @@ pub fn watch(changed: impl Fn() + Send + 'static) -> Result<()> {
     });
     Ok(())
 }
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 fn disk_event(line: &str) -> bool {
     [
         "***DiskAppeared ('",

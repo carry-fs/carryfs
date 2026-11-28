@@ -31,11 +31,11 @@ Linux and macOS:
 ./install.sh --local
 ```
 
-On Linux, `./install.sh --local --native` also builds and installs the
-experimental module for the running kernel. FUSE remains the default.
-`./install.sh --uninstall` removes both adapters, including recorded modules
-for older kernels. See [native installation](INSTALLATION.md#fuse-adapter-or-native-driver)
-for requirements and loading instructions.
+On Linux, `./install.sh --local --native` also builds and installs the native
+module for the running kernel. FUSE stays the default.
+`./install.sh --uninstall` removes both adapters, including the modules it
+recorded for older kernels. [Native installation](INSTALLATION.md#fuse-adapter-or-native-driver)
+lists the requirements and how to load the module.
 
 Windows, from 64-bit PowerShell:
 
@@ -48,8 +48,8 @@ administrator permission to install. Eject all CarryFS volumes first.
 
 ## Build without installing
 
-Run these commands from the checkout. Binaries are written to `target/release`.
-To install the resulting files yourself, follow
+Run these commands from the checkout. Cargo writes the binaries to
+`target/release`. To install them yourself, follow
 [install by hand](INSTALLATION.md#install-by-hand).
 
 ### Linux
@@ -92,10 +92,9 @@ Run the checks before you send a change:
 bash scripts/check.sh
 ```
 
-It runs the format reference check in `spec/verify.py`, installer selection
-and release-index tests, then
-`cargo fmt --check`, `cargo check`, Clippy with warnings as errors, and the
-tests.
+It runs the format reference check in `spec/verify.py`, the installer
+selection and release-index tests, `cargo fmt --check`, `cargo check`, Clippy
+with warnings as errors, and the tests.
 
 To run only the installer checks:
 
@@ -105,23 +104,13 @@ python3 -m unittest discover -s tests/installers -p 'test_*.py'
 
 On Windows, also run `powershell -NoProfile -File tests/installers/selection.ps1`.
 
-The website publisher generates `https://carryfs.com/releases.txt` from
-published releases with all three platform packages and `SHA256SUMS` uploaded.
-Release publication calls the same publisher after the assets are available.
-Tagged runs update only the index, preserving the website's installer scripts.
-The index is generated automatically; do not add unreleased versions by hand.
-If index publication fails after a release succeeds, rerun the failed
-publisher job to rebuild it from the published releases.
-
 The [installer-checks workflow](.github/workflows/installer-checks.yml) runs
-selection tests on Ubuntu, macOS, and Windows for installer PRs. Linux also
-checks native installation, reinstall, rollback, and cleanup across kernel
-versions in a temporary filesystem tree. These checks need no published release.
-To test a published package on disposable Ubuntu and Windows hosts, start the
-workflow manually and choose the package version. The Ubuntu job removes
-`jq` first.
-[Initial verification](https://github.com/carry-fs/carryfs/actions/runs/40237648047)
-passed using an existing published package and the checkout's installers.
+the selection tests on Ubuntu, macOS, and Windows for installer PRs. On Linux
+it also checks native installation, reinstall, rollback, and cleanup across
+kernel versions in a temporary filesystem tree. None of this needs a published
+release. To test a published package on disposable Ubuntu and Windows hosts,
+start the workflow by hand and choose the version. The Ubuntu job removes `jq`
+first, to prove the installer works without it.
 
 ### Miri
 
@@ -134,9 +123,9 @@ bash scripts/check-miri.sh
 ```
 
 The script checks CRC vectors, tree-cache eviction, and transaction-work
-accounting. Each exact filter must run one test. Logs go to `build/check-miri/`.
-It uses Miri's default isolation and does not cover the entire core or adapter
-FFI. Longer volume tests are outside this bounded set.
+accounting. Each filter must match exactly one test. Logs go to
+`build/check-miri/`. It runs under Miri's default isolation and skips the rest
+of the core, the adapters' FFI, and the longer volume tests.
 
 ### Fuzzing
 
@@ -149,12 +138,12 @@ cargo install cargo-fuzz --locked
 bash scripts/check-fuzz.sh
 ```
 
-The four targets cover parser inputs, publication/crash/reopen sequences,
-storage maintenance, and file operations checked against a byte oracle.
-Each target requests a 60-second run; an individual input can finish after
-that budget. Parser seeds come from `testdata/vectors/`. Logs go to
-`build/check-fuzz/`; corpora and failing inputs stay under `fuzz/corpus/` and
-`fuzz/artifacts/`. These are bounded runs, not exhaustive verification.
+The four targets cover parser inputs, publication, crash, and reopen
+sequences, storage maintenance, and file operations checked against a byte
+oracle. Each target runs for about 60 seconds; the input in progress can run
+past that. Parser seeds come from `testdata/vectors/`. Logs go to
+`build/check-fuzz/`. Corpora stay in `fuzz/corpus/` and failing inputs in
+`fuzz/artifacts/`.
 
 ### Allocation and unnamed-file checks
 
@@ -176,10 +165,10 @@ cargo build --locked -p carryfs-core -p carryfs-fuse
 python3 fuse/tests/preallocate_macos.py
 ```
 
-The macOS test checks `F_PREALLOCATE` return values, persistent and temporary
-reservations, and the image with `check` and `scrub` after unmounting. The
-installed macFUSE 5.5 reports allocation only up to EOF through `stat`, so
-the test verifies reservations beyond EOF with the on-disk checker.
+The macOS test checks `F_PREALLOCATE` return values and persistent and
+temporary reservations, then runs `check` and `scrub` on the image after
+unmounting. macFUSE 5.5 reports allocation through `stat` only up to EOF, so
+the on-disk checker verifies reservations beyond EOF.
 
 ### Linux directory synchronization
 
@@ -191,26 +180,21 @@ cargo build --release --locked -p carryfs-core -p carryfs-fuse
 sudo python3 fuse/tests/fsyncdir.py
 ```
 
-The test creates fresh 256 MiB images and its own loop devices. It checks
-create, rename, and unlink after directory fsync and fdatasync, in default
-and strict modes, by killing the adapter immediately after synchronization
-and checking recovered contents offline. It uses no existing disk or mount
-and does not need the system installer or UDisks. Logs and images stay under
-`build/fsyncdir-*`. It tests daemon interruption, not physical power loss.
+The test creates fresh 256 MiB images on its own loop devices. For create,
+rename, and unlink, in default and strict modes, it calls directory fsync or
+fdatasync, kills the adapter right after, and checks the recovered contents
+offline. It touches no existing disk or mount and needs neither the system
+installer nor UDisks. Logs and images stay in `build/fsyncdir-*`. A killed
+daemon is not a power cut, so this does not test physical power loss.
 
 ### Occasional CI
 
 The [extended-checks workflow](.github/workflows/extended-checks.yml) runs
-these same scripts on Ubuntu 24.04 through manual dispatch and a weekly
-schedule, Mondays at 04:23 UTC. Start a manual run from the repository's
-Actions tab with **Run workflow**. Miri and fuzzing run without root; the
-directory-sync job uses root inside a disposable VM. Jobs have time limits
-and upload logs and failing fuzz inputs for seven days. The weekly schedule
-takes effect after the workflow reaches the default branch.
-
-[Initial Ubuntu verification](https://github.com/carry-fs/carryfs/actions/runs/40231511907)
-passed all three Miri filters, four bounded fuzz runs, and 12 directory-sync
-cases, including artifact uploads.
+these scripts on Ubuntu 24.04 every Monday at 04:23 UTC. To start it by hand,
+open the repository's Actions tab and choose **Run workflow**. Miri and
+fuzzing run without root. The directory-sync job runs as root inside a
+disposable VM. Every job has a time limit, and the workflow keeps logs and
+failing fuzz inputs for seven days.
 
 ### Other platform checks
 
@@ -221,16 +205,17 @@ Run the additional checks for the adapter you touch:
   `fusermount3` and root.
 - FreeBSD: load `fusefs`, then run `sh scripts/check-freebsd.sh`. It runs
   workspace tests and actual mount, durability, raw-format, and device-lock
-  tests against disposable md devices. The mount tests require root or sudo.
-  CI runs this on FreeBSD 14.5 and 15.1, on amd64 and arm64. On macOS, edit
-  locally and synchronize the checkout into a FreeBSD QEMU VM; build and run
-  this script inside the guest. Keep the checkout on the guest filesystem.
+  tests against disposable md devices. The mount tests need root or sudo.
+  CI runs this on FreeBSD 14.5 and 15.1, on amd64 and arm64. From a Mac, edit
+  locally, sync the checkout into a FreeBSD QEMU VM, and build and run the
+  script there. Keep the checkout on the guest filesystem.
 - NetBSD: install the stable Rust toolchain through rustup, with rustfmt and
   Clippy, and `python312` through pkgin, then run `make check`.
-  It runs formatting, Clippy, workspace and installer tests, then the shared BSD
-  mounted contract through `perfused` on disposable vnd disks. Mounted tests
-  require root or passwordless sudo. CI tests NetBSD 10.2 and 11.1 on amd64.
-  Keep the checkout and Cargo target directory on the guest filesystem.
+  It runs formatting, Clippy, and the workspace and installer tests, then the
+  mounted tests shared with FreeBSD, through `perfused` on disposable vnd
+  disks. The mounted tests need root or passwordless sudo. CI tests NetBSD
+  10.2 and 11.1 on amd64. Keep the checkout and the Cargo target directory on
+  the guest filesystem.
 - macOS: `bash macos/tests/layout.sh` checks the ioctl constants in
   `macos/src/raw.rs` against the macOS SDK.
 - Windows: `windows/tests/layout.sh` compares the struct layouts in

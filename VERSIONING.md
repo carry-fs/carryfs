@@ -11,9 +11,10 @@ combinations that never exist.
 The root `Cargo.toml` holds it in `[workspace.package] version`, and every
 crate inherits it with `version.workspace = true`. The macOS bundle repeats it
 in `CFBundleShortVersionString` in
-`fuse/packaging/carryfs.fs/Contents/Info.plist`. `packaging/stage-release.sh`
-refuses to stage a package when the two differ, and the release workflow
-refuses a tag that does not match `Cargo.toml`.
+`fuse/packaging/carryfs.fs/Contents/Info.plist`, and the manager, which is its
+own Cargo workspace, repeats it in `manager/Cargo.toml`.
+`packaging/stage-release.sh` refuses to stage a package when they differ, and
+the release workflow refuses a tag that does not match `Cargo.toml`.
 
 `carryfs`, `carryfs-fuse` and `carryfs-windows` print the version and the
 format revisions they write and read:
@@ -70,22 +71,29 @@ cannot read.
 
 ## The UI manager
 
-The UI ships in the same release with the same version. If it ever talks to a
-separately installed process that can be on another version, give that
-connection a protocol number and check it when connecting. One example is the
-Windows service after only one of the two has updated. Until then it needs
-none.
+The UI ships in the same release with the same version. It needs no protocol
+version as long as it only runs its companion `carryfs`. If it ever talks to a
+separately installed process, such as the Windows service, the two can be on
+different versions after one of them updates. Give that connection a protocol
+number then, and check it when connecting.
 
 If the UI starts shipping on its own schedule, give it a tag prefix of its own
 in this repository, such as `ui-v1.4.0`, and its own release index.
 
 ## Cutting a release
 
-1. Set the version in `Cargo.toml` and in the bundle's `Info.plist`, then run
-   `cargo build` so `Cargo.lock` follows.
+1. Set the version in `Cargo.toml`, `manager/Cargo.toml`, and the bundle's
+   `Info.plist`, then run `cargo build` in the root and in `manager/` so both
+   `Cargo.lock` files follow.
 2. Update `RELEASE_NOTES.md`. GitHub uses it as the release text. Its
    compatibility section names the format revision, which earlier releases
    can open new volumes, the upgrade steps, and command changes.
 3. Push a `vX.Y.Z` tag, or `vX.Y.Z-rc.N` for a prerelease.
    `.github/workflows/release.yml` builds and publishes the packages, then
    republishes `https://carryfs.com/releases.txt`.
+
+The publisher builds `releases.txt` from the published GitHub releases that
+have all three platform packages and `SHA256SUMS`. Never add a version to it
+by hand. A tagged run updates only the index and leaves the website's
+installer scripts alone. If the index update fails after the release
+succeeded, rerun the failed publisher job.

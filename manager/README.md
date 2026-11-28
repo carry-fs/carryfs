@@ -1,6 +1,27 @@
 # CarryFS Manager
 
-A native macOS and Windows app for CarryFS disks and disk images, laid out like Disk Utility. The sidebar lists physical disks with their partitions, and opened disk images; **Show all disks** adds system volumes and virtual storage as an expandable disk, container, and volume hierarchy. The toolbar holds the disk tasks: **First Aid**, **Erase**, **Recover**, **Mount**/**Unmount**, **Eject**, and **Unlock**. The selected disk shows its capacity, a used/reserved/available bar, First Aid results (opening a volume checks its structure, then its file data once nothing else has run for 30 seconds; each tile also has **Check**, with progress and time left for file data), its details, and its format features, with **Files** and **History** beside **Overview**. **Software Update** at the bottom of the sidebar installs and updates CarryFS. No task opens Terminal.
+CarryFS Manager checks, recovers, erases, mounts, and upgrades CarryFS disks
+and disk images, and installs CarryFS updates. It is laid out like Disk
+Utility, and no task opens Terminal. It works with physical disks on macOS and
+Windows. The Linux build opens disk image files only.
+
+The sidebar lists physical disks with their partitions, and the disk images
+you opened. **Show all disks** adds system volumes and virtual storage as a
+tree of disks, containers, and volumes. **Software Update** sits at the
+bottom of the sidebar.
+
+The toolbar holds the disk tasks: **First Aid**, **Erase**, **Recover**,
+**Mount** or **Unmount**, **Eject**, and **Unlock**.
+
+The selected disk shows its capacity, a bar of used, reserved, and available
+space, its First Aid results, its details, and its format features. Tabs for
+**Files** and **History** sit beside **Overview**. Opening a volume checks its
+structure, and once nothing else has run for 30 seconds, its file data. Each
+result tile also has a **Check** button, which shows progress and time left
+for the file data.
+
+The sections below describe macOS. [Windows](#windows) lists what differs
+there.
 
 ## Run
 
@@ -11,56 +32,151 @@ cargo build --manifest-path manager/Cargo.toml --locked
 manager/target/debug/carryfs-manager
 ```
 
-On macOS, build a complete release app bundle containing the manager and its companion tool:
+On macOS, build a release app bundle that holds the manager and the companion
+CLI:
 
 ```sh
 manager/scripts/bundle-macos.sh
 open "manager/target/CarryFS Manager.app"
 ```
 
-Keep both binaries in the app. First Aid and recovery run the companion tool.
+First Aid and recovery run the companion `carryfs`, so keep both binaries
+together.
 
 ## Administrator permission
 
-Reading a disk directly, upgrading a disk's format, and installing CarryFS need administrator permission. The first such task, or **Unlock**, shows the standard macOS password dialog once. It starts this app's executable as a root helper that connects to a socket created by Manager in a private directory. The helper checks Manager's user and process IDs, and Manager checks that the helper is running as root. The helper can open a validated `/dev/rdiskN` node read-only and pass the descriptor back, run the installed adapter's `upgrade` on a validated partition, and run the published installer for a validated version. Everything else, including the CLI reading a device through that descriptor as `/dev/fd/0`, runs as you, so recovered files belong to you. **Lock**, or quitting the manager, stops the helper; the next task asks again.
+Reading a disk directly, upgrading a disk's format, and installing CarryFS
+need administrator permission. The first such task, or **Unlock**, shows the
+standard macOS password dialog once.
 
-Discovery reads disk metadata only and needs no permission. Mounting, unmounting, ejecting, and erasing go through Disk Arbitration (`diskutil`) without it.
+The dialog starts the manager's own executable as a root helper. The helper
+connects to a socket that the manager created in a private directory. The
+helper checks the manager's user and process IDs, and the manager checks that
+the helper runs as root. The helper can do three things, each on a validated
+target:
+
+- Open a `/dev/rdiskN` node read-only and pass the descriptor back.
+- Run the installed adapter's `upgrade` on a partition.
+- Run the published installer for a version.
+
+Everything else runs as you, including the CLI reading a device through that
+descriptor as `/dev/fd/0`, so recovered files belong to you. **Lock**, or
+quitting the manager, stops the helper, and the next task asks again.
+
+Discovery reads disk metadata only and needs no permission. Mounting,
+unmounting, ejecting, and erasing go through Disk Arbitration (`diskutil`)
+and need none either.
 
 ## Work with a disk
 
-- **First Aid** asks first, then checks the volume's structure (`carryfs fsck --plan`) and, when it is sound and the volume opens, verifies every file's data (`carryfs scrub`). The sheet shows progress, can be stopped, and reports the counts. When it finds damage it offers **Recover Files…** and, for a disk image whose repair would neither be blocked nor lose data, **Repair…** (`fsck --repair`, with a timestamped report beside the image). Disks are not repaired in place: the core's raw-device flush on macOS isn't supported yet, so rebuild them instead. Discarding data (`--accept-data-loss`) stays a command-line decision; see `RECOVERY.md`.
-- **Recover** keeps the source read-only and works around damaged metadata: copy readable files, with permissions, hidden flags, and hard links, to a new folder (`fsck --recover`), or rebuild them as a new verified disk image (`fsck --repair --output --verify-data`). Each writes a report beside its destination; **Show in Finder** reveals it.
-- A volume too damaged to open still appears, explains why, and offers First Aid and recovery.
-- **Erase** asks for a name and shows the partition it will erase, then runs `diskutil eraseVolume CarryFS` with progress in the sheet and refreshes the disk list. Only unmounted external partitions can be erased; APFS, internal, and system storage cannot.
-- **Eject** confirms that every volume on the disk is ejected. There is no forced unmount.
-- **Format features** shows whether the volume stores permissions and which releases open it. A volume CarryFS 0.1.0 formatted (format revision 1) is read-only until **Upgrade Format…** publishes a revision 2 root in place, without rewriting files: a disk image through the companion tool, a disk through the installed adapter. CarryFS 0.1.0 can't open revision 2 volumes.
-- **Files** browses folders read-only and exports single files to new paths. Entries show permissions, hidden entries are dimmed, and the selection shows allocated bytes and hard-link names. **Recover This Folder…** exports the current folder with `carryfs get`.
+- **First Aid** asks first, then checks the volume's structure
+  (`carryfs fsck --plan`). If the structure is sound and the volume opens, it
+  also verifies every file's data (`carryfs scrub`). The sheet shows progress
+  and the counts, and you can stop it. When it finds damage it offers
+  **Recover Files…**. For a disk image whose repair is neither blocked nor
+  lossy, it also offers **Repair…**, which runs `fsck --repair` and writes a
+  timestamped report beside the image. It doesn't repair disks in place,
+  because the core can't flush a raw device on macOS yet, so rebuild them
+  instead. Accepting data loss (`--accept-data-loss`) stays a command-line
+  decision; see [RECOVERY.md](../RECOVERY.md).
+- **Recover** keeps the source read-only and works around damaged metadata.
+  It either copies the readable files, with permissions, hidden flags, and
+  hard links, to a new folder (`fsck --recover`), or rebuilds them as a new
+  verified disk image (`fsck --repair --output --verify-data`). Each writes a
+  report beside its destination, and **Show in Finder** reveals it.
+- A volume too damaged to open still appears. It says why it can't open, and
+  offers First Aid and recovery.
+- **Erase** asks for a name, shows the partition it will erase, and runs
+  `diskutil eraseVolume CarryFS` with progress in the sheet. It erases only
+  unmounted external partitions, never APFS, internal, or system storage.
+- **Eject** ejects every volume on the disk and confirms it did. It never
+  forces an unmount.
+- **Format features** shows whether the volume stores permissions and which
+  releases open it. A volume that CarryFS 0.1.0 formatted (format revision 1)
+  stays read-only until **Upgrade Format…** writes a revision 2 root in place,
+  without rewriting files. The companion CLI upgrades disk images, and the
+  installed adapter upgrades disks. CarryFS 0.1.0 can't open revision 2
+  volumes.
+- **Files** browses folders read-only and exports single files to new paths.
+  Entries show their permissions, hidden entries are dimmed, and the selection
+  shows allocated bytes and hard-link names. **Recover This Folder…** exports
+  the current folder with `carryfs get`.
 - **History** keeps the latest 100 task results of this session.
 
-Once unlocked, selecting an unmounted CarryFS partition, or unmounting one, opens it read-only straight away. A mounted volume offers **Show in Finder**; unmount it for First Aid or recovery.
+Once you unlock, selecting or unmounting a CarryFS partition opens it
+read-only right away. A mounted volume offers **Show in Finder**. Unmount it
+for First Aid or recovery.
 
-Long tasks run in child processes with bounded output capture; **Stop** ends their process group, and quitting stops them too. Stopping recovery can leave partial files at the destination. Apart from **Repair**, **Upgrade Format**, and **Erase**, the manager never writes to a source. Before using a cached listing it checks the volume UUID and generation, and it rechecks a disk's identifier, size, and UUID before acting on it, so a reconnected or replaced disk is never acted on by mistake.
+Long tasks run in child processes with bounded output capture. **Stop** ends
+their process group, and quitting stops them too. Stopping a recovery can
+leave partial files at the destination.
+
+The manager writes to a source only for **Repair**, **Upgrade Format**, and
+**Erase**. Before it uses a cached listing, it checks the volume UUID and
+generation. Before it acts on a disk, it checks the disk's identifier, size,
+and UUID again, so it never acts on a disk that was reconnected or replaced.
 
 ## Software Update
 
-**Software Update** shows the installed CarryFS version (from `/Library/Filesystems/carryfs.fs/Contents/VERSION`), the latest release from `https://carryfs.com/releases.txt`, and the manager's own version. **Install** runs the published installer with `--yes` through the root helper; the installer verifies the package checksum and refuses while CarryFS volumes are mounted. It never downgrades and never changes disks. Revision 1 volumes take writes after **Upgrade Format**; rolling back software doesn't undo an upgrade.
+**Software Update** shows the installed CarryFS version, read from
+`/Library/Filesystems/carryfs.fs/Contents/VERSION`, the latest release from
+`https://carryfs.com/releases.txt`, and the manager's own version. **Install**
+runs the published installer with `--yes` through the root helper. The
+installer verifies the package checksum and refuses to run while CarryFS
+volumes are mounted. It never downgrades and never touches disks. Revision 1
+volumes accept writes only after **Upgrade Format**, and rolling back the
+software doesn't undo an upgrade.
 
 ## Windows
 
-Build the same way, from 64-bit PowerShell; `carryfs.exe` lands next to `carryfs-manager.exe`, and the manager runs it for First Aid and recovery:
+Build from 64-bit PowerShell. The build puts `carryfs.exe` next to
+`carryfs-manager.exe`, and the manager runs it for First Aid and recovery.
+**Show in Finder** reads **Show in File Explorer** there.
 
 ```powershell
 cargo build --manifest-path manager/Cargo.toml --locked
 manager\target\debug\carryfs-manager.exe
 ```
 
-Disks, partitions, and volumes come from IOCTLs that need no administrator rights. Windows reports a CarryFS partition as RAW, so the `CarryFS` service says which partitions it mounted and where through its control pipe, `\\.\pipe\CarryFS`, which SYSTEM, administrators, and interactive users can open and remote clients can't. **Mount** and **Unmount** of a CarryFS volume ask the service; for other file systems they add or remove the volume's drive letter. **Eject** asks Windows to safely remove the disk, so the service ejects its volumes first, and detaches a disk image. Disk arrivals and drive-letter changes refresh the list.
+The manager reads disks, partitions, and volumes through IOCTLs that need no
+administrator rights. Windows reports a CarryFS partition as RAW, so the
+`CarryFS` service tells the manager which partitions it mounted, and where,
+through its control pipe `\\.\pipe\CarryFS`. SYSTEM, administrators, and
+interactive users can open the pipe. Remote clients can't.
 
-**Unlock** restarts the manager as administrator through UAC and reselects the disk; it keeps that permission until you quit, so there is no **Lock**. Reading a partition, **Erase**, **Upgrade Format**, and changing drive letters need it. The elevated manager opens a partition unshared, which keeps the service from mounting it meanwhile, and passes the handle to `carryfs.exe` as standard input, as on macOS. **Erase** makes a partition, or a whole disk as one GPT partition, hidden and without a drive letter, locks and dismounts what it held, formats it with the bundled core, and asks the service to mount it. **Upgrade Format** runs the installed `carryfs-windows upgrade`, and **Install** runs the published `install.ps1 -Yes`, which asks for UAC itself when the manager isn't elevated.
+**Mount** and **Unmount** ask the service to mount or unmount a CarryFS
+volume. For other file systems they add or remove the volume's drive letter.
+**Eject** asks Windows to safely remove the disk, so the service ejects its
+volumes first. For a disk image, **Eject** detaches it. The list refreshes
+when a disk arrives or a drive letter changes.
 
-Copying files to a folder (**Copy to a folder** and **Recover This Folder…**) creates every entry relative to folders the companion tool opened itself, never through a symlink or junction, so the chosen folder can't be inside a symlink, junction, or mounted folder. Files keep their read-only and hidden flags, hard links, and holes; names Windows forbids, such as `what?` or `CON`, get the same reversible aliases the CarryFS adapter shows. Symlinks need administrator rights or Developer Mode; without either, the copy reports each one it skipped and fails once the rest is written.
+**Unlock** restarts the manager as administrator through UAC and selects the
+disk again. The manager keeps that permission until you quit, so Windows has
+no **Lock**. Reading a partition, **Erase**, **Upgrade Format**, and changing
+drive letters need it. The elevated manager opens a partition unshared, so the
+service can't mount it meanwhile, and passes the handle to `carryfs.exe` as
+standard input, as on macOS.
 
-The ignored live tests read this PC's disks, and erase a disposable VHD that `CARRYFS_TEST_DISK` names; that one needs administrator rights and a CarryFS service with the control pipe, and refuses any disk that isn't a VHD:
+**Erase** hides the partition and removes its drive letter, or makes a whole
+disk one hidden GPT partition. It locks and dismounts what the partition held,
+formats it with the bundled core, and asks the service to mount it.
+**Upgrade Format** runs the installed `carryfs-windows upgrade`. **Install**
+runs the published `install.ps1 -Yes`, which asks for UAC itself when the
+manager isn't elevated.
+
+**Copy to a folder** and **Recover This Folder…** create every entry relative
+to folders that the companion CLI opened itself, never through a symlink or
+junction. So the chosen folder can't sit inside a symlink, junction, or
+mounted folder. Files keep their read-only and hidden flags, hard links, and
+holes. Names that Windows forbids, such as `what?` or `CON`, get the
+reversible aliases the CarryFS adapter shows. Symlinks need administrator
+rights or Developer Mode. Without either, the copy reports each symlink it
+skipped and fails once it has written the rest.
+
+Two ignored live tests run on Windows. The first reads this PC's disks. The
+second erases the disposable VHD that `CARRYFS_TEST_DISK` names, and refuses
+any disk that isn't a VHD. It needs administrator rights and a `CarryFS`
+service with the control pipe.
 
 ```powershell
 cargo test --manifest-path manager/Cargo.toml --locked --bin carryfs-manager discovered_devices_can_be_reidentified -- --ignored --nocapture
@@ -70,14 +186,14 @@ cargo test --manifest-path manager/Cargo.toml --locked --bin carryfs-manager a_v
 
 ## Disposable demo and headless checks
 
-Create a new image, refusing existing paths:
+Create a new demo image. The example refuses a path that exists.
 
 ```sh
 cargo run --manifest-path manager/Cargo.toml --locked --example demo -- /tmp/carryfs-demo.cfs
 CARRYFS_IMAGE=/tmp/carryfs-demo.cfs manager/target/debug/carryfs-manager
 ```
 
-Run focused tests and lint checks:
+Run the tests and lint checks:
 
 ```sh
 cargo test --manifest-path manager/Cargo.toml --locked --bin carryfs-manager
@@ -91,7 +207,7 @@ cargo test --manifest-path manager/Cargo.toml --locked --bin carryfs-manager \
   discovered_devices_can_be_reidentified -- --ignored --nocapture
 ```
 
-Capture the actual native renderer without a window:
+Capture the real renderer's output without opening a window:
 
 ```sh
 CARRYFS_IMAGE=/tmp/carryfs-demo.cfs manager/target/debug/carryfs-manager \
@@ -101,8 +217,22 @@ CARRYFS_IMAGE=/tmp/carryfs-demo.cfs manager/target/debug/carryfs-manager \
   --snap /tmp/carryfs-manager-files.png --tree /tmp/carryfs-manager-files.json
 ```
 
-The `overview`, `files`, `activity`, `software`, `first-aid`, and `erase` capture scenes load actual system inventory synchronously before the virtual clock starts. No fake physical devices are introduced. The demo script uses the demo generator's object IDs.
+The capture scenes are `overview`, `files`, `activity`, `software`,
+`first-aid`, and `erase`. Each loads the real system inventory before the
+virtual clock starts, and none adds fake physical devices. The demo script
+uses the object IDs that the demo generator writes.
 
-The tests use disposable CarryFS images to drive Rune's real runtime and file dialogs. They cover paginated browsing, First Aid, repair of a damaged image, recovery and rebuilds, format upgrades, exports, source-generation changes, overwrite refusal, unchanged source bytes, process cancellation, descriptor passing for the root helper, malformed device metadata, and erase guards. They do not mount, eject, erase, or update any physical device, and never start the root helper.
+The tests drive Rune's real runtime and file dialogs against disposable
+CarryFS images. They cover paginated browsing, First Aid, repair of a damaged
+image, recovery and rebuilds, format upgrades, exports, source-generation
+changes, overwrite refusal, unchanged source bytes, process cancellation,
+descriptor passing for the root helper, malformed device metadata, and erase
+guards. They never mount, eject, erase, or update a physical device, and
+never start the root helper.
 
-Rune follows its `examples/hello` state/view/AppSpec pattern and uses Rune Kit controls. The Rune revision and its required crate patches are pinned together. This package has a separate workspace and lockfile so its UI dependencies do not change the filesystem workspace's minimum Rust version. The verified compilers are Rust 1.99.0 on macOS and Rust 1.98.1 (x86_64-pc-windows-gnu) on Windows 10.
+The UI follows Rune's `examples/hello` state, view, and AppSpec pattern and
+uses Rune Kit controls. The Rune revision and the crate patches it needs are
+pinned together. The manager is a separate Cargo workspace with its own
+lockfile, so its UI dependencies don't raise the filesystem workspace's
+minimum Rust version. It is tested with Rust 1.99.0 on macOS and Rust 1.98.1
+(`x86_64-pc-windows-gnu`) on Windows 10.

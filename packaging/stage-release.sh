@@ -17,6 +17,11 @@ bundle_version=$(awk '/CFBundleShortVersionString/ { getline; gsub(/.*<string>|<
     echo "Info.plist says $bundle_version but Cargo.toml says $version; bump both (VERSIONING.md)" >&2
     exit 1
 }
+manager_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' manager/Cargo.toml | head -n 1)
+[ "$manager_version" = "$version" ] || {
+    echo "manager/Cargo.toml says $manager_version but Cargo.toml says $version; bump both (VERSIONING.md)" >&2
+    exit 1
+}
 target=${CARGO_TARGET_DIR:-target}/release
 mkdir -p "$out"
 case $platform in

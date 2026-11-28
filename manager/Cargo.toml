@@ -1,5 +1,6 @@
 [package]
 name = "carryfs-manager"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0 OR GPL-2.0-only"
 default-run = "carryfs-manager"
@@ -12,7 +13,9 @@ serde_json = "1"
 rune = { git = "https://github.com/anomalyco/rune", rev = "0d00d3f2d59df5b764d8d6b2585164fd43c16f48", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "native-file-dialog"] }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "0d00d3f2d59df5b764d8d6b2585164fd43c16f48" }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+# The companion `carryfs` binary builds the root src/main.rs, which needs the
+# root crate's libc on these systems.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd", target_os = "macos"))'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]

@@ -60,25 +60,25 @@ CarryFS is for USB drives, external SSDs and hard disks, and data partitions
 shared between operating systems. It supports files, directories, and symbolic
 links, with case-insensitive names that preserve their capitalization.
 
-Copy-on-write keeps the previous committed state intact while changes are
-written, provided the device honors flushes. Checksums detect corruption in
-file data and metadata; the scrub tool verifies stored files. Damaged data
-must be restored from an independent backup. For metadata damage, see
-[offline diagnosis, repair, and recovery](RECOVERY.md).
+CarryFS writes changes to new blocks, so the last committed state survives an
+interrupted write as long as the device honors flushes. Checksums detect
+corrupted file data and metadata, and `carryfs scrub` verifies every stored
+file. CarryFS cannot repair damaged file data, so restore it from a backup. For
+damaged metadata, see [offline diagnosis, repair, and recovery](RECOVERY.md).
 
-CarryFS runs in user space through FUSE on Linux and FreeBSD, macFUSE on macOS, and WinFsp
-on Windows. NetBSD uses FUSE through perfused and PUFFS. Linux also has a native driver,
-and Android has a special native app.
+CarryFS runs in user space through FUSE on Linux and FreeBSD, macFUSE on
+macOS, WinFsp on Windows, and perfused and PUFFS on NetBSD. Linux also has a
+native kernel driver. On Android, an app reads the USB drive itself.
 [Platform support](INSTALLATION.md#platform-support) ranks each platform by
 tier. Read the [limits and data safety notes](INSTALLATION.md#limits-and-data-safety)
-before using it for backups.
+before you keep backups on CarryFS.
 
 ## Performance
 
-The chart shows CarryFS speed relative to exFAT, using medians of ten rounds
-on an OCZ Vertex 4 SSD connected over USB. Results depend on hardware and
-workload; see the [benchmark notes](benchmarks/README.md#published-results)
-for methods, raw results, and comparisons with native filesystems.
+The chart shows CarryFS speed relative to exFAT, as medians of ten rounds on
+an OCZ Vertex 4 SSD connected over USB. Your hardware and workload will give
+other numbers. The [benchmark notes](benchmarks/README.md#published-results)
+have the method, the raw results, and comparisons with native filesystems.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/charts/vs-exfat-dark.svg">
@@ -94,9 +94,10 @@ when a device is unplugged or power fails.
 The current disk format is revision 2. A future format change may require
 copying files elsewhere and reformatting the partition.
 
-Report problems with your operating system, CarryFS version, storage device,
-and what you were doing. See [CONTRIBUTING.md](CONTRIBUTING.md) for development
-setup and checks, and [FORMAT.md](FORMAT.md) for the disk format.
+When you report a problem, include your operating system, the output of
+`carryfs --version`, the storage device, and what you were doing. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for development setup and checks, and
+[FORMAT.md](FORMAT.md) for the disk format.
 
 ## License
 

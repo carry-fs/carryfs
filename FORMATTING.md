@@ -7,7 +7,7 @@ Before you start, [install CarryFS](INSTALLATION.md). The partition must be
 between 256 MiB and 32 TiB.
 
 To format a CarryFS partition as something else, see
-[Erase CarryFS before using another file system](#erase-carryfs-before-using-another-file-system).
+[Erase CarryFS before using another filesystem](#erase-carryfs-before-using-another-filesystem).
 
 ## Format a partition as CarryFS
 
@@ -26,7 +26,7 @@ To format a CarryFS partition as something else, see
    sudo mkfs -t carryfs -L NAME /dev/sdXN
    ```
 
-If the partition held data before, such as another file system or an earlier
+If the partition held data before, such as another filesystem or an earlier
 CarryFS volume, `mkfs` stops and reports that the device holds data. This keeps
 a mistyped device name from erasing the wrong partition. Check the name with
 `lsblk`, then add `-f` to erase the old data and format anyway.
@@ -40,18 +40,19 @@ partitions, because formatting the disk would erase its partition table. Format
 one of the partitions instead. To put CarryFS on the whole disk, first remove
 the table with `sudo wipefs -a /dev/sdX`.
 
-### NetBSD
+### FreeBSD and NetBSD
 
-Use an unmounted partition, such as the raw GPT wedge `/dev/rdk2`:
+Format an unmounted partition with `newfs_carryfs`. On FreeBSD that is a GEOM
+provider such as `/dev/da0p1`. On NetBSD it is a raw partition node such as
+the GPT wedge `/dev/rdk2`. `-L NAME` sets a label and is optional.
 
 ```sh
-sudo newfs_carryfs -L NAME /dev/rdk2
+sudo newfs_carryfs -L NAME /dev/da0p1
 ```
 
-The helper refuses existing data unless `-f` is supplied. It rejects mounted
-partitions and whole disks containing partitions, including with `-f`.
-Use `sudo newfs_carryfs --wipe /dev/rdk2` to remove only CarryFS's signatures
-before formatting the partition with another filesystem.
+As on Linux, `newfs_carryfs` stops if the partition holds data, and `-f`
+erases it and formats anyway. It refuses mounted partitions and whole disks
+that hold partitions, even with `-f`.
 
 ### macOS
 
@@ -100,16 +101,16 @@ the partition, stop the service with `sc stop CarryFS` and run `mkfs` again.
 
 Windows has no label option yet.
 
-## Erase CarryFS before using another file system
+## Erase CarryFS before using another filesystem
 
-Other formatting tools don't recognize CarryFS, and they leave parts of it
+Other formatting tools don't recognize CarryFS and leave parts of it
 behind. A Windows format, for example, leaves the second root record (root B)
 in place. If you later create a partition at the same offset, that record
 brings the old volume back. Erase CarryFS first, then format with any tool.
 
 The erase zeroes the 2 MiB reserved band at each end of the partition. It
 refuses a partition that holds no CarryFS volume, so a mistyped path cannot
-damage another file system.
+damage another filesystem.
 
 ### Linux
 
@@ -117,11 +118,19 @@ damage another file system.
 sudo mkfs.carryfs --wipe /dev/sdXN
 ```
 
-The same checks as `mkfs` apply: the partition must be unmounted, and it can't
+The same checks as `mkfs` apply. The partition must be unmounted, and it can't
 be a whole disk that holds partitions.
 
 Without the wipe, `wipefs` can't see CarryFS, and GNOME Disks fails with
 "Error synchronizing after initial wipe".
+
+### FreeBSD and NetBSD
+
+```sh
+sudo newfs_carryfs --wipe /dev/da0p1
+```
+
+The same checks as formatting apply.
 
 ### macOS
 

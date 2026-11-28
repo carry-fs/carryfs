@@ -7,9 +7,7 @@ Recovery into a new image and export to a folder leave the source read-only.
 
 Unix installations include `fsck.carryfs`. From a checkout, build the core with
 `cargo build --locked -p carryfs-core` and run `target/debug/fsck-carryfs`.
-`carryfs fsck` takes the same options. On Windows, `carryfs.exe fsck`
-diagnoses and repairs images and recovers them into new images. Export to a
-folder needs Linux, macOS, FreeBSD, or NetBSD.
+`carryfs fsck` takes the same options. On Windows, run `carryfs.exe fsck`.
 
 ## Diagnose without writing
 
@@ -48,6 +46,13 @@ The destination and the report must not exist yet. Export refuses existing
 paths, including symlinks and other names for the source. Without `--report`,
 it writes the report beside the destination, named after it with
 `.recovery.txt` appended.
+
+On Windows, export writes names that Windows forbids under the reversible
+aliases the CarryFS adapter shows. A file without the owner write bit gets the
+read-only flag. Symlinks need administrator rights or Developer Mode. Export
+reports each symlink it can't create, and fails once it has written everything
+else. The destination's parent folders can't be symlinks, junctions, or
+mounted folders.
 
 ## Recover into a new image
 

@@ -2,8 +2,8 @@
 
 CarryFS Manager checks, recovers, erases, mounts, and upgrades CarryFS disks
 and disk images, and installs CarryFS updates. It is laid out like Disk
-Utility, and no task opens Terminal. It works with physical disks on macOS
-only. The Linux and Windows builds open disk image files.
+Utility, and no task opens Terminal. It works with physical disks on macOS and
+Windows. The Linux build opens disk image files only.
 
 The sidebar lists physical disks with their partitions, and the disk images
 you opened. **Show all disks** adds system volumes and virtual storage as a
@@ -19,6 +19,9 @@ space, its First Aid results, its details, and its format features. Tabs for
 structure, and once nothing else has run for 30 seconds, its file data. Each
 result tile also has a **Check** button, which shows progress and time left
 for the file data.
+
+The sections below describe macOS. [Windows](#windows) lists what differs
+there.
 
 ## Run
 
@@ -100,9 +103,9 @@ and need none either.
   the current folder with `carryfs get`.
 - **History** keeps the latest 100 task results of this session.
 
-Once you unlock, selecting an unmounted CarryFS partition opens it read-only
-right away. A mounted volume offers **Show in Finder**. Unmount it for First
-Aid or recovery.
+Once you unlock, selecting or unmounting a CarryFS partition opens it
+read-only right away. A mounted volume offers **Show in Finder**. Unmount it
+for First Aid or recovery.
 
 Long tasks run in child processes with bounded output capture. **Stop** ends
 their process group, and quitting stops them too. Stopping a recovery can
@@ -123,6 +126,63 @@ installer verifies the package checksum and refuses to run while CarryFS
 volumes are mounted. It never downgrades and never touches disks. Revision 1
 volumes accept writes only after **Upgrade Format**, and rolling back the
 software doesn't undo an upgrade.
+
+## Windows
+
+Build from 64-bit PowerShell. The build puts `carryfs.exe` next to
+`carryfs-manager.exe`, and the manager runs it for First Aid and recovery.
+**Show in Finder** reads **Show in File Explorer** there.
+
+```powershell
+cargo build --manifest-path manager/Cargo.toml --locked
+manager\target\debug\carryfs-manager.exe
+```
+
+The manager reads disks, partitions, and volumes through IOCTLs that need no
+administrator rights. Windows reports a CarryFS partition as RAW, so the
+`CarryFS` service tells the manager which partitions it mounted, and where,
+through its control pipe `\\.\pipe\CarryFS`. SYSTEM, administrators, and
+interactive users can open the pipe. Remote clients can't.
+
+**Mount** and **Unmount** ask the service to mount or unmount a CarryFS
+volume. For other file systems they add or remove the volume's drive letter.
+**Eject** asks Windows to safely remove the disk, so the service ejects its
+volumes first. For a disk image, **Eject** detaches it. The list refreshes
+when a disk arrives or a drive letter changes.
+
+**Unlock** restarts the manager as administrator through UAC and selects the
+disk again. The manager keeps that permission until you quit, so Windows has
+no **Lock**. Reading a partition, **Erase**, **Upgrade Format**, and changing
+drive letters need it. The elevated manager opens a partition unshared, so the
+service can't mount it meanwhile, and passes the handle to `carryfs.exe` as
+standard input, as on macOS.
+
+**Erase** hides the partition and removes its drive letter, or makes a whole
+disk one hidden GPT partition. It locks and dismounts what the partition held,
+formats it with the bundled core, and asks the service to mount it.
+**Upgrade Format** runs the installed `carryfs-windows upgrade`. **Install**
+runs the published `install.ps1 -Yes`, which asks for UAC itself when the
+manager isn't elevated.
+
+**Copy to a folder** and **Recover This Folder…** create every entry relative
+to folders that the companion CLI opened itself, never through a symlink or
+junction. So the chosen folder can't sit inside a symlink, junction, or
+mounted folder. Files keep their read-only and hidden flags, hard links, and
+holes. Names that Windows forbids, such as `what?` or `CON`, get the
+reversible aliases the CarryFS adapter shows. Symlinks need administrator
+rights or Developer Mode. Without either, the copy reports each symlink it
+skipped and fails once it has written the rest.
+
+Two ignored live tests run on Windows. The first reads this PC's disks. The
+second erases the disposable VHD that `CARRYFS_TEST_DISK` names, and refuses
+any disk that isn't a VHD. It needs administrator rights and a `CarryFS`
+service with the control pipe.
+
+```powershell
+cargo test --manifest-path manager/Cargo.toml --locked --bin carryfs-manager discovered_devices_can_be_reidentified -- --ignored --nocapture
+$env:CARRYFS_TEST_DISK = 3
+cargo test --manifest-path manager/Cargo.toml --locked --bin carryfs-manager a_vhd_erases_mounts_reads_and_ejects -- --ignored --nocapture
+```
 
 ## Disposable demo and headless checks
 
@@ -174,4 +234,5 @@ The UI follows Rune's `examples/hello` state, view, and AppSpec pattern and
 uses Rune Kit controls. The Rune revision and the crate patches it needs are
 pinned together. The manager is a separate Cargo workspace with its own
 lockfile, so its UI dependencies don't raise the filesystem workspace's
-minimum Rust version. It is tested with Rust 1.99.0 on macOS.
+minimum Rust version. It is tested with Rust 1.99.0 on macOS and Rust 1.98.1
+(`x86_64-pc-windows-gnu`) on Windows 10.

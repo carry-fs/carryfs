@@ -15,13 +15,18 @@ use std::{
 
 /// The bundled CLI, with no input unless a device is attached.
 fn cli() -> Result<Command> {
-    let mut command = Command::new(companion_for(&std::env::current_exe()?)?);
+    let companion = companion_for(&std::env::current_exe()?)?;
+    #[cfg(windows)]
+    let mut command = crate::platform::windows::command(companion);
+    #[cfg(not(windows))]
+    let mut command = Command::new(companion);
     command.stdin(Stdio::null());
     Ok(command)
 }
 
-/// Read `device` through a descriptor the administrator helper opened: the
-/// CLI receives it as standard input and reads `/dev/fd/0`.
+/// Read `device` through a descriptor the administrator helper opened, or on
+/// Windows a handle the elevated manager opened: the CLI receives it as
+/// standard input and reads `/dev/fd/0`.
 fn device_source(command: &mut Command, device: &crate::platform::Device) -> Result<()> {
     command.stdin(crate::platform::device_file(device)?).args([
         "--bytes",
@@ -45,7 +50,11 @@ fn companion_for(exe: &Path) -> Result<PathBuf> {
         "carryfs"
     });
     if !path.is_file() {
-        return Err("The companion CarryFS tool is missing. Rebuild the app with manager/scripts/bundle-macos.sh, or reinstall the complete app.".into());
+        return Err(if cfg!(windows) {
+            "The companion CarryFS tool is missing. Keep carryfs.exe next to carryfs-manager.exe, or rebuild the manager with cargo build --manifest-path manager/Cargo.toml.".into()
+        } else {
+            "The companion CarryFS tool is missing. Rebuild the app with manager/scripts/bundle-macos.sh, or reinstall the complete app.".into()
+        });
     }
     Ok(path)
 }

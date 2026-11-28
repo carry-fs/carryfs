@@ -11,15 +11,25 @@ use std::{
     process::Stdio,
 };
 
+#[cfg(windows)]
+pub mod windows;
+
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+/// The system file browser, for "Show in …".
+pub const FILE_BROWSER: &str = if cfg!(windows) {
+    "File Explorer"
+} else {
+    "Finder"
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceKind {
     Physical,
     Virtual,
     #[cfg_attr(
-        not(any(target_os = "macos", test)),
-        expect(dead_code, reason = "only macOS discovery reports devices")
+        not(any(target_os = "macos", windows, test)),
+        expect(dead_code, reason = "only macOS and Windows discovery report devices")
     )]
     Unknown,
 }
@@ -77,7 +87,9 @@ impl Device {
             "apfs" => "APFS",
             "exfat" => "exFAT",
             "hfs" | "hfs+" => "HFS+",
-            "msdos" => "FAT",
+            "msdos" | "fat" | "fat32" => "FAT",
+            "ntfs" => "NTFS",
+            "refs" => "ReFS",
             _ => "Unknown format",
         }
     }
@@ -87,10 +99,14 @@ impl Device {
                 p == Path::new("/") || p.starts_with("/System") || p.starts_with("/private/var")
             })
     }
+    /// `/dev/diskNsM`, or `\\.\HarddiskNPartitionM` on Windows.
     pub fn path(&self) -> PathBuf {
+        #[cfg(windows)]
+        return windows::device_path(&self.id);
+        #[cfg(not(windows))]
         PathBuf::from(format!("/dev/{}", self.id))
     }
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     pub fn verify(&self, fresh: &Self) -> Result<()> {
         if self.id != fresh.id
             || self
@@ -152,7 +168,6 @@ fn string(v: &Value, key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
-#[cfg(any(target_os = "macos", test))]
 pub fn valid_id(id: &str) -> bool {
     let Some(rest) = id.strip_prefix("disk") else {
         return false;
@@ -240,11 +255,16 @@ pub fn discover() -> Result<Vec<Device>> {
         let devices = parse_inventory(&diskutil(&["list", "-plist"])?)?;
         devices.iter().map(details).collect()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    return windows::discover();
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
-        Err("System-device discovery is currently available on macOS. Image files work on this platform.".into())
+        Err("System-device discovery is currently available on macOS and Windows. Image files work on this platform.".into())
     }
 }
+
+#[cfg(windows)]
+pub use windows::watch;
 
 /// Calls `changed` on a background thread whenever a disk appears, disappears,
 /// mounts, or unmounts. An orphaned `diskutil activity` exits on its next write.
@@ -307,24 +327,35 @@ pub fn details(device: &Device) -> Result<Device> {
         }
         Ok(fresh)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        let fresh = windows::details(device)?;
+        device.verify(&fresh)?;
+        Ok(fresh)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = device;
-        Err("Device operations are currently available on macOS.".into())
+        Err("Device operations are currently available on macOS and Windows.".into())
     }
 }
 
 /// The raw node of an unmounted device, read-only, opened by the
-/// administrator helper; it asks for approval once per session.
+/// administrator helper; it asks for approval once per session. On Windows
+/// the elevated manager opens the partition so that nothing else can.
 pub fn device_file(device: &Device) -> Result<fs::File> {
     #[cfg(target_os = "macos")]
     {
         crate::privileged::open_device(&device.id)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::device_file(device)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = device;
-        Err("Device reads are currently available on macOS.".into())
+        Err("Device reads are currently available on macOS and Windows.".into())
     }
 }
 
@@ -348,9 +379,17 @@ pub fn open_device(device: &Device) -> Result<carryfs_core::ImageDevice> {
             fresh.bytes,
         )?)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        Err("Device reads are currently available on macOS.".into())
+        // Opened unshared: neither the service nor Windows can mount it now.
+        Ok(carryfs_core::ImageDevice::from_device_file(
+            device_file(&fresh)?,
+            fresh.bytes,
+        )?)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Err("Device reads are currently available on macOS and Windows.".into())
     }
 }
 
@@ -378,12 +417,20 @@ pub fn act(device: &Device, action: DeviceAction) -> Result<String> {
             );
         }
     };
-    let target = &fresh.id;
-    Ok(String::from_utf8_lossy(&output(
-        Command::new("/usr/sbin/diskutil").args([verb, target]),
-    )?)
-    .trim()
-    .to_owned())
+    #[cfg(windows)]
+    {
+        let _ = verb;
+        windows::act(&fresh, action)
+    }
+    #[cfg(not(windows))]
+    {
+        let target = &fresh.id;
+        Ok(String::from_utf8_lossy(&output(
+            Command::new("/usr/sbin/diskutil").args([verb, target]),
+        )?)
+        .trim()
+        .to_owned())
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -392,7 +439,11 @@ pub struct Versions {
     pub latest: Option<String>,
 }
 pub fn versions() -> Versions {
-    let installed = match fs::read_to_string("/Library/Filesystems/carryfs.fs/Contents/VERSION") {
+    #[cfg(windows)]
+    let marker = windows::installed().join("VERSION");
+    #[cfg(not(windows))]
+    let marker = Path::new("/Library/Filesystems/carryfs.fs/Contents/VERSION");
+    let installed = match fs::read_to_string(marker) {
         Ok(value) => Some(value.trim().to_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => Some(format!("Unable to read installed version: {error}")),
@@ -429,7 +480,11 @@ fn version(s: &str) -> Option<[u64; 3]> {
 }
 pub fn check_updates() -> Result<Versions> {
     let mut v = versions();
-    let index = output(Command::new("/usr/bin/curl").args([
+    #[cfg(windows)]
+    let mut curl = windows::curl();
+    #[cfg(not(windows))]
+    let mut curl = Command::new("/usr/bin/curl");
+    let index = output(curl.args([
         "--fail",
         "--silent",
         "--show-error",
@@ -448,13 +503,18 @@ pub fn check_updates() -> Result<Versions> {
     Ok(v)
 }
 
+#[cfg(windows)]
+pub use windows::{reveal, show};
+
 /// Open `path` in Finder.
+#[cfg(not(windows))]
 pub fn show(path: &Path) -> Result<()> {
     output(Command::new("/usr/bin/open").arg(path))?;
     Ok(())
 }
 
 /// Select `path` in a Finder window.
+#[cfg(not(windows))]
 pub fn reveal(path: &Path) -> Result<()> {
     output(Command::new("/usr/bin/open").arg("-R").arg(path))?;
     Ok(())
@@ -467,17 +527,21 @@ pub fn install(version_name: &str) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
         crate::privileged::install(version_name)?;
-        Ok(format!(
-            "Installed CarryFS {version_name}. Volumes were not changed."
-        ))
     }
-    #[cfg(not(target_os = "macos"))]
-    Err("Installing from the manager is currently available on macOS.".into())
+    #[cfg(windows)]
+    windows::install(version_name)?;
+    #[cfg(any(target_os = "macos", windows))]
+    return Ok(format!(
+        "Installed CarryFS {version_name}. Volumes were not changed."
+    ));
+    #[cfg(not(any(target_os = "macos", windows)))]
+    Err("Installing from the manager is currently available on macOS and Windows.".into())
 }
 
 /// Erase an unmounted external partition, or a whole external disk into one
 /// GPT partition, as CarryFS named `name`. Disk Arbitration runs the installed
-/// formatter; no administrator approval needed.
+/// formatter; no administrator approval needed. Windows formats with the
+/// bundled core, which needs an elevated manager.
 pub fn erase(device: &Device, name: &str) -> Result<String> {
     let fresh = details(device)?;
     if !fresh.erasable() || fresh.mount.is_some() {
@@ -485,7 +549,21 @@ pub fn erase(device: &Device, name: &str) -> Result<String> {
             "Erasing requires an external physical disk or an unmounted partition on one.".into(),
         );
     }
-    carryfs_core::VolumeLabel::parse(name).map_err(|e| format!("Invalid name: {e}"))?;
+    let label = carryfs_core::VolumeLabel::parse(name).map_err(|e| format!("Invalid name: {e}"))?;
+    #[cfg(windows)]
+    {
+        // The service mounts the erased volume.
+        if !windows::installed().join("carryfs-windows.exe").is_file() {
+            return Err("Install CarryFS from Software before erasing a partition.".into());
+        }
+        windows::erase(&fresh, label)
+    }
+    #[cfg(not(windows))]
+    erase_with_diskutil(&fresh, label.as_str())
+}
+
+#[cfg(not(windows))]
+fn erase_with_diskutil(fresh: &Device, name: &str) -> Result<String> {
     if !Path::new("/Library/Filesystems/carryfs.fs/Contents/Resources/newfs_carryfs").is_file() {
         return Err("Install CarryFS from Software before erasing a partition.".into());
     }
@@ -512,8 +590,12 @@ pub fn upgrade(device: &Device) -> Result<String> {
     {
         crate::privileged::upgrade(&fresh.id)
     }
-    #[cfg(not(target_os = "macos"))]
-    Err("Upgrading a device is currently available on macOS.".into())
+    #[cfg(windows)]
+    {
+        windows::upgrade(&fresh)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    Err("Upgrading a device is currently available on macOS and Windows.".into())
 }
 
 #[cfg(test)]

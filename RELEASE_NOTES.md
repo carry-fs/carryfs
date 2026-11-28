@@ -35,6 +35,8 @@ reformatting the partition.
 - NetBSD 10.2 and 11.1 Tier 2 support on amd64, using perfused and PUFFS.
 - `fsck.carryfs` diagnoses damaged volumes, repairs them in place, or
   recovers their files to a new image (see RECOVERY.md).
+- `carryfs get` and `fsck --recover` copy files to a folder on Windows too.
+  Names that Windows forbids get the adapter's reversible aliases.
 - `carryfs --version`, `carryfs-fuse --version`, and
   `carryfs-windows --version` print the release and the format revisions it
   reads and writes.
@@ -46,11 +48,11 @@ reformatting the partition.
     file picker. A development key signs it, so uninstall it before you install
     the APK of a later release.
   - `carryfs-manager-0.2.0-PLATFORM` archives hold CarryFS Manager for macOS,
-    Linux, and Windows. On macOS it checks, erases, recovers, mounts, and
-    upgrades disks and installs CarryFS updates. macOS blocks the unsigned app
-    on first launch; allow it in System Settings > Privacy & Security. On Linux
-    and Windows it works with disk image files only. Keep `carryfs-manager` and
-    `carryfs` in the same folder.
+    Linux, and Windows. On macOS and Windows it checks, erases, recovers,
+    mounts, and upgrades disks and installs CarryFS updates. macOS blocks the
+    unsigned app on first launch; allow it in System Settings > Privacy &
+    Security. On Linux it works with disk image files only. Keep
+    `carryfs-manager` and `carryfs` in the same folder.
   - `carryfs-0.2.0-linux-module-src.tar.gz` is the source of the native Linux
     kernel driver, Tier 0 on Linux. A module loads only on the kernel it was
     built for, so build it with `scripts/kernel-build.sh` from the archive, or

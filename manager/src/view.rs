@@ -682,10 +682,15 @@ fn toolbar(s: &State, k: &Kit) -> El {
             if open { "Lock" } else { "Unlock" },
             "lock",
             idle,
-            if open {
-                "Disk operations are allowed until you quit. Lock to ask for your password again."
-            } else {
-                "Allow disk operations with your administrator password, once until you quit."
+            match (open, cfg!(windows)) {
+                (true, true) => "CarryFS Manager runs as administrator until you quit it.",
+                (false, true) => "Restart CarryFS Manager as administrator to work with disks.",
+                (true, false) => {
+                    "Disk operations are allowed until you quit. Lock to ask for your password again."
+                }
+                (false, false) => {
+                    "Allow disk operations with your administrator password, once until you quit."
+                }
             },
             |s, tx| s.toggle_lock(tx),
         ))
@@ -1133,7 +1138,7 @@ fn overview(s: &State, k: &Kit) -> El {
                     mount.display()
                 ),
                 vec![
-                    Button::new("Show in Finder")
+                    Button::new(format!("Show in {}", platform::FILE_BROWSER))
                         .on_press(move |s: &mut State| {
                             if let Err(error) = platform::show(&path) {
                                 s.apply(Err(error.to_string()));
@@ -1148,7 +1153,12 @@ fn overview(s: &State, k: &Kit) -> El {
                 k,
                 false,
                 "Unlock to look inside",
-                "Reading a disk directly needs your administrator password. CarryFS Manager asks once and keeps the permission until you quit.".into(),
+                if cfg!(windows) {
+                    "Reading a disk directly needs administrator permission. CarryFS Manager restarts as administrator once you allow it, and keeps the permission until you quit."
+                } else {
+                    "Reading a disk directly needs your administrator password. CarryFS Manager asks once and keeps the permission until you quit."
+                }
+                .into(),
                 vec![
                     Button::new("Unlock and Open")
                         .variant(ButtonVariant::Submit)
@@ -1872,7 +1882,11 @@ fn software(s: &State, k: &Kit) -> El {
         .child(
             label(
                 match (&installed, s.versions.update_available(), &s.versions.latest) {
-                    (None, _, _) => "CarryFS isn't installed on this Mac. Install it to mount CarryFS disks in Finder.".to_owned(),
+                    (None, _, _) => format!(
+                        "CarryFS isn't installed on this {}. Install it to mount CarryFS disks in {}.",
+                        if cfg!(windows) { "PC" } else { "Mac" },
+                        platform::FILE_BROWSER
+                    ),
                     (Some(_), true, Some(latest)) => format!("CarryFS {latest} is available."),
                     (Some(version), _, Some(_)) => format!("CarryFS {version} is up to date."),
                     (Some(version), _, None) => format!("CarryFS {version} is installed. Check for updates to see newer releases."),
@@ -2064,7 +2078,12 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 ]),
             ),
             SheetKind::Recover => {
-                let option = |title: &str, detail: &str, action: &str, key: &str, rebuild: bool| {
+                let option = |title: &str,
+                              detail: &str,
+                              action: &str,
+                              key: &str,
+                              rebuild: bool,
+                              available: bool| {
                     row()
                         .w_full()
                         .gap(12.0)
@@ -2082,7 +2101,7 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                         )
                         .child(
                             Button::new(action.to_owned())
-                                .disabled(busy)
+                                .disabled(busy || !available)
                                 .on_press_tx(move |s: &mut State, tx| fsck_dialog(s, tx, rebuild))
                                 .build(k)
                                 .key(key.to_owned()),
@@ -2096,16 +2115,22 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                         .gap(10.0)
                         .child(option(
                             "Copy to a folder",
-                            "Files keep their permissions, hidden flags, and hard links.",
+                            if cfg!(windows) {
+                                "Files keep their read-only and hidden flags, and hard links."
+                            } else {
+                                "Files keep their permissions, hidden flags, and hard links."
+                            },
                             "Choose Folder…",
                             "recover",
                             false,
+                            true,
                         ))
                         .child(option(
                             "Rebuild as a disk image",
                             "A new, verified CarryFS image with the same files.",
                             "Choose Location…",
                             "rebuild",
+                            true,
                             true,
                         ))
                         .child(buttons(vec![cancel()])),
@@ -2115,7 +2140,12 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                 let version = version.clone();
                 (
                     format!("Install CarryFS {version}?"),
-                    "Eject all CarryFS volumes first. The package is verified before it's installed, and you'll be asked for your password once. Your disks aren't changed.".into(),
+                    if cfg!(windows) {
+                        "Eject all CarryFS volumes first. The package is verified before it's installed, and Windows asks for administrator permission unless CarryFS Manager already has it. Your disks aren't changed."
+                    } else {
+                        "Eject all CarryFS volumes first. The package is verified before it's installed, and you'll be asked for your password once. Your disks aren't changed."
+                    }
+                    .into(),
                     buttons(vec![
                         cancel(),
                         Button::new("Install")
@@ -2229,7 +2259,7 @@ fn done(s: &State, sheet: &Sheet, name: &str, k: &Kit) -> (String, String, El) {
                 && let Some(destination) = sheet.destination.clone()
             {
                 actions.push(
-                    Button::new("Show in Finder")
+                    Button::new(format!("Show in {}", platform::FILE_BROWSER))
                         .on_press(move |s: &mut State| {
                             if let Err(error) = platform::reveal(&destination) {
                                 s.apply(Err(error.to_string()));

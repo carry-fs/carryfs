@@ -154,8 +154,10 @@ Each round writes and syncs a 512 MiB file in 128 KiB requests, reads it back
 and verifies every byte, then creates, lists and removes 1,000 files of 4 KiB.
 The benchmark creates and removes only its own directories. If interrupted,
 it can leave a `carryfs-bench-*` directory behind. The read immediately
-follows the write and can hit cache. The small-file timings use ordinary
-document operations without explicit file or directory syncs.
+follows the write and can hit cache. It is reported twice: as the time spent
+in reads, and as wall time including the byte checks. Compare the wall time.
+The small-file timings use ordinary document operations without explicit
+file or directory syncs.
 
 The app shows the result filename when all rounds pass. Retrieve it from the
 debug APK's private storage. Replace the filename with the one shown or use

@@ -50,15 +50,20 @@ internal class DocumentWorkload(private val contentResolver: ContentResolver) {
         }
         val back = ByteArray(chunk.size)
         var read = 0L
-        DataInputStream(checkNotNull(contentResolver.openInputStream(file))).use { input ->
-            repeat(chunks) { index ->
-                read += measureNanoTime { input.readFully(back) }
-                marker.putInt(0, index)
-                check(back.contentEquals(chunk)) { "Readback differs at byte ${index * chunk.size}" }
+        // A provider that reads ahead keeps transferring while the client checks bytes, so the
+        // time spent inside reads alone can exceed the link. The wall time includes the checks.
+        val wall = measureNanoTime {
+            DataInputStream(checkNotNull(contentResolver.openInputStream(file))).use { input ->
+                repeat(chunks) { index ->
+                    read += measureNanoTime { input.readFully(back) }
+                    marker.putInt(0, index)
+                    check(back.contentEquals(chunk)) { "Readback differs at byte ${index * chunk.size}" }
+                }
+                check(input.read() == -1) { "Unexpected data after $SEQUENTIAL_MIB MiB" }
             }
-            check(input.read() == -1) { "Unexpected data after $SEQUENTIAL_MIB MiB" }
         }
         sample("sequential_read_after_write", SEQUENTIAL_MIB * 1e9 / read, "MiB/s")
+        sample("sequential_read_wall", SEQUENTIAL_MIB * 1e9 / wall, "MiB/s")
         delete(file)
     }
 

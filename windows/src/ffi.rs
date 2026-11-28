@@ -824,11 +824,26 @@ unsafe extern "system" fn get_volume_info(fs: Fs, info: *mut VolumeInfo) -> NtSt
         let (total, free) = carry.volume_size()?;
         info.total_size = total;
         info.free_size = free;
-        let label: Vec<u16> = "CarryFS".encode_utf16().collect();
+        let label = volume_label(&carry.volume_name()?);
         info.volume_label[..label.len()].copy_from_slice(&label);
         info.volume_label_length = (label.len() * 2) as u16;
         Ok(())
     })
+}
+
+/// `name` cut to whole characters within WinFsp's 32 UTF-16 label units.
+/// Windows shows it, as it shows a FAT or NTFS volume's label.
+fn volume_label(name: &str) -> Vec<u16> {
+    let mut label = Vec::new();
+    for character in name.chars() {
+        let mut units = [0; 2];
+        let units = character.encode_utf16(&mut units);
+        if label.len() + units.len() > 32 {
+            break;
+        }
+        label.extend_from_slice(units);
+    }
+    label
 }
 
 unsafe extern "system" fn set_volume_label(_: Fs, _: Wstr, _: *mut VolumeInfo) -> NtStatus {
@@ -1271,4 +1286,23 @@ unsafe extern "system" fn delete_reparse_point(
     _: usize,
 ) -> NtStatus {
     STATUS_INVALID_DEVICE_REQUEST
+}
+
+#[cfg(test)]
+mod tests {
+    use super::volume_label;
+
+    #[test]
+    fn volume_labels_keep_whole_characters_within_32_units() {
+        assert_eq!(
+            volume_label("OCZTest"),
+            "OCZTest".encode_utf16().collect::<Vec<_>>()
+        );
+        let long = format!("{}\u{1F600}", "a".repeat(31));
+        assert_eq!(
+            volume_label(&long),
+            "a".repeat(31).encode_utf16().collect::<Vec<_>>()
+        );
+        assert_eq!(volume_label(&"b".repeat(40)).len(), 32);
+    }
 }

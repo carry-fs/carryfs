@@ -48,7 +48,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK};
 
 use crate::fs::Removal;
-use crate::{Result, device, ffi, wide};
+use crate::{Result, control, device, ffi, wide};
 
 const NAME: &str = "CarryFS";
 
@@ -124,6 +124,11 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
     let _ = STATUS.set(status as usize);
     *MOUNTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(HashMap::new());
     report(SERVICE_RUNNING);
+    std::thread::spawn(|| {
+        if let Err(error) = control::serve(request) {
+            eprintln!("carryfs: {error}; CarryFS Manager cannot mount or unmount volumes");
+        }
+    });
 
     let filter = interface_filter();
     let mut arrivals: HCMNOTIFICATION = std::ptr::null_mut();
@@ -159,9 +164,54 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
         .map(|mounts| mounts.keys().cloned().collect())
         .unwrap_or_default();
     for volume in mounted {
-        detach(&volume, true);
+        // Failures are logged and reported to the user inside.
+        let _ = detach(&volume, true);
     }
     report(SERVICE_STOPPED);
+}
+
+/// Answer one control pipe request; see [`control`] for the protocol.
+fn request(line: &str) -> String {
+    let (verb, volume) = line.split_once(' ').unwrap_or((line, ""));
+    let partition = control::partition(volume);
+    match (verb, partition) {
+        ("list", _) if volume.is_empty() => {
+            let mut reply = String::from("ok\n");
+            let mounts = MOUNTS.lock().unwrap_or_else(|e| e.into_inner());
+            for (volume, mounted) in mounts.iter().flatten() {
+                reply += &format!("mounted\t{volume}\t{}\n", mounted.mount.mount_point);
+            }
+            for (volume, _) in MOUNTING.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                reply += &format!("mounting\t{volume}\n");
+            }
+            reply
+        }
+        ("mount", Some(volume)) => match try_attach(volume) {
+            Ok(Attached::Mounted(point)) => format!("ok {point}\n"),
+            Ok(Attached::Busy) => format!("error {volume} is still mounting\n"),
+            Ok(Attached::Other) => format!("error {volume} holds no CarryFS volume to mount\n"),
+            Err(error) => {
+                eprintln!("carryfs: {volume}: {error}");
+                format!("error {error}\n")
+            }
+        },
+        // Unmounting a volume still opening would discard it as if removed.
+        ("unmount", Some(volume))
+            if MOUNTING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|(name, _)| name == volume) =>
+        {
+            format!("error {volume} is still mounting\n")
+        }
+        ("unmount", Some(volume)) => match detach(volume, true) {
+            Ok(true) => "ok\n".into(),
+            Ok(false) => format!("error {volume} is not mounted\n"),
+            Err(error) => format!("error {error}\n"),
+        },
+        _ => "error unknown request\n".into(),
+    }
 }
 
 unsafe extern "system" fn control(
@@ -278,17 +328,38 @@ fn attach_disk(disk: &str) {
     }
 }
 
+/// What [`try_attach`] found.
+enum Attached {
+    /// Mounted now or before, at this mount point.
+    Mounted(String),
+    /// Another mount of the volume is still opening it.
+    Busy,
+    /// Not a CarryFS volume, or the service is stopping.
+    Other,
+}
+
+/// Mount `volume` if it is CarryFS and not already mounted or being mounted,
+/// logging any failure.
+fn attach(volume: &str) {
+    if let Err(error) = try_attach(volume) {
+        eprintln!("carryfs: {volume}: {error}");
+    }
+}
+
 /// Mount `volume` if it is CarryFS and not already mounted or being mounted.
 /// The open, which runs the full structural check, holds no lock.
-fn attach(volume: &str) {
+fn try_attach(volume: &str) -> Result<Attached> {
     {
         let guard = MOUNTS.lock().unwrap_or_else(|e| e.into_inner());
         let Some(mounts) = guard.as_ref() else {
-            return;
+            return Ok(Attached::Other);
         };
+        if let Some(mounted) = mounts.get(volume) {
+            return Ok(Attached::Mounted(mounted.mount.mount_point.clone()));
+        }
         let mut mounting = MOUNTING.lock().unwrap_or_else(|e| e.into_inner());
-        if mounts.contains_key(volume) || mounting.iter().any(|(name, _)| name == volume) {
-            return;
+        if mounting.iter().any(|(name, _)| name == volume) {
+            return Ok(Attached::Busy);
         }
         mounting.push((volume.to_string(), false));
     }
@@ -304,12 +375,8 @@ fn attach(volume: &str) {
             .unwrap_or(false)
     };
     let (mount, (handle, release)) = match opened {
-        None => return,
-        Some(Ok(mounted)) => mounted,
-        Some(Err(error)) => {
-            eprintln!("carryfs: {volume}: {error}");
-            return;
-        }
+        None => return Ok(Attached::Other),
+        Some(mounted) => mounted?,
     };
     // The stop flag is set before the stop path lists the mounts, so a mount
     // that sees it clear here is inserted in time to be listed.
@@ -320,14 +387,13 @@ fn attach(volume: &str) {
         } else {
             "service stopping"
         };
-        eprintln!("carryfs: {volume}: {why} while mounting; discarding the mount");
         drop(guard);
         if removed {
             drop(mount.stop());
         } else if let Err(error) = crate::eject(mount) {
             eprintln!("carryfs: {volume}: {error}");
         }
-        return;
+        return Err(format!("{why} while mounting; discarded the mount"));
     };
     // Test builds can answer the removal query through the service control
     // handler instead (CARRYFS_QUERY_REMOVE_ROUTE=service).
@@ -355,26 +421,24 @@ fn attach(volume: &str) {
         }
     };
     if result != CR_SUCCESS {
-        eprintln!(
-            "carryfs: {volume}: removal notifications unavailable (CONFIGRET {result}); not mounting"
-        );
         // SAFETY: registration failed, so nothing else references the context.
         drop(unsafe { Box::from_raw(context) });
         if let Err(error) = crate::eject(mount) {
             eprintln!("carryfs: {volume}: {error}");
         }
-        return;
+        return Err(format!(
+            "removal notifications unavailable (CONFIGRET {result}); not mounting"
+        ));
     }
     #[cfg(feature = "fault-injection")]
     let device = if service_route {
         match register_service_route(handle) {
             Some(device) => device,
             None => {
-                eprintln!("carryfs: {volume}: device notification unavailable; not mounting");
                 if let Err(error) = crate::eject(mount) {
                     eprintln!("carryfs: {volume}: {error}");
                 }
-                return;
+                return Err("device notification unavailable; not mounting".into());
             }
         }
     } else {
@@ -385,6 +449,7 @@ fn attach(volume: &str) {
         eprintln!("carryfs: {volume}: removal query through the service control handler");
     }
     eprintln!("carryfs: {volume}: mounted {}", mount.mount_point);
+    let point = mount.mount_point.clone();
     if let Some(notified) = NOTIFIED.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         notified.remove(volume);
     }
@@ -400,10 +465,12 @@ fn attach(volume: &str) {
             release,
         },
     );
+    Ok(Attached::Mounted(point))
 }
 
 /// Unmount `volume`; `eject` syncs first, while a vanished device is only dropped.
-fn detach(volume: &str, eject: bool) {
+/// Returns whether it was mounted. A failed eject is logged and the user told here.
+fn detach(volume: &str, eject: bool) -> Result<bool> {
     let mounted = {
         let mut guard = MOUNTS.lock().unwrap_or_else(|e| e.into_inner());
         let found = guard.as_mut().and_then(|mounts| mounts.remove(volume));
@@ -417,7 +484,7 @@ fn detach(volume: &str, eject: bool) {
         found
     };
     let Some(mounted) = mounted else {
-        return;
+        return Ok(false);
     };
     let point = mounted.mount.mount_point.clone();
     let result = if eject {
@@ -426,7 +493,7 @@ fn detach(volume: &str, eject: bool) {
         drop(mounted.mount.stop());
         Ok(())
     };
-    match result {
+    match &result {
         Ok(()) => eprintln!("carryfs: {volume}: unmounted {point}"),
         Err(error) => {
             eprintln!("carryfs: {volume}: {error}");
@@ -434,6 +501,7 @@ fn detach(volume: &str, eject: bool) {
         }
     }
     unregister(mounted.notification);
+    result.map(|()| true)
 }
 
 /// Answer a query-remove: close the disk handle and unmount on another thread,
@@ -781,7 +849,8 @@ fn device_event(event: u32, data: *mut c_void) -> u32 {
         }
         DBT_DEVICEREMOVEPENDING | DBT_DEVICEREMOVECOMPLETE => {
             std::thread::spawn(move || {
-                detach(&volume, false);
+                // A vanished device is only dropped, which cannot fail.
+                let _ = detach(&volume, false);
                 finish_stopping(&volume);
             });
         }
@@ -818,7 +887,8 @@ unsafe extern "system" fn on_device(
         CM_NOTIFY_ACTION_DEVICEREMOVEPENDING | CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE => {
             let volume = volume.clone();
             std::thread::spawn(move || {
-                detach(&volume, false);
+                // A vanished device is only dropped, which cannot fail.
+                let _ = detach(&volume, false);
                 finish_stopping(&volume);
             });
         }

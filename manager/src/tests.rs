@@ -324,16 +324,6 @@ fn ui_scrubs_recovers_folders_and_records_results_with_the_source() {
     click(&mut rt, "close-sheet");
     click(&mut rt, "recover-tool");
     click(&mut rt, "recover");
-    if !platform::FOLDER_RECOVERY {
-        // The option is offered but disabled; the rebuild test covers recovery here.
-        assert!(rt.resolve_file_dialog(None).is_err());
-        rt.update(|s, _| s.sheet = None);
-        rt.frame(0.01);
-        click(&mut rt, "tab-files");
-        assert!(rt.find("recover-folder").is_none());
-        assert_eq!(before, hash(&fixture.image()));
-        return;
-    }
     let destination = fixture.0.join("recovered");
     rt.resolve_file_dialog(Some(destination.clone())).unwrap();
     rt.frame(0.01);

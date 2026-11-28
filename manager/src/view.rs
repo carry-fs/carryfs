@@ -1560,15 +1560,13 @@ fn files(s: &State, k: &Kit) -> El {
                         .key("up"),
                 )
                 .child(el().grow(1.0).min_w(0.0).scroll_x().child(crumbs))
-                .child(if platform::FOLDER_RECOVERY {
+                .child(
                     Button::new("Recover This Folder…")
                         .disabled(busy)
                         .on_press_tx(recover_dialog)
                         .build(k)
-                        .key("recover-folder")
-                } else {
-                    el()
-                }),
+                        .key("recover-folder"),
+                ),
         )
         .child(muted(folder_summary(browser), k))
         .child(
@@ -2117,15 +2115,15 @@ fn sheet(s: &State, k: &Kit, layer: &mut Vec<El>) {
                         .gap(10.0)
                         .child(option(
                             "Copy to a folder",
-                            if platform::FOLDER_RECOVERY {
-                                "Files keep their permissions, hidden flags, and hard links."
+                            if cfg!(windows) {
+                                "Files keep their read-only and hidden flags, and hard links."
                             } else {
-                                "Not available on Windows yet. Rebuild the files as a disk image instead."
+                                "Files keep their permissions, hidden flags, and hard links."
                             },
                             "Choose Folder…",
                             "recover",
                             false,
-                            platform::FOLDER_RECOVERY,
+                            true,
                         ))
                         .child(option(
                             "Rebuild as a disk image",

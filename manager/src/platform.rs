@@ -15,10 +15,6 @@ pub mod windows;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-/// Whether the companion tool can copy files to a folder (`get` and
-/// `fsck --recover`); its secure extraction doesn't support Windows yet.
-pub const FOLDER_RECOVERY: bool = !cfg!(windows);
-
 /// The system file browser, for "Show in …".
 pub const FILE_BROWSER: &str = if cfg!(windows) {
     "File Explorer"

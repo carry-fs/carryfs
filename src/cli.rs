@@ -16,8 +16,16 @@ use std::{fs, os::unix::ffi::OsStrExt};
     target_os = "freebsd",
     target_os = "netbsd"
 ))]
-use carryfs_core::{AttributeChange, Mode, Name, NewAttributes, ObjectId, ObjectKind, ROOT};
+use carryfs_core::{AttributeChange, Mode, NewAttributes, ObjectKind};
 use carryfs_core::{Finding, ImageDevice, MountMode, Volume};
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    windows
+))]
+use carryfs_core::{Name, ObjectId, ROOT};
 
 #[cfg(target_os = "macos")]
 mod authopen;
@@ -29,6 +37,10 @@ pub(super) mod fsck;
     target_os = "netbsd"
 ))]
 mod host;
+#[cfg(windows)]
+mod host_windows;
+#[cfg(windows)]
+use host_windows as host;
 #[cfg(target_os = "linux")]
 mod image_linux;
 
@@ -56,7 +68,8 @@ pub(super) fn report(finding: Finding<'_>) {
     target_os = "linux",
     target_os = "macos",
     target_os = "freebsd",
-    target_os = "netbsd"
+    target_os = "netbsd",
+    windows
 ))]
 fn names(path: &OsStr) -> Result<Vec<Name>> {
     let path = path.to_str().ok_or("CarryFS path must be UTF-8")?;
@@ -76,7 +89,8 @@ fn names(path: &OsStr) -> Result<Vec<Name>> {
     target_os = "linux",
     target_os = "macos",
     target_os = "freebsd",
-    target_os = "netbsd"
+    target_os = "netbsd",
+    windows
 ))]
 fn resolve(volume: &mut Volume<ImageDevice>, path: &[Name]) -> Result<ObjectId> {
     let mut object = ROOT;
@@ -279,7 +293,8 @@ pub(super) fn upgrade(image: &Path) -> Result<()> {
     target_os = "linux",
     target_os = "macos",
     target_os = "freebsd",
-    target_os = "netbsd"
+    target_os = "netbsd",
+    windows
 ))]
 pub(super) fn get(
     image: &Path,
@@ -307,10 +322,14 @@ pub(super) fn get(
     target_os = "linux",
     target_os = "macos",
     target_os = "freebsd",
-    target_os = "netbsd"
+    target_os = "netbsd",
+    windows
 )))]
 pub(super) fn get(_: &Path, _: Option<u64>, _: &OsStr, _: &Path) -> Result<()> {
-    Err("secure extraction is implemented only on Linux, macOS, FreeBSD, and NetBSD".into())
+    Err(
+        "secure extraction is implemented only on Linux, macOS, FreeBSD, NetBSD, and Windows"
+            .into(),
+    )
 }
 
 /// The mode and, on macOS, the Finder hidden flag of a host object.

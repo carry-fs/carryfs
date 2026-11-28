@@ -137,3 +137,64 @@ buffering metadata did not cut the number of SCSI writes for creation in
 the simulated transport, so the adapter keeps its existing write and
 durability behavior. Both builds timed out during USB mount in the
 follow-up comparison, so the deletion result is for internal storage.
+
+## November 28 comparison
+
+Measured on a Galaxy S25 Ultra (SM-S938B) running Android 17 build
+`S938BXXUDDZJB`. The OCZ Vertex 4 sat in its usual enclosure (USB ID
+`13fd:5917`) and linked at SuperSpeed. Both filesystems used the same 8 GiB
+partitions as before and ran through the benchmark app, exFAT first. The
+CarryFS build was `adfe776` with the document-lookup and USB-handoff changes
+described below. See the [per-round data](android-2026-11-28.tsv).
+
+| Workload | Unit | CarryFS | exFAT |
+| --- | --- | ---: | ---: |
+| Write 512 MiB and sync | MiB/s | 70.1 (−1.3/+4.8) | 211.0 (−13.7/+2.0) |
+| Read 512 MiB after write | MiB/s | 75.6 (−3.2/+11.8) | 6,270.0 (−1,383.7/+1,199.1) |
+| Create and write 1,000 files | files/s | 56.2 (−3.4/+5.1) | 327.4 (−35.7/+23.8) |
+| List 1,000 files | ms | 48.0 (−18.3/+38.8) | 18.1 (−2.4/+2.3) |
+| Remove 1,000 files | ms | 757.9 (−9.1/+23.1) | 1,760.3 (−71.6/+345.1) |
+
+exFAT matched its November 24 results. CarryFS sequential throughput was half
+of its November 24 figures, and the code does not explain the drop. In the
+instrumented workload on the same day, `d5802bd`, `adfe776` and this build
+each wrote at 69–70 MiB/s and read at 72–74 MiB/s. On November 24, `d5802bd`
+wrote at 145.6 MiB/s. The phone reported no thermal throttling or power
+saving. The cause is still open. Candidates are the SSD's state after many
+writes without TRIM, and the cable or adapter.
+
+### Document lookup
+
+`isChildDocument` now asks the native layer for the parent ID only, and the
+session remembers the name of the document it created or found last. The
+instrumented small-file workload alternated builds in five-round batches.
+
+| Workload | Unit | USB, `adfe776` | USB, lookup | Image, `adfe776` | Image, lookup |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Create and write 1,000 files | files/s | 73.2 (−5.4/+6.8) | 74.7 (−4.2/+3.7) | 326.6 (−1.5/+2.9) | 332.0 (−3.4/+30.4) |
+| List 1,000 files | ms | 46.0 (−17.2/+24.0) | 49.2 (−17.5/+26.8) | 11.8 (−2.9/+6.0) | 11.2 (−2.0/+9.2) |
+| Remove 1,000 files | ms | 399.6 (−9.3/+13.7) | 391.2 (−66.8/+15.6) | 388.6 (−12.3/+13.6) | 370.3 (−3.0/+7.5) |
+
+On the internal image, creation rose 1.6% and removal took 4.7% less time at
+the median. On USB the differences stayed inside the spread.
+
+### Handing the drive between Android and CarryFS
+
+This bridge fails Bulk-Only commands after Android's UAS driver has used it.
+The first command times out after 20 seconds, and later attempts alternate
+between timeouts and `EPROTO`. A Bulk-Only reset and cleared halts do not
+recover it, but a USB reset does. A reset makes the kernel rebind its UAS
+driver, so CarryFS now resets the device after claiming it and claims it
+again before Android can mount anything. Eleven mounts in a row succeeded on
+the first command in 4–5 seconds. The last was a replug with CarryFS set to
+open automatically, which mounted half a second after the drive appeared.
+
+Releasing the drive had the opposite problem. Without a reset, Android's UAS
+driver took 30–60 seconds to find the disk again, or never did until the
+drive was replugged. CarryFS now resets the drive when it releases it, and
+Android remounted exFAT within 2 seconds after each of nine releases.
+
+Claiming the drive while Android has a volume mounted from it removes that
+volume without an unmount. Samsung then shows **Restart your phone**. An app
+cannot unmount another volume, so unmount it first, in Settings or with
+`adb shell sm unmount public:8,67`, to avoid the warning.

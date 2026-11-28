@@ -233,11 +233,12 @@ class CarryProvider : DocumentsProvider() {
             }
             flags = flags or if (entry.directory) Document.FLAG_DIR_SUPPORTS_CREATE else Document.FLAG_SUPPORTS_WRITE
         }
-        if (!entry.directory && mimeOf(entry.name).startsWith("image/")) flags = flags or Document.FLAG_SUPPORTS_THUMBNAIL
+        val mime = if (entry.directory) Document.MIME_TYPE_DIR else mimeOf(entry.name)
+        if (mime.startsWith("image/")) flags = flags or Document.FLAG_SUPPORTS_THUMBNAIL
         cursor.newRow()
             .add(Document.COLUMN_DOCUMENT_ID, documentId(volume, entry.id))
             .add(Document.COLUMN_DISPLAY_NAME, entry.name)
-            .add(Document.COLUMN_MIME_TYPE, if (entry.directory) Document.MIME_TYPE_DIR else mimeOf(entry.name))
+            .add(Document.COLUMN_MIME_TYPE, mime)
             .add(Document.COLUMN_SIZE, entry.size)
             .add(Document.COLUMN_LAST_MODIFIED, entry.modified)
             .add(Document.COLUMN_FLAGS, flags)

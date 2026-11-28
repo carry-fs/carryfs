@@ -1,4 +1,6 @@
 //! Native CarryFS manager, following Rune's state/view/AppSpec pattern.
+// A release build opens no console window; debug builds keep it for logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod model;
 mod operation;
 mod platform;
@@ -160,6 +162,9 @@ struct State {
     elapsed_seconds: u64,
     integrity: BTreeMap<VolumeKey, Integrity>,
     images: Vec<PathBuf>,
+    /// A disk to select once disks are listed: `--select ID`, which an
+    /// unlocking Windows manager passes to its elevated successor.
+    startup_device: Option<String>,
     tab: Tab,
     selected: Option<usize>,
     pending: Option<Receiver<Result<Update, String>>>,
@@ -193,6 +198,7 @@ impl State {
             elapsed_seconds: 0,
             integrity: BTreeMap::new(),
             images: Vec::new(),
+            startup_device: None,
             tab: Tab::Overview,
             selected: None,
             pending: None,
@@ -522,21 +528,9 @@ impl State {
             self.tab = Tab::Overview;
         }
         self.sheet = None;
-        // Once unlocked, an unmounted CarryFS volume opens read-only right away.
         let open = unlocked();
         self.start("Read disk information", false, tx, move |_| {
-            let fresh = platform::details(&device)?;
-            if open && openable(&fresh) {
-                opened(
-                    Browser::open_device(fresh.clone()),
-                    Source {
-                        path: fresh.path(),
-                        device: Some(fresh),
-                    },
-                )
-            } else {
-                Ok(Update::Device(Box::new(fresh)))
-            }
+            shown(platform::details(&device)?, open)
         });
         self.target = requested_target;
     }
@@ -669,6 +663,25 @@ impl State {
         });
     }
     fn toggle_lock(&mut self, tx: &mut Tx) {
+        // Windows elevates the whole app: Unlock restarts it as administrator,
+        // and only quitting gives that up.
+        #[cfg(windows)]
+        {
+            if unlocked() {
+                self.status = "CarryFS Manager runs as administrator until you quit it.".into();
+                return;
+            }
+            let select = self.device.as_ref().map(|d| d.id.clone());
+            self.start("Unlock", false, tx, move |_| {
+                platform::windows::relaunch_elevated(select.as_deref())?;
+                std::process::exit(0)
+            });
+        }
+        #[cfg(not(windows))]
+        self.unlock(tx);
+    }
+    #[cfg(not(windows))]
+    fn unlock(&mut self, tx: &mut Tx) {
         if unlocked() {
             #[cfg(target_os = "macos")]
             privileged::lock();
@@ -702,12 +715,13 @@ impl State {
                 DeviceAction::Unmount => "Unmount",
                 DeviceAction::Eject => "Eject",
             };
+            let open = unlocked();
             let job = move |_| {
                 platform::act(&device, action)?;
                 if action == DeviceAction::Eject {
                     Ok(Update::Devices(platform::discover()?))
                 } else {
-                    Ok(Update::Device(Box::new(platform::details(&device)?)))
+                    shown(platform::details(&device)?, open)
                 }
             };
             if action == DeviceAction::Eject {
@@ -722,10 +736,27 @@ impl State {
 fn openable(device: &Device) -> bool {
     device.carryfs() && !device.whole && device.mount.is_none()
 }
+/// The device as selected: once unlocked (`open`), an unmounted CarryFS
+/// volume opens read-only right away.
+fn shown(fresh: Device, open: bool) -> platform::Result<Update> {
+    if open && openable(&fresh) {
+        opened(
+            Browser::open_device(fresh.clone()),
+            Source {
+                path: fresh.path(),
+                device: Some(fresh),
+            },
+        )
+    } else {
+        Ok(Update::Device(Box::new(fresh)))
+    }
+}
 fn unlocked() -> bool {
     #[cfg(target_os = "macos")]
     return privileged::unlocked();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    return platform::windows::elevated();
+    #[cfg(not(any(target_os = "macos", windows)))]
     false
 }
 impl Drop for State {
@@ -742,6 +773,12 @@ impl Default for State {
         let mut state = Self::empty();
         state.initialized = false;
         state.startup_image = std::env::var_os("CARRYFS_IMAGE").map(PathBuf::from);
+        let args: Vec<String> = std::env::args().collect();
+        state.startup_device = args
+            .windows(2)
+            .find(|pair| pair[0] == "--select")
+            .map(|pair| pair[1].clone())
+            .filter(|id| platform::valid_id(id));
         state
     }
 }
@@ -777,6 +814,12 @@ fn poll_task(s: &mut State, tx: &mut Tx) -> bool {
             s.initialized = true;
             s.refresh = false;
             s.discover(tx);
+            return true;
+        }
+        if let Some(id) = s.startup_device.take()
+            && let Some(device) = s.devices.iter().find(|d| d.id == id).cloned()
+        {
+            s.select_device(device, tx);
             return true;
         }
     }
@@ -874,7 +917,7 @@ fn main() {
         poll: Some(poll),
         ..AppSpec::new("CarryFS Manager", (1180.0, 780.0), State::default, view)
     });
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let handle = app.handle();
         let watched = platform::watch(move || {

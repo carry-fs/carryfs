@@ -1,5 +1,6 @@
+# -Yes answers the confirmation prompts, for CarryFS Manager and other tools.
 [CmdletBinding()]
-param([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall)
+param([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall, [switch]$Yes)
 
 $ErrorActionPreference = 'Stop'
 $CarryFSRepository = 'carry-fs/carryfs'
@@ -153,7 +154,12 @@ function Invoke-CarryFSElevated([string]$Arguments) {
     return $process.ExitCode
 }
 
-function Invoke-CarryFSUninstall {
+function Confirm-CarryFS([string]$Prompt, [switch]$Yes) {
+    if ($Yes) { return $true }
+    return (Read-Host $Prompt) -match '^(y|yes)$'
+}
+
+function Invoke-CarryFSUninstall([switch]$Yes) {
     $target = Join-Path $env:ProgramFiles 'CarryFS'
     $service = Get-CimInstance Win32_Service -Filter "Name='CarryFS'"
     if (-not $service -and -not (Test-Path $target)) { Write-Host 'CarryFS is not installed.'; return }
@@ -163,7 +169,7 @@ function Invoke-CarryFSUninstall {
     if ($foreground.Count) { throw 'A foreground CarryFS adapter is running. Stop it and retry.' }
     Write-Host "Remove CarryFS from $target with its automount service. Mounted CarryFS volumes will be ejected."
     Write-Host 'WinFsp and disk contents will be left alone. Removal requires administrator permission.'
-    if ((Read-Host 'Uninstall? [y/N]') -notmatch '^(y|yes)$') { Write-Host 'Uninstall cancelled.'; return }
+    if (-not (Confirm-CarryFS 'Uninstall? [y/N]' -Yes:$Yes)) { Write-Host 'Uninstall cancelled.'; return }
     $removal = {
         $ErrorActionPreference = 'Stop'
         $service = Get-Service CarryFS -ErrorAction SilentlyContinue
@@ -182,12 +188,12 @@ function Invoke-CarryFSUninstall {
     Write-Host 'Uninstalled CarryFS. WinFsp and disk contents were left alone.'
 }
 
-function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall) {
+function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Local, [switch]$Uninstall, [switch]$Yes) {
     if ($Version -and $Upgrade) { throw '-Version and -Upgrade cannot be combined.' }
     if ($Local -and ($Version -or $Upgrade -or $Uninstall)) { throw '-Local cannot be combined with -Version, -Upgrade, or -Uninstall.' }
     if ($Uninstall) {
         if ($Version -or $Upgrade) { throw '-Uninstall cannot be combined with -Version or -Upgrade.' }
-        Invoke-CarryFSUninstall
+        Invoke-CarryFSUninstall -Yes:$Yes
         return
     }
     $requested = $null
@@ -248,7 +254,7 @@ function Invoke-CarryFSInstall([string]$Version, [switch]$Upgrade, [switch]$Loca
         if ($installed) { Write-Host "Current version: $($installed.Text)." }
         if ($installed -and (Compare-CarryFSVersion $selected $installed) -lt 0) { Write-Host 'This will downgrade CarryFS.' }
         Write-Host "Eject all CarryFS volumes before continuing. $origin System installation requires administrator permission."
-        if ((Read-Host 'Install? [y/N]') -notmatch '^(y|yes)$') { Write-Host 'Installation cancelled.'; return }
+        if (-not (Confirm-CarryFS 'Install? [y/N]' -Yes:$Yes)) { Write-Host 'Installation cancelled.'; return }
         $installer = Join-Path $payload 'install-system.ps1'
         $code = Invoke-CarryFSElevated ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -ExpectedVersion "{1}"' -f $installer, $expected)
         if ($code -ne 0) { throw "System installation failed with exit code $code." }

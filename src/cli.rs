@@ -174,10 +174,16 @@ fn open_exclusive(path: &Path, mode: MountMode) -> Result<fs::File> {
 /// Open the partition with no sharing, which is how the CarryFS service owns
 /// a mounted one: the open fails while any other handle has the volume, and
 /// every later open, the service's included, fails until this one closes.
+/// `/dev/fd/0`, as on macOS, is a partition an elevated CarryFS Manager opened
+/// that way and passed as standard input.
 #[cfg(windows)]
 fn open_exclusive(path: &Path, mode: MountMode) -> Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsHandle;
     const ERROR_SHARING_VIOLATION: i32 = 32;
+    if path == Path::new("/dev/fd/0") {
+        return Ok(std::io::stdin().as_handle().try_clone_to_owned()?.into());
+    }
     match std::fs::OpenOptions::new()
         .read(true)
         .write(mode == MountMode::ReadWrite)

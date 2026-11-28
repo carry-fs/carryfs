@@ -49,6 +49,7 @@ object Native {
 
     @JvmStatic private external fun listPage(volume: Long, directory: Long, after: String): ByteArray
     @JvmStatic private external fun stat(volume: Long, id: Long): ByteArray
+    @JvmStatic external fun parent(volume: Long, id: Long): Long
     @JvmStatic external fun create(volume: Long, parent: Long, name: String, directory: Boolean): Long
     @JvmStatic external fun rename(volume: Long, id: Long, name: String)
     @JvmStatic external fun move(volume: Long, id: Long, from: Long, to: Long)

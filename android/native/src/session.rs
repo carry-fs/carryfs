@@ -28,6 +28,7 @@ struct Mounted {
     read_only: bool,
     volume: Volume<Partition>,
     files: HashMap<i64, Open>,
+    recent_name: Option<LinkName>,
     // Object IDs are positive. Give each hard-link name its own negative ID.
     links: HashMap<i64, LinkName>,
     link_ids: BTreeMap<(ObjectId, Vec<u8>), i64>,
@@ -64,6 +65,7 @@ impl Mounted {
             read_only,
             volume,
             files: HashMap::new(),
+            recent_name: None,
             links: HashMap::new(),
             link_ids: BTreeMap::new(),
             next_link: 0,
@@ -291,9 +293,18 @@ impl Session {
         Ok(entry)
     }
 
+    pub fn parent(&mut self, volume: i64, id: i64) -> Result<i64> {
+        if id <= ROOT.get() as i64 {
+            return Ok(self.stat(volume, id)?.parent);
+        }
+        let link = self.mounted_mut(volume)?.document_name(id)?;
+        Ok(link.parent.get() as i64)
+    }
+
     /// Create a file or directory, adding " (n)" to the name if it is taken.
     pub fn create(&mut self, volume: i64, parent: i64, name: &str, directory: bool) -> Result<i64> {
-        let volume = self.volume(volume)?;
+        let mounted = self.mounted_mut(volume)?;
+        let volume = &mut mounted.volume;
         let parent = object(parent)?;
         for attempt in 0..100 {
             let name = Name::parse(&numbered(name, attempt))?;
@@ -306,7 +317,15 @@ impl Session {
             };
             match created {
                 Err(Error::NameCollision) => continue,
-                created => return created.map(|object| object.get() as i64),
+                created => {
+                    let object = created?;
+                    mounted.recent_name = Some(LinkName {
+                        object,
+                        parent,
+                        name,
+                    });
+                    return Ok(object.get() as i64);
+                }
             }
         }
         Err(Error::NameCollision)
@@ -467,12 +486,33 @@ impl Mounted {
         if attributes.kind != ObjectKind::Directory && attributes.links > 1 {
             return Err(Error::NotFound);
         }
-        let name = find(&mut self.volume, attributes.parent, object)?;
-        Ok(LinkName {
+        let parent = attributes.parent;
+        // SAF often checks a newly created document or deletes one just checked.
+        // Confirm the entry even on a cache hit: the inode's parent is only a hint.
+        if !self.read_only
+            && let Some(recent) = &self.recent_name
+            && recent.object == object
+            && recent.parent == parent
+        {
+            match self.volume.lookup_entry(parent, &recent.name) {
+                Ok(entry) if entry.object == object => {
+                    return Ok(LinkName {
+                        object,
+                        parent,
+                        name: entry.name,
+                    });
+                }
+                Ok(_) | Err(Error::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let link = LinkName {
             object,
-            parent: attributes.parent,
-            name,
-        })
+            parent,
+            name: find(&mut self.volume, parent, object)?,
+        };
+        self.recent_name = Some(link.clone());
+        Ok(link)
     }
 
     fn rename(&mut self, id: i64, link: &LinkName, parent: ObjectId, name: Name) -> Result<()> {
@@ -817,14 +857,29 @@ mod tests {
         let b = session.create(volume, a, "b", true).unwrap();
         let file = session.create(volume, b, "f.txt", false).unwrap();
 
+        assert_eq!(session.parent(volume, file).unwrap(), b);
         session.rename(volume, file, "g.txt").unwrap();
         session.move_to(volume, file, b, root).unwrap();
+        assert_eq!(session.parent(volume, file).unwrap(), root);
         assert_eq!(names(&mut session, volume, root), ["a", "g.txt"]);
         assert_eq!(session.stat(volume, file).unwrap().name, "g.txt");
 
         assert_eq!(session.delete(volume, a).unwrap(), root);
         assert_eq!(names(&mut session, volume, root), ["g.txt"]);
         assert!(matches!(session.stat(volume, b), Err(Error::NotFound)));
+        assert!(matches!(session.parent(volume, b), Err(Error::NotFound)));
+    }
+
+    #[test]
+    fn parent_rejects_a_cached_file_after_unlink_while_open() {
+        let (mut session, volume, _) = mounted();
+        let root = ROOT.get() as i64;
+        let file = session.create(volume, root, "file", false).unwrap();
+        let open = session.open(volume, file, false, false).unwrap();
+        assert_eq!(session.parent(volume, file).unwrap(), root);
+        session.delete(volume, file).unwrap();
+        assert!(matches!(session.parent(volume, file), Err(Error::NotFound)));
+        assert_eq!(session.size(volume, open).unwrap(), 0);
     }
 
     #[test]
@@ -883,6 +938,8 @@ mod tests {
         let other = id_for(&mut session, b, "other");
         assert_ne!(original, sibling);
         assert_ne!(sibling, other);
+        assert!(matches!(session.parent(volume, file), Err(Error::NotFound)));
+        assert_eq!(session.parent(volume, other).unwrap(), b);
         assert_eq!(session.stat(volume, original).unwrap().parent, a);
         assert_eq!(session.stat(volume, other).unwrap().name, "other");
         let open = session.open(volume, sibling, true, false).unwrap();

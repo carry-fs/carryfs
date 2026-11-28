@@ -433,6 +433,18 @@ pub extern "system" fn Java_com_carryfs_android_Native_create<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_carryfs_android_Native_parent<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    volume: jlong,
+    id: jlong,
+) -> jlong {
+    call(&mut env, 0, |_| {
+        Ok(with_volume(volume, |session| session.parent(volume, id))?)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_carryfs_android_Native_rename<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,

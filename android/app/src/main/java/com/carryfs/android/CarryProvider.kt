@@ -114,7 +114,7 @@ class CarryProvider : DocumentsProvider() {
             if (id == parent.id) return true
             if (id == Native.ROOT) return false
             id = try {
-                Native.entry(doc.volume, id).parent
+                Native.parent(doc.volume, id)
             } catch (e: IOException) {
                 return false
             }
